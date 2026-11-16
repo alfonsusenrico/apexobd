@@ -10,16 +10,16 @@
    - Command: `openspec validate --all --strict`
    - Result: `Totals: 1 passed, 0 failed (1 items)`
 
-2. **Full Unit Tests & Debug APK Build**
+2. **Full Unit Tests & Debug APK Build (After Latency & Battery Optimization Pass)**
    - Command: `JAVA_HOME=/opt/homebrew/Cellar/openjdk@17/17.0.21.0.2/libexec/openjdk.jdk/Contents/Home gradle :obd-core:test :app:testDebugUnitTest :app:assembleDebug --no-daemon --console=plain`
-   - Result: `BUILD SUCCESSFUL in 17s`
+   - Result: `BUILD SUCCESSFUL in 16s`
    - Unit Test Counts:
      - `com.apexobd.core.formula.FormulaEvaluatorTest`: 3 passed, 0 failed, 0 skipped
      - `com.apexobd.core.protocol.DtcDecoderTest`: 4 passed, 0 failed, 0 skipped
-     - `com.apexobd.core.protocol.ObdPidRegistryTest`: 3 passed, 0 failed, 0 skipped
-     - `com.apexobd.core.scheduler.EngineAndPerformanceTest`: 3 passed, 0 failed, 0 skipped
+     - `com.apexobd.core.protocol.ObdPidRegistryTest`: 4 passed, 0 failed, 0 skipped
+     - `com.apexobd.core.scheduler.EngineAndPerformanceTest`: 4 passed, 0 failed, 0 skipped
      - `com.apexobd.app.TripExporterTest`: 1 passed, 0 failed, 0 skipped
-     - **Total:** 14/14 passed
+     - **Total:** 16/16 passed
    - Artifact: `app/build/outputs/apk/debug/app-debug.apk` (18 MB)
 
 ## Not Verified (Pending Physical Device / Hardware)

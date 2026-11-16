@@ -6,6 +6,7 @@ import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.FormulaEvaluator
 import com.apexobd.core.protocol.ObdPidRegistry
+import com.apexobd.core.protocol.PidDefinition
 import com.apexobd.core.protocol.PollTier
 import com.apexobd.core.transport.ObdTransport
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +18,16 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.max
+
+enum class PollingProfile(
+    val label: String,
+    val cycleDelayMs: Long,
+    val slowPollEveryNCycles: Int
+) {
+    MAX_PERFORMANCE("Max Speed (0ms delay)", 0L, 12),
+    BALANCED("Balanced (Low Latency + Battery)", 15L, 15),
+    ECO_BATTERY("Eco Battery (Low Radio Duty)", 120L, 15)
+}
 
 sealed class ConnectionState {
     data object Disconnected : ConnectionState()
@@ -33,10 +44,6 @@ data class Timer0100State(
     val bestRunSec: Double? = null
 )
 
-/**
- * Estimates Horsepower and Torque using ECU Torque PIDs (0162/0163) when available,
- * falling back to MAF (g/s) volumetric estimation (~0.80 g/s per HP on gasoline).
- */
 object PerformanceCalculator {
     fun estimateTorqueAndHp(
         rpm: Double?,
@@ -94,8 +101,10 @@ class Timer0100Tracker {
 }
 
 /**
- * Priority-tiered polling loop that fetches active HUD PIDs, calculates derived metrics
- * (HP, Torque, Boost relative to Baro), and handles automatic reconnects.
+ * Low-latency priority-tiered polling scheduler.
+ * Maximizes adapter throughput using CAN multi-PID batching and expected-response
+ * count hints (`01XX1`) with automatic single-PID fallback, while polling only
+ * currently visible sensors (plus active logging sensors) to minimize battery draw.
  */
 class ObdPollingEngine(
     private val transport: ObdTransport,
@@ -115,8 +124,18 @@ class ObdPollingEngine(
     private val _pollingHz = MutableStateFlow(0)
     val pollingHz: StateFlow<Int> = _pollingHz.asStateFlow()
 
+    private val _avgLatencyMs = MutableStateFlow(0)
+    val avgLatencyMs: StateFlow<Int> = _avgLatencyMs.asStateFlow()
+
+    @Volatile
     private var activeSensorKeys: Set<String> = emptySet()
+
+    @Volatile
     private var customPids: Map<String, CustomPidDefinition> = emptyMap()
+
+    @Volatile
+    private var pollingProfile: PollingProfile = PollingProfile.BALANCED
+
     private var pollJob: Job? = null
 
     fun setActiveSensors(keys: Set<String>) {
@@ -125,6 +144,10 @@ class ObdPollingEngine(
 
     fun setCustomPids(defs: List<CustomPidDefinition>) {
         customPids = defs.associateBy { it.key }
+    }
+
+    fun setPollingProfile(profile: PollingProfile) {
+        pollingProfile = profile
     }
 
     fun start() {
@@ -139,13 +162,13 @@ class ObdPollingEngine(
                         ConnectionState.Reconnecting(attempt, "Reconnecting to ${transport.endpointLabel}")
                     }
                     transport.connect()
-                    val handshake = client.initialize()
+                    val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
                     val discovered = ObdPidRegistry.discoverSupportedPids(client)
                     _supportedPids.value = discovered
                     _connectionState.value = ConnectionState.Connected(handshake, discovered.size)
                     attempt = 0
 
-                    runPollingLoop(discovered)
+                    runPollingLoop(handshake, discovered)
                 } catch (t: Throwable) {
                     if (!isActive) break
                     attempt++
@@ -168,20 +191,24 @@ class ObdPollingEngine(
         runCatching { transport.disconnect() }
         _connectionState.value = ConnectionState.Disconnected
         _pollingHz.value = 0
+        _avgLatencyMs.value = 0
     }
 
-    private suspend fun runPollingLoop(discovered: Set<String>) {
+    private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
         var cycle = 0
         var samplesInSec = 0
+        var latencyAccumMs = 0L
+        var rttCount = 0
         var windowStart = System.currentTimeMillis()
+        var supportsMultiPid = handshake.isCanProtocol
         val values = _liveValues.value.toMutableMap()
 
         while (scope.isActive && transport.isConnected.value) {
+            val profile = pollingProfile
             val requested = activeSensorKeys.ifEmpty {
                 setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "throttle", "maf", "timing_advance")
             }
 
-            // Ensure RPM & MAF are polled whenever derived HP/Torque is displayed
             val expandedKeys = buildSet {
                 addAll(requested)
                 if ("hp" in requested || "torque" in requested) {
@@ -201,17 +228,52 @@ class ObdPollingEngine(
             val standardTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
                 .filter { discovered.isEmpty() || it.pidHex in discovered }
-                .filter { it.defaultTier == PollTier.HIGH || cycle % 5 == 0 }
+                .filter { it.defaultTier == PollTier.HIGH || cycle % profile.slowPollEveryNCycles == 0 }
 
-            for (pid in standardTargets) {
-                if (!transport.isConnected.value) break
-                val res = client.execute("01${pid.pidHex}")
-                if (res is ObdCommandResult.Success) {
-                    val decoded = ObdPidRegistry.decodeMode01Response(pid.pidHex, res.lines)
-                    if (decoded != null) {
-                        values[decoded.key] = decoded.value
-                        samplesInSec++
+            if (supportsMultiPid && standardTargets.size >= 2) {
+                // Chunk up to 5 PIDs per CAN request (fits comfortably within ISO-TP buffers)
+                for (chunk in standardTargets.chunked(5)) {
+                    if (!transport.isConnected.value) break
+                    if (chunk.size == 1) {
+                        val (ok, rtt) = pollSingleStandard(chunk.first(), handshake.isCanProtocol, values)
+                        if (ok) samplesInSec++
+                        latencyAccumMs += rtt
+                        rttCount++
+                    } else {
+                        val cmd = "01" + chunk.joinToString("") { it.pidHex }
+                        val t0 = System.currentTimeMillis()
+                        val res = client.execute(cmd)
+                        latencyAccumMs += (System.currentTimeMillis() - t0)
+                        rttCount++
+
+                        val decodedList = if (res is ObdCommandResult.Success) {
+                            ObdPidRegistry.decodeMultiMode01Response(res.lines)
+                        } else emptyList()
+
+                        if (decodedList.isEmpty()) {
+                            // ECU doesn't support Mode 01 multi-PID batching -> fall back gracefully
+                            supportsMultiPid = false
+                            for (pid in chunk) {
+                                val (ok, rtt) = pollSingleStandard(pid, handshake.isCanProtocol, values)
+                                if (ok) samplesInSec++
+                                latencyAccumMs += rtt
+                                rttCount++
+                            }
+                        } else {
+                            for (item in decodedList) {
+                                values[item.key] = item.value
+                                samplesInSec++
+                            }
+                        }
                     }
+                }
+            } else {
+                for (pid in standardTargets) {
+                    if (!transport.isConnected.value) break
+                    val (ok, rtt) = pollSingleStandard(pid, handshake.isCanProtocol, values)
+                    if (ok) samplesInSec++
+                    latencyAccumMs += rtt
+                    rttCount++
                 }
             }
 
@@ -221,7 +283,10 @@ class ObdPollingEngine(
 
             for (custom in customTargets) {
                 if (!transport.isConnected.value) break
+                val t0 = System.currentTimeMillis()
                 val res = client.execute(custom.modeAndPidHex)
+                latencyAccumMs += (System.currentTimeMillis() - t0)
+                rttCount++
                 if (res is ObdCommandResult.Success) {
                     val decoded = FormulaEvaluator.decodeCustomPid(custom, res)
                     if (decoded != null) {
@@ -252,11 +317,35 @@ class ObdPollingEngine(
             val now = System.currentTimeMillis()
             if (now - windowStart >= 1000L) {
                 _pollingHz.value = max(0, samplesInSec)
+                _avgLatencyMs.value = if (rttCount > 0) (latencyAccumMs / rttCount).toInt() else 0
                 samplesInSec = 0
+                latencyAccumMs = 0L
+                rttCount = 0
                 windowStart = now
             }
             cycle++
-            delay(20L)
+            if (profile.cycleDelayMs > 0L) {
+                delay(profile.cycleDelayMs)
+            }
         }
+    }
+
+    private suspend fun pollSingleStandard(
+        pid: PidDefinition,
+        isCanProtocol: Boolean,
+        values: MutableMap<String, Double>
+    ): Pair<Boolean, Long> {
+        val cmd = if (isCanProtocol) "01${pid.pidHex}1" else "01${pid.pidHex}"
+        val t0 = System.currentTimeMillis()
+        val res = client.execute(cmd)
+        val rtt = System.currentTimeMillis() - t0
+        if (res is ObdCommandResult.Success) {
+            val decoded = ObdPidRegistry.decodeMode01Response(pid.pidHex, res.lines)
+            if (decoded != null) {
+                values[decoded.key] = decoded.value
+                return true to rtt
+            }
+        }
+        return false to rtt
     }
 }

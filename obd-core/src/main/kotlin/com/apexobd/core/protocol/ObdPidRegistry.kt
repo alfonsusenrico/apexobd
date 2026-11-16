@@ -188,6 +188,15 @@ object ObdPidRegistry {
     private val byKey: Map<String, PidDefinition> = standardPids.associateBy { it.key }
     private val byPidHex: Map<String, PidDefinition> = standardPids.associateBy { it.pidHex }
 
+    private val twoBytePids = setOf("0C", "10", "1F", "21", "22", "23", "31", "3C", "3E", "42", "43", "44", "4D", "4E", "59", "5E", "63")
+    private val fourBytePids = setOf("A4")
+
+    fun dataByteLength(pidHex: String): Int = when (pidHex.uppercase()) {
+        in fourBytePids -> 4
+        in twoBytePids -> 2
+        else -> 1
+    }
+
     fun findByKey(key: String): PidDefinition? = byKey[key]
     fun findByPidHex(pidHex: String): PidDefinition? = byPidHex[pidHex.uppercase()]
 
@@ -244,6 +253,31 @@ object ObdPidRegistry {
             value = value,
             unit = def.unit
         )
+    }
+
+    /**
+     * Decodes a concatenated CAN multi-PID Mode 01 response (e.g. `41 0C 1A F8 0D 54 11 61`)
+     * by walking `[pidByte, payloadBytes...]` sequentially according to SAE J1979 lengths.
+     */
+    fun decodeMultiMode01Response(lines: List<String>): List<DecodedReading> {
+        val bytes = Elm327Client.flattenIsoTpBytes(lines)
+        val modeIdx = bytes.indexOf(0x41)
+        if (modeIdx == -1 || modeIdx >= bytes.lastIndex) return emptyList()
+
+        val out = mutableListOf<DecodedReading>()
+        var i = modeIdx + 1
+        while (i < bytes.size) {
+            val pidHex = "%02X".format(bytes[i])
+            i++
+            val len = dataByteLength(pidHex)
+            if (i + len > bytes.size) break
+            val slice = bytes.subList(i, i + len)
+            i += len
+            val def = findByPidHex(pidHex) ?: continue
+            val value = def.decoder(slice) ?: continue
+            out += DecodedReading(def.key, def.pidHex, value, def.unit)
+        }
+        return out
     }
 
     private fun pid(

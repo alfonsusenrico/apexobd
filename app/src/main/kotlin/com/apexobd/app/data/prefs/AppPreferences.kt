@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.apexobd.core.scheduler.PollingProfile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -17,7 +18,8 @@ data class UserSettings(
     val useSimulator: Boolean = true,
     val hudMirror: Boolean = false,
     val imperialUnits: Boolean = false,
-    val keepScreenOn: Boolean = true
+    val keepScreenOn: Boolean = true,
+    val pollingProfile: PollingProfile = PollingProfile.BALANCED
 )
 
 class AppPreferences(private val context: Context) {
@@ -29,16 +31,22 @@ class AppPreferences(private val context: Context) {
         val HUD_MIRROR = booleanPreferencesKey("hud_mirror")
         val IMPERIAL_UNITS = booleanPreferencesKey("imperial_units")
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
+        val POLLING_PROFILE = stringPreferencesKey("polling_profile")
     }
 
     val settings: Flow<UserSettings> = context.dataStore.data.map { prefs ->
+        val profile = prefs[Keys.POLLING_PROFILE]?.let { name ->
+            runCatching { PollingProfile.valueOf(name) }.getOrNull()
+        } ?: PollingProfile.BALANCED
+
         UserSettings(
             wifiHost = prefs[Keys.WIFI_HOST] ?: "192.168.0.10",
             wifiPort = prefs[Keys.WIFI_PORT] ?: 35000,
             useSimulator = prefs[Keys.USE_SIMULATOR] ?: true,
             hudMirror = prefs[Keys.HUD_MIRROR] ?: false,
             imperialUnits = prefs[Keys.IMPERIAL_UNITS] ?: false,
-            keepScreenOn = prefs[Keys.KEEP_SCREEN_ON] ?: true
+            keepScreenOn = prefs[Keys.KEEP_SCREEN_ON] ?: true,
+            pollingProfile = profile
         )
     }
 
@@ -61,7 +69,7 @@ class AppPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.IMPERIAL_UNITS] = enabled }
     }
 
-    suspend fun setKeepScreenOn(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.KEEP_SCREEN_ON] = enabled }
+    suspend fun setPollingProfile(profile: PollingProfile) {
+        context.dataStore.edit { it[Keys.POLLING_PROFILE] = profile.name }
     }
 }

@@ -171,6 +171,9 @@ interface TripDao {
     @Insert
     suspend fun insertSample(sample: TelemetrySampleEntity)
 
+    @Insert
+    suspend fun insertSamples(samples: List<TelemetrySampleEntity>)
+
     @Query("SELECT * FROM telemetry_samples WHERE sessionId = :sessionId ORDER BY timestampMs ASC")
     suspend fun getSamplesForSession(sessionId: Long): List<TelemetrySampleEntity>
 }

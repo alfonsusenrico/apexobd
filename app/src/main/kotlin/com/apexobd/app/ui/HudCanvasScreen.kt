@@ -39,6 +39,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +60,7 @@ import com.apexobd.app.data.db.WidgetDisplayType
 import com.apexobd.app.ui.components.TorqueEvoWidgetCard
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.scheduler.ConnectionState
+import com.apexobd.core.scheduler.PollingProfile
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -72,6 +74,7 @@ fun HudCanvasScreen(viewModel: HudViewModel) {
     val connState by viewModel.connectionState.collectAsState()
     val supportedPids by viewModel.supportedPids.collectAsState()
     val pollingHz by viewModel.pollingHz.collectAsState()
+    val avgLatencyMs by viewModel.avgLatencyMs.collectAsState()
     val diagnosticReport by viewModel.diagnosticReport.collectAsState()
     val vin by viewModel.vin.collectAsState()
     val timer0100 by viewModel.timer0100.collectAsState()
@@ -84,6 +87,9 @@ fun HudCanvasScreen(viewModel: HudViewModel) {
     var showParkedSetup by remember { mutableStateOf(false) }
 
     val pagerState = rememberPagerState(pageCount = { pages.size.coerceAtLeast(1) })
+    LaunchedEffect(pagerState.currentPage) {
+        viewModel.setVisiblePageIndex(pagerState.currentPage)
+    }
     val scope = rememberCoroutineScope()
     val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val gridColumns = if (isLandscape) 6 else 4
@@ -292,6 +298,7 @@ fun HudCanvasScreen(viewModel: HudViewModel) {
                 connState = connState,
                 supportedCount = supportedPids.size,
                 pollingHz = pollingHz,
+                avgLatencyMs = avgLatencyMs,
                 vin = vin,
                 diagnosticReport = diagnosticReport,
                 tripSessions = tripSessions,
@@ -388,12 +395,14 @@ private fun ComponentPickerSheetContent(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ParkedSetupSheetContent(
     viewModel: HudViewModel,
     connState: ConnectionState,
     supportedCount: Int,
     pollingHz: Int,
+    avgLatencyMs: Int,
     vin: String?,
     diagnosticReport: com.apexobd.core.protocol.DiagnosticReport?,
     tripSessions: List<com.apexobd.app.data.db.TripSessionEntity>,
@@ -416,7 +425,8 @@ private fun ParkedSetupSheetContent(
         item {
             Text("Parked Setup & Diagnostics", fontWeight = FontWeight.Bold, fontSize = 18.sp)
             val statusLine = when (connState) {
-                is ConnectionState.Connected -> "Connected • ${connState.handshake.protocolName} • $supportedCount PIDs • ${pollingHz}Hz"
+                is ConnectionState.Connected ->
+                    "Connected • ${connState.handshake.protocolName} • $supportedCount PIDs • ${pollingHz}Hz • ${avgLatencyMs}ms RTT"
                 is ConnectionState.Connecting -> "Connecting..."
                 is ConnectionState.Reconnecting -> "Reconnecting (#${connState.attempt}): ${connState.reason}"
                 ConnectionState.Disconnected -> "Disconnected"
@@ -424,6 +434,27 @@ private fun ParkedSetupSheetContent(
             Text(statusLine, color = TorqueEvoColors.SkyBlue, fontSize = 12.sp)
             if (vin != null) {
                 Text("VIN (Mode 09): $vin", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
+            }
+        }
+
+        // Latency & Battery Efficiency Profile
+        item {
+            Text("Polling Efficiency & Battery Profile", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                PollingProfile.entries.forEach { profile ->
+                    FilterChip(
+                        selected = settings.pollingProfile == profile,
+                        onClick = { viewModel.setPollingProfile(profile) },
+                        label = {
+                            val short = when (profile) {
+                                PollingProfile.MAX_PERFORMANCE -> "Max Speed"
+                                PollingProfile.BALANCED -> "Balanced"
+                                PollingProfile.ECO_BATTERY -> "Eco Battery"
+                            }
+                            Text(short, fontSize = 12.sp)
+                        }
+                    )
+                }
             }
         }
 

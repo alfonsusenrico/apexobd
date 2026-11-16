@@ -1,14 +1,19 @@
 package com.apexobd.core.scheduler
 
 import com.apexobd.core.elm.Elm327Client
+import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.transport.SimulatedObdTransport
+import com.apexobd.core.transport.WifiTcpTransport
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.ServerSocket
 
 class EngineAndPerformanceTest {
 
@@ -21,6 +26,11 @@ class EngineAndPerformanceTest {
         val info = client.initialize()
         assertEquals("ELM327 v1.5", info.adapterVersion)
         assertTrue(info.protocolName.contains("CAN"))
+        assertTrue(info.isCanProtocol)
+
+        val multiRes = client.execute("010C0D10") as ObdCommandResult.Success
+        val multiDecoded = ObdPidRegistry.decodeMultiMode01Response(multiRes.lines)
+        assertEquals(3, multiDecoded.size)
 
         val pids = ObdPidRegistry.discoverSupportedPids(client)
         assertTrue("0C" in pids)
@@ -66,5 +76,28 @@ class EngineAndPerformanceTest {
         val done = tracker.onSpeedSample(101.0, 8840L)
         assertFalse(done.running)
         assertEquals(6.84, done.bestRunSec!!, 0.001)
+    }
+
+    @Test
+    fun `WifiTcpTransport reads blocking prompt immediately over TCP`() = runTest {
+        val server = ServerSocket(0)
+        val serverJob = launch(Dispatchers.IO) {
+            server.accept().use { sock ->
+                val inp = sock.getInputStream().bufferedReader()
+                val out = sock.getOutputStream()
+                val line = inp.readLine()
+                if (line == "010C1") {
+                    out.write("410C1AF8\r>".toByteArray(Charsets.US_ASCII))
+                    out.flush()
+                }
+            }
+        }
+        val transport = WifiTcpTransport(host = "127.0.0.1", port = server.localPort)
+        transport.connect()
+        val resp = transport.sendCommand("010C1", timeoutMs = 1500L)
+        assertTrue(resp.contains("410C1AF8"))
+        transport.disconnect()
+        serverJob.join()
+        server.close()
     }
 }

@@ -24,6 +24,7 @@ import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.scheduler.ObdPollingEngine
+import com.apexobd.core.scheduler.PollingProfile
 import com.apexobd.core.scheduler.Timer0100State
 import com.apexobd.core.scheduler.Timer0100Tracker
 import com.apexobd.core.transport.SimulatedObdTransport
@@ -93,6 +94,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val tripSessions: StateFlow<List<TripSessionEntity>> = tripDao.observeSessions()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    private val _visiblePageIndex = MutableStateFlow(0)
+    private val _chartKeys = MutableStateFlow<Set<String>>(emptySet())
+
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
 
@@ -101,6 +105,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _pollingHz = MutableStateFlow(0)
     val pollingHz: StateFlow<Int> = _pollingHz.asStateFlow()
+
+    private val _avgLatencyMs = MutableStateFlow(0)
+    val avgLatencyMs: StateFlow<Int> = _avgLatencyMs.asStateFlow()
 
     private val _liveValues = MutableStateFlow<Map<String, Double>>(emptyMap())
     val liveValues: StateFlow<Map<String, Double>> = _liveValues.asStateFlow()
@@ -121,10 +128,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
     private var activeSessionId: Long? = null
+    private val mutableHistory = mutableMapOf<String, ArrayDeque<Double>>()
 
     init {
         wifiBinder.register()
-        locationTracker.startUpdates()
+        locationTracker.startUpdates(highFrequency = true)
         viewModelScope.launch {
             val initial = prefs.settings.first()
             reconnectTransport(initial)
@@ -148,17 +156,40 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        // Poll ONLY sensors visible on the active swipe page (plus logged keys while recording)
         viewModelScope.launch {
-            pagesWithWidgets.collect { pages ->
-                val keys = pages.flatMap { it.widgets }.map { it.sensorKey }.toSet()
+            combine(pagesWithWidgets, _visiblePageIndex, _isRecording, settings) { pages, pageIdx, recording, st ->
+                val visibleWidgets = pages.getOrNull(pageIdx)?.widgets.orEmpty()
+                _chartKeys.value = visibleWidgets
+                    .filter { it.displayType == WidgetDisplayType.CHART.name }
+                    .map { it.sensorKey }
+                    .toSet()
+
+                val activeKeys = buildSet {
+                    visibleWidgets.forEach { add(it.sensorKey) }
+                    if (recording) {
+                        addAll(listOf("rpm", "obd_speed", "throttle", "maf", "coolant", "voltage", "timing_advance", "iat"))
+                    }
+                }
+                val needsHighFreqGps = recording ||
+                    st.pollingProfile != PollingProfile.ECO_BATTERY &&
+                    activeKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") }
+                locationTracker.startUpdates(highFrequency = needsHighFreqGps)
+                activeKeys
+            }.collect { keys ->
                 engine?.setActiveSensors(keys)
             }
         }
     }
 
-    fun reconnectWithCurrentSettings() {
+    fun setVisiblePageIndex(index: Int) {
+        _visiblePageIndex.value = index.coerceAtLeast(0)
+    }
+
+    fun setPollingProfile(profile: PollingProfile) {
         viewModelScope.launch {
-            reconnectTransport(settings.value)
+            prefs.setPollingProfile(profile)
+            engine?.setPollingProfile(profile)
         }
     }
 
@@ -174,14 +205,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         val newEngine = ObdPollingEngine(transport, viewModelScope)
+        newEngine.setPollingProfile(s.pollingProfile)
         engine = newEngine
 
-        val keys = pagesWithWidgets.value.flatMap { it.widgets }.map { it.sensorKey }.toSet()
-        newEngine.setActiveSensors(keys)
+        val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+        newEngine.setActiveSensors(visible.map { it.sensorKey }.toSet())
 
         viewModelScope.launch { newEngine.connectionState.collect { _connectionState.value = it } }
         viewModelScope.launch { newEngine.supportedPids.collect { _supportedPids.value = it } }
         viewModelScope.launch { newEngine.pollingHz.collect { _pollingHz.value = it } }
+        viewModelScope.launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
         viewModelScope.launch {
             newEngine.liveValues.collect { map ->
                 val obdSpd = map["obd_speed"] ?: 0.0
@@ -190,22 +223,29 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 val merged = map.toMutableMap()
                 merged["gps_speed"] = if (gps.hasRealFix) gps.speedKmh else obdSpd
                 _liveValues.value = merged
-                appendHistory(merged)
-                _timer0100.value = timer0100Tracker.onSpeedSample(merged["gps_speed"] ?: 0.0)
+                appendChartHistoryOnly(merged)
+                if ("timer_0100" in pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty().map { it.sensorKey }) {
+                    _timer0100.value = timer0100Tracker.onSpeedSample(merged["gps_speed"] ?: 0.0)
+                }
             }
         }
         newEngine.start()
     }
 
-    private fun appendHistory(values: Map<String, Double>) {
-        val current = _historyBuffers.value.toMutableMap()
-        for ((k, v) in values) {
-            val buf = (current[k] ?: emptyList()).toMutableList()
-            buf.add(v)
-            if (buf.size > 28) buf.removeAt(0)
-            current[k] = buf
+    private fun appendChartHistoryOnly(values: Map<String, Double>) {
+        val chartTargets = _chartKeys.value
+        if (chartTargets.isEmpty()) return
+        val snapshot = mutableMapOf<String, List<Double>>()
+        for (k in chartTargets) {
+            val v = values[k] ?: continue
+            val dq = mutableHistory.getOrPut(k) { ArrayDeque(28) }
+            if (dq.size >= 28) dq.removeFirst()
+            dq.addLast(v)
+            snapshot[k] = dq.toList()
         }
-        _historyBuffers.value = current
+        if (snapshot.isNotEmpty()) {
+            _historyBuffers.value = snapshot
+        }
     }
 
     fun scanDiagnostics() {
@@ -232,11 +272,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleRecording() {
-        if (_isRecording.value) {
-            stopRecording()
-        } else {
-            startRecording()
-        }
+        if (_isRecording.value) stopRecording() else startRecording()
     }
 
     private fun startRecording() {
@@ -252,64 +288,79 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             var distanceKm = 0.0
             var maxSpeed = 0.0
             var peakRpm = 0.0
-            var count = 0
+            var totalCount = 0
             var prevGps: GpsSnapshot? = null
+            val batch = ArrayList<TelemetrySampleEntity>(10)
 
-            while (_isRecording.value) {
-                val gps = locationTracker.gps.value
-                val vals = _liveValues.value
-                val speed = vals["gps_speed"] ?: gps.speedKmh
-                val rpm = vals["rpm"] ?: 0.0
-                if (speed > maxSpeed) maxSpeed = speed
-                if (rpm > peakRpm) peakRpm = rpm
+            try {
+                while (_isRecording.value) {
+                    val gps = locationTracker.gps.value
+                    val vals = _liveValues.value
+                    val speed = vals["gps_speed"] ?: gps.speedKmh
+                    val rpm = vals["rpm"] ?: 0.0
+                    if (speed > maxSpeed) maxSpeed = speed
+                    if (rpm > peakRpm) peakRpm = rpm
 
-                val prev = prevGps
-                if (prev != null) {
-                    distanceKm += haversineKm(prev.latitude, prev.longitude, gps.latitude, gps.longitude)
-                }
-                prevGps = gps
+                    val prev = prevGps
+                    if (prev != null) {
+                        distanceKm += haversineKm(prev.latitude, prev.longitude, gps.latitude, gps.longitude)
+                    }
+                    prevGps = gps
 
-                val json = TripExporter.encodePayload(vals)
-
-                tripDao.insertSample(
-                    TelemetrySampleEntity(
+                    batch += TelemetrySampleEntity(
                         sessionId = sessionId,
                         timestampMs = System.currentTimeMillis(),
                         latitude = gps.latitude,
                         longitude = gps.longitude,
                         gpsSpeedKmh = speed,
-                        payloadJson = json
+                        payloadJson = TripExporter.encodePayload(vals)
                     )
-                )
-                count++
+                    totalCount++
+
+                    // Batch SQLite transaction every 10 samples (~2.5s) to cut flash/CPU battery draw
+                    if (batch.size >= 10) {
+                        tripDao.insertSamples(batch.toList())
+                        batch.clear()
+                        tripDao.updateSession(
+                            TripSessionEntity(
+                                id = sessionId,
+                                startedAtMs = startMs,
+                                endedAtMs = null,
+                                distanceKm = distanceKm,
+                                maxSpeedKmh = maxSpeed,
+                                peakRpm = peakRpm,
+                                best0100Sec = _timer0100.value.bestRunSec,
+                                sampleCount = totalCount
+                            )
+                        )
+                    }
+                    delay(250L)
+                }
+            } finally {
+                if (batch.isNotEmpty()) {
+                    tripDao.insertSamples(batch.toList())
+                    batch.clear()
+                }
                 tripDao.updateSession(
                     TripSessionEntity(
                         id = sessionId,
                         startedAtMs = startMs,
-                        endedAtMs = null,
+                        endedAtMs = System.currentTimeMillis(),
                         distanceKm = distanceKm,
                         maxSpeedKmh = maxSpeed,
                         peakRpm = peakRpm,
                         best0100Sec = _timer0100.value.bestRunSec,
-                        sampleCount = count
+                        sampleCount = totalCount
                     )
                 )
-                delay(250L)
             }
         }
     }
 
     private fun stopRecording() {
         _isRecording.value = false
-        loggingJob?.cancel()
-        loggingJob = null
         LoggingForegroundService.stop(getApplication())
-        val sid = activeSessionId ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            val existing = tripSessions.value.firstOrNull { it.id == sid } ?: return@launch
-            tripDao.updateSession(existing.copy(endedAtMs = System.currentTimeMillis()))
-            activeSessionId = null
-        }
+        activeSessionId = null
     }
 
     fun exportSession(session: TripSessionEntity, asJson: Boolean) {
@@ -322,7 +373,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // Dynamic Page & Component Management
     fun addPage(title: String, onCreated: (Int) -> Unit) {
         viewModelScope.launch {
             val currentCount = pagesWithWidgets.value.size
@@ -339,9 +389,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deletePage(pageId: Long) {
         viewModelScope.launch {
-            if (pagesWithWidgets.value.size > 1) {
-                hudDao.deletePage(pageId)
-            }
+            if (pagesWithWidgets.value.size > 1) hudDao.deletePage(pageId)
         }
     }
 
@@ -395,8 +443,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             if (idx == -1 || target !in list.indices) return@launch
             val item = list.removeAt(idx)
             list.add(target, item)
-            val reindexed = list.mapIndexed { i, w -> w.copy(sortOrder = i) }
-            hudDao.updateWidgets(reindexed)
+            hudDao.updateWidgets(list.mapIndexed { i, w -> w.copy(sortOrder = i) })
         }
     }
 
@@ -404,7 +451,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { hudDao.deleteWidget(widgetId) }
     }
 
-    // Settings & Custom PIDs
     fun updateWifiEndpoint(host: String, port: Int, useSim: Boolean) {
         viewModelScope.launch {
             prefs.updateWifiEndpoint(host, port)

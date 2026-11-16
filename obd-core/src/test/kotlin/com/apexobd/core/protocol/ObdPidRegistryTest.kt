@@ -51,4 +51,16 @@ class ObdPidRegistryTest {
         assertNull(ObdPidRegistry.decodeMode01Response("0C", listOf("41 0C 1A")))
         assertNull(ObdPidRegistry.decodeMode01Response("0C", listOf("41 05 82")))
     }
+
+    @Test
+    fun `decodeMultiMode01Response extracts multiple CAN PIDs from single frame`() {
+        val readings = ObdPidRegistry.decodeMultiMode01Response(
+            listOf("41 0C 1A F8 0D 54 11 80 10 0B 18")
+        )
+        val byKey = readings.associateBy { it.key }
+        assertEquals(1726.0, byKey["rpm"]!!.value, 0.01)
+        assertEquals(84.0, byKey["obd_speed"]!!.value, 0.01)
+        assertEquals(50.19, byKey["throttle"]!!.value, 0.1)
+        assertEquals(28.4, byKey["maf"]!!.value, 0.01)
+    }
 }

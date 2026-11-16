@@ -10,6 +10,7 @@ import java.io.BufferedInputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import javax.net.SocketFactory
 import kotlin.math.cos
 import kotlin.math.sin
@@ -28,14 +29,14 @@ interface ObdTransport {
 }
 
 /**
- * Wi-Fi ELM327 TCP transport (e.g. 192.168.0.10:35000).
- * Accepts a [socketFactoryProvider] so Android can bind sockets to the Wi-Fi Network
- * even when cellular data is active.
+ * Low-latency Wi-Fi ELM327 TCP transport (default 192.168.0.10:35000).
+ * Uses blocking buffered reads with a short socket read timeout rather than sleep-polling,
+ * returning immediately upon receiving the ELM327 '>' prompt.
  */
 class WifiTcpTransport(
     private val host: String = "192.168.0.10",
     private val port: Int = 35000,
-    private val connectTimeoutMs: Int = 4000,
+    private val connectTimeoutMs: Int = 3500,
     private val socketFactoryProvider: () -> SocketFactory = { SocketFactory.getDefault() }
 ) : ObdTransport {
 
@@ -52,10 +53,10 @@ class WifiTcpTransport(
         try {
             val s = socketFactoryProvider().createSocket()
             s.tcpNoDelay = true
-            s.soTimeout = 500
+            s.soTimeout = 150
             s.connect(InetSocketAddress(host, port), connectTimeoutMs)
             socket = s
-            input = BufferedInputStream(s.getInputStream())
+            input = BufferedInputStream(s.getInputStream(), 2048)
             output = s.getOutputStream()
             _isConnected.value = true
         } catch (t: Throwable) {
@@ -77,9 +78,9 @@ class WifiTcpTransport(
     override suspend fun sendCommand(command: String, timeoutMs: Long): String = withContext(Dispatchers.IO) {
         val out = output ?: throw TransportError.Disconnected("Socket not connected")
         val inp = input ?: throw TransportError.Disconnected("Socket not connected")
+        val sock = socket ?: throw TransportError.Disconnected("Socket not connected")
 
         try {
-            // Drain any stale bytes before sending next command
             while (inp.available() > 0) {
                 inp.read()
             }
@@ -87,10 +88,13 @@ class WifiTcpTransport(
             out.write(payload)
             out.flush()
 
-            val sb = StringBuilder()
+            val sb = StringBuilder(64)
             val deadline = System.currentTimeMillis() + timeoutMs
-            while (System.currentTimeMillis() < deadline) {
-                if (inp.available() > 0) {
+            while (true) {
+                val remaining = deadline - System.currentTimeMillis()
+                if (remaining <= 0L) throw TransportError.Timeout(command)
+                sock.soTimeout = remaining.coerceAtMost(250L).toInt().coerceAtLeast(20)
+                try {
                     val b = inp.read()
                     if (b == -1) throw TransportError.Disconnected("Remote adapter closed socket")
                     val ch = b.toChar()
@@ -98,11 +102,12 @@ class WifiTcpTransport(
                         return@withContext sb.toString()
                     }
                     sb.append(ch)
-                } else {
-                    delay(8)
+                } catch (_: SocketTimeoutException) {
+                    // Loop checks deadline cleanly without spin-sleeping
                 }
             }
-            throw TransportError.Timeout(command)
+            @Suppress("UNREACHABLE_CODE")
+            sb.toString()
         } catch (e: TransportError) {
             if (e is TransportError.Disconnected) disconnect()
             throw e
@@ -114,11 +119,11 @@ class WifiTcpTransport(
 }
 
 /**
- * Deterministic + dynamic physics ELM327 simulator so the full app and tests
- * run without a physical vehicle plugged in.
+ * Deterministic + dynamic physics ELM327 simulator supporting single PIDs,
+ * CAN response-count hints (`010C1`), and CAN multi-PID batching (`010C0D1011`).
  */
 class SimulatedObdTransport(
-    private val responseDelayMs: Long = 12L
+    private val responseDelayMs: Long = 4L
 ) : ObdTransport {
     private val _isConnected = MutableStateFlow(false)
     override val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -162,6 +167,28 @@ class SimulatedObdTransport(
     }
 
     private fun handleMode01(cmd: String): String {
+        val body = cmd.removePrefix("01")
+        // Strip optional trailing CAN expected-response count ('1') when odd-length
+        val pidHexStream = if (body.length % 2 == 1 && body.endsWith("1")) body.dropLast(1) else body
+        if (pidHexStream.length > 2 && pidHexStream.length % 2 == 0) {
+            // Multi-PID CAN response: 41 <pid1><bytes1><pid2><bytes2>...
+            val out = StringBuilder("41")
+            for (i in pidHexStream.indices step 2) {
+                val pid = pidHexStream.substring(i, i + 2)
+                val data = mode01Bytes(pid) ?: return "NO DATA\r"
+                out.append(' ').append(pid)
+                for (b in data) out.append(' ').append("%02X".format(b))
+            }
+            return out.append('\r').toString()
+        }
+        val pid = pidHexStream.take(2)
+        val data = mode01Bytes(pid) ?: return "NO DATA\r"
+        val out = StringBuilder("41 ").append(pid)
+        for (b in data) out.append(' ').append("%02X".format(b))
+        return out.append('\r').toString()
+    }
+
+    private fun mode01Bytes(pid: String): List<Int>? {
         val t = (System.currentTimeMillis() - startMillis) / 1000.0
         val rpm = (2800 + sin(t * 0.9) * 1800 + cos(t * 0.4) * 500).toInt().coerceIn(750, 6800)
         val speed = (74 + sin(t * 0.5) * 32).toInt().coerceIn(0, 180)
@@ -169,65 +196,61 @@ class SimulatedObdTransport(
         val maf = ((12.0 + throttle * 0.52) * 100).toInt()
         val timing = (14.0 + cos(t * 0.9) * 8.0)
 
-        val pid = cmd.substring(2, 4)
         return when (pid) {
-            "00" -> "41 00 BE 3F A8 13\r"
-            "20" -> "41 20 80 07 B0 11\r"
-            "40" -> "41 40 7A D0 00 00\r"
-            "60" -> "41 60 06 00 00 00\r"
-            "80" -> "41 80 00 00 00 00\r"
-            "A0" -> "41 A0 00 00 00 00\r"
-            "01" -> if (dtcsCleared) "41 01 00 07 65 00\r" else "41 01 82 07 65 08\r"
-            "04" -> hex2(0x41, 0x04, (throttle * 255) / 100)
-            "05" -> hex2(0x41, 0x05, 90 + 40) // 90 C
-            "06" -> hex2(0x41, 0x06, 130) // +1.56% STFT
-            "07" -> hex2(0x41, 0x07, 127) // -0.78% LTFT
-            "0B" -> hex2(0x41, 0x0B, (95 + throttle * 0.8).toInt().coerceIn(30, 220)) // MAP kPa
+            "00" -> listOf(0xBE, 0x3F, 0xA8, 0x13)
+            "20" -> listOf(0x80, 0x07, 0xB0, 0x11)
+            "40" -> listOf(0x7A, 0xD0, 0x00, 0x00)
+            "60" -> listOf(0x06, 0x00, 0x00, 0x00)
+            "80" -> listOf(0x00, 0x00, 0x00, 0x00)
+            "A0" -> listOf(0x00, 0x00, 0x00, 0x00)
+            "01" -> if (dtcsCleared) listOf(0x00, 0x07, 0x65, 0x00) else listOf(0x82, 0x07, 0x65, 0x08)
+            "04" -> listOf((throttle * 255) / 100)
+            "05" -> listOf(90 + 40)
+            "06" -> listOf(130)
+            "07" -> listOf(127)
+            "0B" -> listOf((95 + throttle * 0.8).toInt().coerceIn(30, 220))
             "0C" -> {
                 val raw = rpm * 4
-                hex3(0x41, 0x0C, (raw shr 8) and 0xFF, raw and 0xFF)
+                listOf((raw shr 8) and 0xFF, raw and 0xFF)
             }
-            "0D" -> hex2(0x41, 0x0D, speed)
-            "0E" -> hex2(0x41, 0x0E, ((timing + 64.0) * 2.0).toInt().coerceIn(0, 255))
-            "0F" -> hex2(0x41, 0x0F, 34 + 40) // 34 C IAT
-            "10" -> hex3(0x41, 0x10, (maf shr 8) and 0xFF, maf and 0xFF)
-            "11" -> hex2(0x41, 0x11, (throttle * 255) / 100)
-            "21" -> hex3(0x41, 0x21, 0x00, if (dtcsCleared) 0x00 else 0x2A)
-            "2F" -> hex2(0x41, 0x2F, 180) // ~70% fuel
-            "33" -> hex2(0x41, 0x33, 101) // 101 kPa baro
+            "0D" -> listOf(speed)
+            "0E" -> listOf(((timing + 64.0) * 2.0).toInt().coerceIn(0, 255))
+            "0F" -> listOf(34 + 40)
+            "10" -> listOf((maf shr 8) and 0xFF, maf and 0xFF)
+            "11" -> listOf((throttle * 255) / 100)
+            "21" -> listOf(0x00, if (dtcsCleared) 0x00 else 0x2A)
+            "2F" -> listOf(180)
+            "33" -> listOf(101)
             "42" -> {
                 val mv = 14120 + (sin(t * 0.3) * 140).toInt()
-                hex3(0x41, 0x42, (mv shr 8) and 0xFF, mv and 0xFF)
+                listOf((mv shr 8) and 0xFF, mv and 0xFF)
             }
-            "46" -> hex2(0x41, 0x46, 30 + 40) // 30 C ambient
-            "5C" -> hex2(0x41, 0x5C, 96 + 40) // 96 C oil
-            "62" -> hex2(0x41, 0x62, 125 + (throttle * 0.6).toInt())
-            "63" -> hex3(0x41, 0x63, 0x01, 0x2C) // 300 Nm reference torque
-            else -> "NO DATA\r"
+            "46" -> listOf(30 + 40)
+            "5C" -> listOf(96 + 40)
+            "62" -> listOf(125 + (throttle * 0.6).toInt())
+            "63" -> listOf(0x01, 0x2C)
+            else -> null
         }
     }
 
     private fun handleFreezeFrame(cmd: String): String {
         val pid = cmd.substring(2, 4)
         return when (pid) {
-            "02" -> "42 02 01 71\r" // P0171
-            "04" -> "42 04 7A\r"    // 48% load
-            "05" -> "42 05 81\r"    // 89 C
-            "0C" -> "42 0C 26 48\r" // 2450 RPM
-            "0D" -> "42 0D 42\r"    // 66 km/h
-            "06" -> "42 06 97\r"    // +18% STFT
+            "02" -> "42 02 01 71\r"
+            "04" -> "42 04 7A\r"
+            "05" -> "42 05 81\r"
+            "0C" -> "42 0C 26 48\r"
+            "0D" -> "42 0D 42\r"
+            "06" -> "42 06 97\r"
             else -> "NO DATA\r"
         }
     }
 
     private fun handleMode22(cmd: String): String {
         return when (cmd.take(6)) {
-            "221E1C" -> "62 1E 1C 04 88\r" // Trans temp 76.0 C with ((A*256)+B)/10-40
-            "221470" -> "62 14 70 88\r"    // Oil temp 96 C with A-40
+            "221E1C" -> "62 1E 1C 04 88\r"
+            "221470" -> "62 14 70 88\r"
             else -> "NO DATA\r"
         }
     }
-
-    private fun hex2(a: Int, b: Int, c: Int) = "%02X %02X %02X\r".format(a, b, c)
-    private fun hex3(a: Int, b: Int, c: Int, d: Int) = "%02X %02X %02X %02X\r".format(a, b, c, d)
 }

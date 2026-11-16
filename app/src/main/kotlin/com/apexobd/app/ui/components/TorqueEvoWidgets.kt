@@ -22,6 +22,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,6 +49,7 @@ import com.apexobd.app.ui.theme.TabularHeroStyle
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.scheduler.Timer0100State
+import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.MapStyleOptions
@@ -427,19 +429,23 @@ fun MiniMapWidget(gps: GpsSnapshot, accent: Color) {
             val cameraState = rememberCameraPositionState {
                 position = CameraPosition.fromLatLngZoom(pos, 15.5f)
             }
-            cameraState.position = CameraPosition.fromLatLngZoom(pos, 15.5f)
-            GoogleMap(
-                modifier = Modifier.fillMaxSize(),
-                cameraPositionState = cameraState,
-                properties = MapProperties(
-                    mapStyleOptions = MapStyleOptions(DARK_AUTOMOTIVE_MAP_STYLE)
-                ),
-                uiSettings = MapUiSettings(
+            val mapStyle = remember { MapStyleOptions(DARK_AUTOMOTIVE_MAP_STYLE) }
+            val uiSettings = remember {
+                MapUiSettings(
                     zoomControlsEnabled = false,
                     compassEnabled = false,
                     myLocationButtonEnabled = false,
                     mapToolbarEnabled = false
                 )
+            }
+            LaunchedEffect(gps.latitude, gps.longitude) {
+                cameraState.animate(CameraUpdateFactory.newLatLng(pos), durationMs = 350)
+            }
+            GoogleMap(
+                modifier = Modifier.fillMaxSize(),
+                cameraPositionState = cameraState,
+                properties = MapProperties(mapStyleOptions = mapStyle),
+                uiSettings = uiSettings
             ) {
                 if (gps.trail.size >= 2) {
                     Polyline(
