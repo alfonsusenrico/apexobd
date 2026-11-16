@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ApexOBD — 5 Distinct Apps with Dynamic Component Builder</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #06080c;
+      color: #f4f7fb;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 14px 14px 36px;
+    }
+    .num { font-variant-numeric: tabular-nums; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    /* Studio Bar */
+    .studio {
+      width: 100%;
+      max-width: 1180px;
+      background: #10141d;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 16px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .studio-top {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .studio h1 { font-size: 16px; font-weight: 700; }
+    .studio p { font-size: 12px; color: #8b98ab; margin-top: 2px; }
+    .ctrls { display: flex; flex-wrap: wrap; gap: 7px; }
+    .btn {
+      border: 1px solid rgba(255,255,255,0.15); background: #171e2b; color: #f4f7fb;
+      font-size: 12px; font-weight: 600; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    }
+    .btn.active { border-color: #00a8ff; color: #00a8ff; background: rgba(0,168,255,0.14); }
+    .btn.primary { background: #00a8ff; color: #041018; border: none; font-weight: 700; }
+
+    .app-picker {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+    }
+    @media (max-width: 920px) { .app-picker { grid-template-columns: repeat(2, 1fr); } }
+    .app-opt {
+      text-align: left; padding: 10px 11px; border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1); background: #151b26; color: #f4f7fb; cursor: pointer;
+    }
+    .app-opt.active {
+      border-color: #00a8ff; background: rgba(0,168,255,0.14); box-shadow: inset 0 0 0 1px #00a8ff;
+    }
+    .app-opt small { font-size: 10px; font-weight: 700; color: #38bdf8; text-transform: uppercase; display: block; }
+    .app-opt strong { font-size: 13px; display: block; margin-top: 2px; }
+    .app-opt span { font-size: 11px; color: #8b98ab; display: block; margin-top: 2px; line-height: 1.3; }
+
+    /* Phone Shell */
+    .phone {
+      width: 412px; height: 820px; background: #000; border-radius: 38px;
+      border: 8px solid #1e2430; box-shadow: 0 32px 90px rgba(0,0,0,0.85);
+      overflow: hidden; position: relative; display: flex; flex-direction: column;
+      transition: width 0.25s ease, height 0.25s ease;
+    }
+    .phone.landscape { width: 920px; height: 450px; border-radius: 28px; }
+    .phone.mirrored .screen-root { transform: scaleX(-1); }
+
+    .screen-root {
+      flex: 1; width: 100%; height: 100%; position: relative; overflow: hidden;
+      display: flex; flex-direction: column; background: #000;
+    }
+
+    /* App-specific full-bleed backgrounds */
+    .app-bg-map {
+      display: none; position: absolute; inset: 0; z-index: 0;
+    }
+    [data-app="4"] .app-bg-map { display: block; }
+    [data-app="1"] .screen-root { background: #000000; }
+    [data-app="2"] .screen-root { background: radial-gradient(circle at 50% 45%, #131b29 0%, #05070b 80%); }
+    [data-app="3"] .screen-root { background: #090b0f; }
+    [data-app="4"] .screen-root { background: #091322; }
+    [data-app="5"] .screen-root { background: #0c0d10; }
+
+    /* Subtle parked corner trigger */
+    .corner-trigger {
+      position: absolute; top: 8px; right: 10px; z-index: 30;
+      display: flex; gap: 6px; opacity: 0.35; transition: opacity 0.2s;
+    }
+    .corner-trigger:hover, .edit-on .corner-trigger { opacity: 1; }
+    .corner-pill {
+      background: rgba(0,0,0,0.78); border: 1px solid rgba(255,255,255,0.22);
+      color: #fff; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+    }
+
+    /* Horizontal Swipe Pager */
+    .pager-vp {
+      position: relative; z-index: 2; flex: 1; width: 100%; height: 100%; overflow: hidden; touch-action: pan-y;
+    }
+    .pager-track {
+      display: flex; height: 100%; transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .page-slide {
+      flex: 0 0 100%; width: 100%; height: 100%; padding: 12px 14px 28px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-auto-rows: minmax(76px, 1fr);
+      gap: 9px;
+      overflow-y: auto;
+      align-content: start;
+    }
+    .phone.landscape .page-slide {
+      grid-template-columns: repeat(6, 1fr);
+      grid-auto-rows: minmax(78px, 1fr);
+    }
+
+    /* =========================================================================
+       5 COMPLETELY DIFFERENT COMPONENT RENDERING LANGUAGES
+       ========================================================================= */
+    .comp {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 8px;
+      transition: transform 0.15s ease;
+    }
+    .comp.s-1x1 { grid-column: span 1; grid-row: span 1; }
+    .comp.s-2x1 { grid-column: span 2; grid-row: span 1; }
+    .comp.s-2x2 { grid-column: span 2; grid-row: span 2; }
+    .comp.s-4x2 { grid-column: span 4; grid-row: span 2; }
+
+    /* APP 1: TORQUE EVO — Borderless Pure OLED (#000, zero boxes!) */
+    [data-app="1"] .comp {
+      background: transparent;
+      border: none;
+    }
+    [data-app="1"] .comp.type-map {
+      border-radius: 18px;
+      overflow: hidden;
+      padding: 0;
+    }
+
+    /* APP 2: VIRTUAL COCKPIT — OEM Gunmetal Bezels & Circular Pods */
+    [data-app="2"] .comp {
+      background: radial-gradient(circle, #101724 45%, #06090f 100%);
+      border: 2px solid rgba(255,255,255,0.14);
+      box-shadow: inset 0 0 22px rgba(0,0,0,0.85);
+      border-radius: 20px;
+    }
+    [data-app="2"] .comp.type-analog.s-2x2,
+    [data-app="2"] .comp.type-semi.s-2x2 {
+      border-radius: 50%;
+    }
+
+    /* APP 3: PIT-WALL PRO — Sharp Motorsport Engineering Blocks (zero circles!) */
+    [data-app="3"] .comp {
+      background: #12161f;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-left: 3px solid #a3e635;
+      border-radius: 4px;
+      align-items: flex-start;
+      padding: 8px 10px;
+    }
+
+    /* APP 4: COOLWALK GLASS — Translucent Frosted Glass Pods floating over Full-Bleed Map */
+    [data-app="4"] .comp {
+      background: rgba(10, 16, 28, 0.72);
+      backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      border-radius: 20px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+    }
+
+    /* APP 5: ZEN EDITORIAL — Swiss Hairline Typography (no cards, just thin rules!) */
+    [data-app="5"] .comp {
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid rgba(255,255,255,0.13);
+      border-right: 1px solid rgba(255,255,255,0.07);
+      border-radius: 0;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 8px 10px;
+    }
+
+    /* Edit Mode Overlay on Components */
+    .edit-on .comp {
+      outline: 1.5px dashed #00a8ff;
+      outline-offset: -2px;
+      cursor: grab;
+    }
+    .comp-tools {
+      display: none;
+      position: absolute;
+      top: 4px; right: 4px;
+      gap: 3px;
+      z-index: 12;
+    }
+    .edit-on .comp-tools { display: flex; }
+    .t-btn {
+      width: 21px; height: 21px; border-radius: 6px;
+      border: 1px solid rgba(255,255,255,0.28);
+      background: rgba(6,10,16,0.92); color: #fff;
+      font-size: 10px; font-weight: 700; cursor: pointer;
+    }
+    .t-btn.del { color: #ef4444; border-color: #ef4444; }
+
+    /* Add Component Ghost Tile (visible in Edit Mode) */
+    .add-ghost {
+      display: none;
+      border: 1.5px dashed rgba(0,168,255,0.55);
+      border-radius: 14px;
+      background: rgba(0,168,255,0.07);
+      color: #38bdf8;
+      font-size: 12px; font-weight: 700;
+      align-items: center; justify-content: center;
+      cursor: pointer;
+      grid-column: span 2;
+      min-height: 76px;
+    }
+    .edit-on .add-ghost { display: flex; }
+
+    /* Bottom Swipe Dots */
+    .dots-bar {
+      position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
+      z-index: 25; display: flex; gap: 6px; background: rgba(0,0,0,0.6);
+      padding: 4px 10px; border-radius: 999px;
+    }
+    .dot {
+      width: 7px; height: 7px; border-radius: 999px;
+      background: rgba(255,255,255,0.25); cursor: pointer; transition: all 0.2s;
+    }
+    .dot.active { width: 20px; background: #00a8ff; }
+
+    /* Menu & Modals */
+    .canvas-menu {
+      display: none; position: absolute; top: 38px; right: 10px; width: 250px;
+      background: #0b111c; border: 1px solid #00a8ff; border-radius: 14px;
+      padding: 8px; z-index: 40; flex-direction: column; gap: 4px;
+    }
+    .canvas-menu.open { display: flex; }
+    .canvas-menu button {
+      text-align: left; background: transparent; border: none; color: #e2e8f0;
+      padding: 8px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .canvas-menu button:hover { background: rgba(0,168,255,0.16); color: #00a8ff; }
+
+    .modal-bg {
+      display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.82);
+      backdrop-filter: blur(6px); z-index: 50; align-items: flex-end; padding: 12px;
+    }
+    .modal-bg.open { display: flex; }
+    .modal-sheet {
+      width: 100%; background: #0d131d; border: 1px solid #00a8ff; border-radius: 18px;
+      padding: 14px; display: flex; flex-direction: column; gap: 10px; max-height: 90%; overflow-y: auto;
+    }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
+      background: #172030; color: #fff; font-size: 11px; font-weight: 600; cursor: pointer;
+    }
+    .chip.sel { border-color: #00a8ff; background: rgba(0,168,255,0.2); color: #38bdf8; }
+    select.sel-box {
+      width: 100%; padding: 9px; border-radius: 10px; background: #172030;
+      color: #fff; border: 1px solid rgba(255,255,255,0.18); font-size: 12px; font-weight: 600;
+    }
+  </style>
+</head>
+<body data-app="1">
+  <div class="studio">
+    <div class="studio-top">
+      <div>
+        <h1>ApexOBD — 5 Different Apps, Powered by User-Picked Dynamic Components</h1>
+        <p>Swipe left/right between N dynamic pages • Click <strong>Edit Layout</strong> or <strong>+ Pick Component</strong> to drag, resize, change display type, or add any sensor</p>
+      </div>
+      <div class="ctrls">
+        <button class="btn" onclick="prevPage()">← Prev Page</button>
+        <button class="btn" onclick="nextPage()">Next Page →</button>
+        <button class="btn" id="btn-edit" onclick="toggleEdit()">Edit Layout (Drag/Resize)</button>
+        <button class="btn primary" onclick="openBuilder()">+ Pick Component</button>
+        <button class="btn active" id="btn-orient" onclick="toggleOrient()">Landscape</button>
+        <button class="btn" id="btn-mirror" onclick="toggleMirror()">HUD Mirror</button>
+      </div>
+    </div>
+
+    <div class="app-picker">
+      <button class="app-opt active" onclick="pickApp(1, this)">
+        <small>App 1 • Borderless OLED</small>
+        <strong>Torque Evo</strong>
+        <span>Pure #000 void, zero card boxes, blue dials &amp; floating mini-map</span>
+      </button>
+      <button class="app-opt" onclick="pickApp(2, this)">
+        <small>App 2 • OEM Bezels</small>
+        <strong>Virtual Cockpit</strong>
+        <span>Gunmetal circular instrument pods &amp; framed modules</span>
+      </button>
+      <button class="app-opt" onclick="pickApp(3, this)">
+        <small>App 3 • No Round Dials</small>
+        <strong>Pit-Wall Telemetry</strong>
+        <span>Sharp lime-striped engineering bars, scopes &amp; tables</span>
+      </button>
+      <button class="app-opt" onclick="pickApp(4, this)">
+        <small>App 4 • Map-First Glass</small>
+        <strong>Coolwalk Glass</strong>
+        <span>100% live Google Maps backdrop + frosted glass components</span>
+      </button>
+      <button class="app-opt" onclick="pickApp(5, this)">
+        <small>App 5 • Hairline Swiss</small>
+        <strong>Zen Editorial</strong>
+        <span>Thin architectural hairlines &amp; ultra-light typography</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Phone Shell -->
+  <div class="phone landscape" id="phone">
+    <div class="screen-root" id="screen-root">
+      <!-- App 4 Live Map Backdrop -->
+      <svg class="app-bg-map" width="100%" height="100%" viewBox="0 0 920 450" preserveAspectRatio="xMidYMid slice">
+        <rect width="920" height="450" fill="#091526"/>
+        <path d="M0 120 L920 210 M0 330 L920 270 M210 0 L280 450 M630 0 L570 450" stroke="#182a42" stroke-width="18" fill="none"/>
+        <path d="M90 450 Q 330 260, 450 205 T 810 0" stroke="#00e5ff" stroke-width="6" fill="none"/>
+        <circle cx="450" cy="205" r="8" fill="#00e5ff"/>
+        <circle cx="450" cy="205" r="22" fill="rgba(0,229,255,0.22)"/>
+      </svg>
+
+      <!-- Subtle Parked Trigger -->
+      <div class="corner-trigger">
+        <button class="corner-pill" onclick="toggleMenu()">⚙ / +</button>
+      </div>
+
+      <div class="canvas-menu" id="canvas-menu">
+        <button onclick="openBuilder()">+ Pick &amp; Add Component</button>
+        <button onclick="toggleEdit()">✎ Edit / Drag / Resize / Style</button>
+        <button onclick="addNewPage()">+ Add New Blank Page</button>
+        <button onclick="deleteCurrentPage()">🗑 Delete Current Page</button>
+        <button onclick="toggleMirror(); toggleMenu();">⇄ Toggle HUD Mirror</button>
+        <button onclick="openParkedSetup()">🔧 Wi-Fi, Logs &amp; Mode 22</button>
+      </div>
+
+      <!-- Swipeable Horizontal Pager -->
+      <div class="pager-vp" id="pager-vp">
+        <div class="pager-track" id="pager-track"></div>
+      </div>
+
+      <!-- Page Dots -->
+      <div class="dots-bar" id="dots-bar"></div>
+
+      <!-- Dynamic Component Picker Modal -->
+      <div class="modal-bg" id="builder-modal">
+        <div class="modal-sheet">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:14px;">Pick Component for Page <span id="b-pnum">1</span></strong>
+            <button class="btn" onclick="closeModals()">✕</button>
+          </div>
+          <div>
+            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">1. SENSOR / FEATURE</div>
+            <select class="sel-box" id="b-sensor">
+              <option value="rpm">RPM (PID 010C)</option>
+              <option value="gps_speed">GPS Speed (Location)</option>
+              <option value="voltage">Voltage (PID 0142)</option>
+              <option value="iat">Intake Air Temp / IAT (PID 010F)</option>
+              <option value="coolant">Coolant Temp (PID 0105)</option>
+              <option value="throttle">Throttle Position (PID 0111)</option>
+              <option value="maf">Intake Flow / MAF (PID 0110)</option>
+              <option value="timing">Timing Advance (PID 010E)</option>
+              <option value="boost">Boost / MAP (PID 010B)</option>
+              <option value="load">Engine Load (PID 0104)</option>
+              <option value="stft">STFT Fuel Trim (PID 0106)</option>
+              <option value="hp">Calculated Horsepower (HP)</option>
+              <option value="torque">Calculated Torque (Nm)</option>
+              <option value="minimap">Google Mini-Map (Live GPS)</option>
+              <option value="dtc">DTC Checker &amp; Clear (03/07/04)</option>
+              <option value="timer_0100">0–100 km/h Timer</option>
+              <option value="logger">Data Logger Quick-Record</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">2. DISPLAY TYPE</div>
+            <div class="chip-row" id="b-type">
+              <button class="chip sel" data-v="analog">Analog Dial</button>
+              <button class="chip" data-v="semi">Semi-Digital</button>
+              <button class="chip" data-v="digital">Digital</button>
+              <button class="chip" data-v="bar">Bar / Line</button>
+              <button class="chip" data-v="chart">Chart / Scope</button>
+              <button class="chip" data-v="map">Map / Widget</button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">3. COMPONENT SIZE</div>
+            <div class="chip-row" id="b-size">
+              <button class="chip sel" data-v="1x1">1×1 Small</button>
+              <button class="chip" data-v="2x1">2×1 Wide</button>
+              <button class="chip" data-v="2x2">2×2 Large</button>
+            </div>
+          </div>
+          <button class="btn primary" style="padding:10px;" onclick="addCustomWidget()">Add Component to Canvas</button>
+        </div>
+      </div>
+
+      <!-- Parked Setup Sheet -->
+      <div class="modal-bg" id="setup-modal">
+        <div class="modal-sheet">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:14px;">Parked Setup (Wi-Fi, Logs &amp; Mode 22)</strong>
+            <button class="btn" onclick="closeModals()">✕</button>
+          </div>
+          <div style="font-size:12px; color:#8b98ab; line-height:1.5;">
+            <div><strong>Wi-Fi ELM327:</strong> 192.168.0.10:35000 (Auto-Bind Wi-Fi)</div>
+            <div><strong>Mode 09 VIN:</strong> JTDKN3DU5A0123456 • 64/104 PIDs active</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" style="flex:1;" onclick="alert('Exports CSV telemetry log')">Export CSV</button>
+            <button class="btn" style="flex:1;" onclick="alert('Exports JSON + GPS route')">Export JSON</button>
+            <button class="btn" style="flex:1;" onclick="alert('Opens Torque CSV / Mode 22 importer')">Import PIDs</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SENSORS = {
+      rpm:       { label: 'RPM',         pid: '010C', unit: 'RPM',  min: 0,   max: 7000, val: 3420, hist: [45,42,38,32,28,34,26] },
+      gps_speed: { label: 'GPS Speed',   pid: 'GPS',  unit: 'km/h', min: 0,   max: 240,  val: 84,   hist: [60,58,54,50,46,44,42] },
+      voltage:   { label: 'Voltage',     pid: '0142', unit: 'V',    min: 10,  max: 16,   val: 14.1, hist: [30,30,31,30,29,30,30] },
+      iat:       { label: 'IAT',         pid: '010F', unit: '°C',   min: -10, max: 80,   val: 34,   hist: [50,50,49,49,48,48,48] },
+      coolant:   { label: 'Coolant',     pid: '0105', unit: '°C',   min: 40,  max: 120,  val: 90,   hist: [40,39,38,38,37,37,37] },
+      throttle:  { label: 'Throttle',    pid: '0111', unit: '%',    min: 0,   max: 100,  val: 38,   hist: [55,48,42,36,44,38,40] },
+      maf:       { label: 'Intake Flow', pid: '0110', unit: 'g/s',  min: 0,   max: 180,  val: 28.4, hist: [52,46,41,35,43,39,40] },
+      timing:    { label: 'Timing Adv',  pid: '010E', unit: '°',    min: -10, max: 45,   val: 16.5, hist: [40,42,38,44,41,39,40] },
+      boost:     { label: 'Boost',       pid: '010B', unit: 'bar',  min: -1,  max: 2,    val: 0.65, hist: [50,46,42,36,40,38,39] },
+      load:      { label: 'Engine Load', pid: '0104', unit: '%',    min: 0,   max: 100,  val: 46,   hist: [48,44,40,38,42,41,40] },
+      stft:      { label: 'STFT B1',     pid: '0106', unit: '%',    min: -25, max: 25,   val: 1.4,  hist: [45,46,44,45,43,45,44] },
+      hp:        { label: 'Horsepower',  pid: 'CALC', unit: 'HP',   min: 0,   max: 300,  val: 118,  hist: [55,50,44,38,42,40,41] },
+      torque:    { label: 'Torque',      pid: 'CALC', unit: 'Nm',   min: 0,   max: 450,  val: 242,  hist: [48,45,42,39,41,40,40] },
+      minimap:   { label: 'Google Mini-Map', pid: 'GPS', unit: '',  min: 0, max: 1, val: 0, hist: [] },
+      dtc:       { label: 'DTC Checker', pid: '03/07', unit: '',    min: 0, max: 1, val: 0, hist: [] },
+      timer_0100:{ label: '0–100 km/h',  pid: 'PERF', unit: 's',    min: 0, max: 20, val: 6.84, hist: [] },
+      logger:    { label: 'Data Logger', pid: 'LOG',  unit: '',     min: 0, max: 1, val: 0, hist: [] }
+    };
+
+    const APP_ACCENT = { 1: '#00a8ff', 2: '#38bdf8', 3: '#a3e635', 4: '#00e5ff', 5: '#f4f7fb' };
+
+    // EVERY APP HAS ITS OWN DYNAMIC PAGE/COMPONENT ARRAY (User can add/drag/resize/swap display type!)
+    const PAGES = [
+      // Page 1: Daily Tracking (All 8 user sensors + Google Mini-Map)
+      [
+        { id: 1, sensor: 'rpm',       type: 'analog',  size: '2x2' },
+        { id: 2, sensor: 'gps_speed', type: 'semi',    size: '2x2' },
+        { id: 3, sensor: 'minimap',   type: 'map',     size: '2x2' },
+        { id: 4, sensor: 'voltage',   type: 'digital', size: '1x1' },
+        { id: 5, sensor: 'coolant',   type: 'digital', size: '1x1' },
+        { id: 6, sensor: 'iat',       type: 'digital', size: '1x1' },
+        { id: 7, sensor: 'timing',    type: 'digital', size: '1x1' },
+        { id: 8, sensor: 'throttle',  type: 'bar',     size: '1x1' },
+        { id: 9, sensor: 'maf',       type: 'chart',   size: '1x1' }
+      ],
+      // Page 2: DTC Checker
+      [
+        { id: 21, sensor: 'dtc',     type: 'map',     size: '4x2' },
+        { id: 22, sensor: 'stft',    type: 'chart',   size: '2x1' },
+        { id: 23, sensor: 'coolant', type: 'bar',     size: '1x1' },
+        { id: 24, sensor: 'voltage', type: 'digital', size: '1x1' }
+      ],
+      // Page 3: Performance (HP / Torque / 0-100 / Logger)
+      [
+        { id: 31, sensor: 'hp',         type: 'analog',  size: '2x2' },
+        { id: 32, sensor: 'torque',     type: 'analog',  size: '2x2' },
+        { id: 33, sensor: 'timer_0100', type: 'map',     size: '2x1' },
+        { id: 34, sensor: 'logger',     type: 'map',     size: '2x1' },
+        { id: 35, sensor: 'rpm',        type: 'chart',   size: '2x1' }
+      ]
+    ];
+
+    let currentApp = 1;
+    let activePage = 0;
+    let isEdit = false;
+    let isRec = false;
+    let dragId = null;
+
+    function accent() { return APP_ACCENT[currentApp]; }
+
+    function renderCompBody(w) {
+      const s = SENSORS[w.sensor];
+      const acc = accent();
+      const pct = Math.min(100, Math.max(0, ((s.val - s.min) / (s.max - s.min)) * 100));
+
+      if (w.sensor === 'minimap') {
+        return `<div style="width:100%; height:100%; min-height:110px; border-radius:12px; overflow:hidden; position:relative; background:#081220;">
+          <svg width="100%" height="100%" viewBox="0 0 260 140" preserveAspectRatio="none">
+            <path d="M0 98 L260 50 M75 0 L110 140 M195 0 L175 140" stroke="#18283e" stroke-width="8" fill="none"/>
+            <path d="M20 120 Q 100 78, 138 62 T 242 20" stroke="${acc}" stroke-width="4" fill="none" stroke-linecap="round"/>
+            <circle cx="138" cy="62" r="5" fill="${acc}"/>
+            <circle cx="138" cy="62" r="14" fill="${acc}" opacity="0.22"/>
+          </svg>
+          <span style="position:absolute; bottom:5px; left:8px; font-size:9px; color:${acc}; font-weight:700;">Google Mini-Map • Live GPS</span>
+        </div>`;
+      }
+
+      if (w.sensor === 'dtc') {
+        return `<div style="width:100%; display:flex; flex-direction:column; gap:6px;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:12px; color:${acc};">Live DTC Checker (03 / 07 / 0A)</strong>
+            <button class="btn" style="padding:3px 9px; font-size:10px; border-color:#ef4444; color:#ef4444;" onclick="alert('Sends OBD Mode 04 Clear DTCs')">Clear (04)</button>
+          </div>
+          <div style="padding:7px 9px; border-left:3px solid #ef4444; background:rgba(239,68,68,0.13); border-radius:6px; font-size:11px;">
+            <strong class="mono">P0171</strong> • System Too Lean (Bank 1)
+          </div>
+          <div style="font-size:10px; color:#22c55e;">Monitors: ✓ Misfire • ✓ Fuel • ✓ Catalyst • ● O2</div>
+        </div>`;
+      }
+
+      if (w.sensor === 'timer_0100') {
+        return `<div style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+          <div><div style="font-size:9px; color:#8b98ab; font-weight:700;">0–100 KM/H</div>
+          <div class="num" style="font-size:24px; font-weight:800; color:${acc};">6.84 <span style="font-size:11px; color:#8b98ab;">sec</span></div></div>
+          <span style="font-size:10px; color:#22c55e; font-weight:700;">ARMED</span>
+        </div>`;
+      }
+
+      if (w.sensor === 'logger') {
+        return `<div style="width:100%; display:flex; justify-content:space-between; align-items:center;">
+          <div><div style="font-size:9px; color:#8b98ab; font-weight:700;">DATA LOGGER</div>
+          <div style="font-size:12px; font-weight:700; color:${isRec ? '#ef4444' : '#f4f7fb'};">${isRec ? '● Recording 24Hz' : 'Ready (Tap)'}</div></div>
+          <button class="btn" style="padding:4px 9px; font-size:10px;" onclick="isRec=!isRec; renderPager();">${isRec ? 'Stop' : '● REC'}</button>
+        </div>`;
+      }
+
+      // App 3 never uses circular dials (uses engineering bar/digital instead if analog selected, or clean linear arc)
+      const effectiveType = (currentApp === 3 && (w.type === 'analog' || w.type === 'semi')) ? 'bar' : w.type;
+
+      if (effectiveType === 'analog') {
+        const ang = -125 + (pct / 100) * 250;
+        const off = Math.round(212 - (pct / 100) * 212);
+        return `<div style="font-size:9px; color:${acc}; font-weight:700; text-transform:uppercase;">${s.label}</div>
+          <svg width="132" height="96" viewBox="0 0 132 96">
+            <path d="M 18 84 A 48 48 0 1 1 114 84" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="7" stroke-linecap="round"/>
+            <path class="live-arc" data-s="${w.sensor}" data-max="212" d="M 18 84 A 48 48 0 1 1 114 84" fill="none" stroke="${acc}" stroke-width="7" stroke-linecap="round"
+              stroke-dasharray="212" stroke-dashoffset="${off}"/>
+            <g class="live-needle" data-s="${w.sensor}" transform="translate(66,58) rotate(${ang})">
+              <line x1="0" y1="5" x2="0" y2="-38" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>
+              <circle cx="0" cy="0" r="3.8" fill="${acc}"/>
+            </g>
+          </svg>
+          <div class="num" style="font-size:19px; font-weight:800; margin-top:-12px;">
+            <span class="live-val" data-s="${w.sensor}">${s.val}</span> <span style="font-size:10px; color:#8b98ab;">${s.unit}</span>
+          </div>`;
+      }
+
+      if (effectiveType === 'semi') {
+        const off = Math.round(145 - (pct / 100) * 145);
+        return `<div style="font-size:9px; color:${acc}; font-weight:700; text-transform:uppercase;">${s.label}</div>
+          <svg width="124" height="70" viewBox="0 0 124 70">
+            <path d="M 14 62 A 48 48 0 0 1 110 62" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="9" stroke-linecap="round"/>
+            <path class="live-arc" data-s="${w.sensor}" data-max="145" d="M 14 62 A 48 48 0 0 1 110 62" fill="none" stroke="${acc}" stroke-width="9" stroke-linecap="round"
+              stroke-dasharray="145" stroke-dashoffset="${off}"/>
+          </svg>
+          <div class="num" style="font-size:24px; font-weight:800; margin-top:-20px;">
+            <span class="live-val" data-s="${w.sensor}">${s.val}</span><span style="font-size:10px; color:#8b98ab;"> ${s.unit}</span>
+          </div>`;
+      }
+
+      if (effectiveType === 'bar') {
+        return `<div style="width:100%;">
+          <div style="font-size:9px; color:${acc}; font-weight:700; text-transform:uppercase;">${s.label}</div>
+          <div class="num" style="font-size:20px; font-weight:800; margin-top:2px;">
+            <span class="live-val" data-s="${w.sensor}">${s.val}</span><span style="font-size:10px; color:#8b98ab;"> ${s.unit}</span>
+          </div>
+          <div style="height:7px; background:rgba(255,255,255,0.1); border-radius:99px; margin-top:6px; overflow:hidden;">
+            <div class="live-bar" data-s="${w.sensor}" style="height:100%; width:${pct}%; background:${acc};"></div>
+          </div></div>`;
+      }
+
+      if (effectiveType === 'chart') {
+        return `<div style="width:100%;">
+          <div style="font-size:9px; color:${acc}; font-weight:700; text-transform:uppercase;">
+            ${s.label} • <span class="live-val" data-s="${w.sensor}">${s.val}</span>${s.unit}
+          </div>
+          <svg width="100%" height="34" viewBox="0 0 120 36" preserveAspectRatio="none" style="margin-top:4px;">
+            <polyline class="live-chart" data-s="${w.sensor}" fill="none" stroke="${acc}" stroke-width="2"
+              points="${s.hist.map((y,i)=>`${i*20},${Math.round(y*0.65)}`).join(' ')}"/>
+          </svg></div>`;
+      }
+
+      const heroSize = currentApp === 5 ? '28px' : '22px';
+      const weight = currentApp === 5 ? '300' : '800';
+      return `<div style="font-size:9px; color:${acc}; font-weight:700; text-transform:uppercase;">${s.label}</div>
+        <div class="num" style="font-size:${heroSize}; font-weight:${weight}; margin-top:2px;">
+          <span class="live-val" data-s="${w.sensor}">${s.val}</span><span style="font-size:10px; color:#8b98ab; margin-left:2px;">${s.unit}</span>
+        </div>`;
+    }
+
+    function renderPager() {
+      const track = document.getElementById('pager-track');
+      const dots = document.getElementById('dots-bar');
+      track.innerHTML = '';
+      dots.innerHTML = '';
+
+      PAGES.forEach((widgets, pIdx) => {
+        const dot = document.createElement('span');
+        dot.className = 'dot' + (pIdx === activePage ? ' active' : '');
+        dot.onclick = () => goToPage(pIdx);
+        dots.appendChild(dot);
+
+        const slide = document.createElement('div');
+        slide.className = 'page-slide';
+        widgets.forEach(w => {
+          const el = document.createElement('div');
+          el.className = `comp s-${w.size} type-${w.type}`;
+          el.draggable = isEdit;
+          el.innerHTML = `
+            <div class="comp-tools">
+              <button class="t-btn" title="Cycle Display Type" onclick="cycleType(${pIdx}, ${w.id})">◐</button>
+              <button class="t-btn" title="Cycle Size" onclick="cycleSize(${pIdx}, ${w.id})">⤢</button>
+              <button class="t-btn del" title="Remove" onclick="removeWidget(${pIdx}, ${w.id})">×</button>
+            </div>
+            ${renderCompBody(w)}
+          `;
+          el.addEventListener('dragstart', () => { dragId = w.id; });
+          el.addEventListener('dragover', e => e.preventDefault());
+          el.addEventListener('drop', () => {
+            if (!isEdit || dragId === null || dragId === w.id) return;
+            const a = widgets.findIndex(x => x.id === dragId);
+            const b = widgets.findIndex(x => x.id === w.id);
+            const [m] = widgets.splice(a, 1);
+            widgets.splice(b, 0, m);
+            renderPager();
+          });
+          slide.appendChild(el);
+        });
+
+        const ghost = document.createElement('button');
+        ghost.className = 'add-ghost';
+        ghost.textContent = '+ Pick & Add Component';
+        ghost.onclick = openBuilder;
+        slide.appendChild(ghost);
+
+        track.appendChild(slide);
+      });
+      track.style.transform = `translateX(-${activePage * 100}%)`;
+    }
+
+    // In-place live updates (never destroys DOM during drag/swipe!)
+    function updateLiveValues() {
+      document.querySelectorAll('.live-val').forEach(el => {
+        const s = SENSORS[el.dataset.s];
+        if (s) el.textContent = s.val;
+      });
+      document.querySelectorAll('.live-arc').forEach(el => {
+        const s = SENSORS[el.dataset.s];
+        const maxDash = parseFloat(el.dataset.max);
+        const pct = Math.min(1, Math.max(0, (s.val - s.min) / (s.max - s.min)));
+        el.setAttribute('stroke-dashoffset', Math.round(maxDash - pct * maxDash));
+      });
+      document.querySelectorAll('.live-needle').forEach(el => {
+        const s = SENSORS[el.dataset.s];
+        const pct = Math.min(1, Math.max(0, (s.val - s.min) / (s.max - s.min)));
+        el.setAttribute('transform', `translate(66,58) rotate(${-125 + pct * 250})`);
+      });
+      document.querySelectorAll('.live-bar').forEach(el => {
+        const s = SENSORS[el.dataset.s];
+        const pct = Math.min(100, Math.max(0, ((s.val - s.min) / (s.max - s.min)) * 100));
+        el.style.width = pct.toFixed(0) + '%';
+      });
+      document.querySelectorAll('.live-chart').forEach(el => {
+        const s = SENSORS[el.dataset.s];
+        el.setAttribute('points', s.hist.map((y,i)=>`${i*20},${Math.round(y*0.65)}`).join(' '));
+      });
+    }
+
+    function pickApp(n, btn) {
+      currentApp = n;
+      document.body.setAttribute('data-app', String(n));
+      document.querySelectorAll('.app-opt').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderPager();
+    }
+
+    function cycleType(pIdx, id) {
+      const w = PAGES[pIdx].find(x => x.id === id);
+      const types = ['analog', 'semi', 'digital', 'bar', 'chart'];
+      w.type = types[(types.indexOf(w.type) + 1) % types.length];
+      renderPager();
+    }
+    function cycleSize(pIdx, id) {
+      const w = PAGES[pIdx].find(x => x.id === id);
+      const sizes = ['1x1', '2x1', '2x2'];
+      w.size = sizes[(sizes.indexOf(w.size) + 1) % sizes.length];
+      renderPager();
+    }
+    function removeWidget(pIdx, id) {
+      PAGES[pIdx] = PAGES[pIdx].filter(x => x.id !== id);
+      renderPager();
+    }
+
+    function toggleEdit() {
+      isEdit = !isEdit;
+      document.getElementById('screen-root').classList.toggle('edit-on', isEdit);
+      document.getElementById('btn-edit').classList.toggle('active', isEdit);
+      document.getElementById('canvas-menu').classList.remove('open');
+      renderPager();
+    }
+
+    function goToPage(idx) {
+      activePage = Math.max(0, Math.min(PAGES.length - 1, idx));
+      document.getElementById('pager-track').style.transform = `translateX(-${activePage * 100}%)`;
+      document.querySelectorAll('.dot').forEach((d, i) => d.classList.toggle('active', i === activePage));
+    }
+    function prevPage() { goToPage(activePage - 1); }
+    function nextPage() { goToPage(activePage + 1); }
+
+    const vp = document.getElementById('pager-vp');
+    let startX = null;
+    vp.addEventListener('pointerdown', e => { if (!isEdit) startX = e.clientX; });
+    vp.addEventListener('pointerup', e => {
+      if (isEdit || startX === null) return;
+      const dx = e.clientX - startX;
+      startX = null;
+      if (dx < -45) nextPage();
+      else if (dx > 45) prevPage();
+    });
+
+    function toggleMenu() { document.getElementById('canvas-menu').classList.toggle('open'); }
+    function addNewPage() {
+      PAGES.push([
+        { id: Date.now(), sensor: 'rpm', type: 'analog', size: '2x2' },
+        { id: Date.now() + 1, sensor: 'gps_speed', type: 'digital', size: '2x1' }
+      ]);
+      activePage = PAGES.length - 1;
+      document.getElementById('canvas-menu').classList.remove('open');
+      renderPager();
+    }
+    function deleteCurrentPage() {
+      if (PAGES.length <= 1) return alert('At least 1 page is required.');
+      PAGES.splice(activePage, 1);
+      activePage = Math.max(0, activePage - 1);
+      document.getElementById('canvas-menu').classList.remove('open');
+      renderPager();
+    }
+
+    function openBuilder() {
+      document.getElementById('canvas-menu').classList.remove('open');
+      document.getElementById('b-pnum').textContent = activePage + 1;
+      document.getElementById('builder-modal').classList.add('open');
+    }
+    function openParkedSetup() {
+      document.getElementById('canvas-menu').classList.remove('open');
+      document.getElementById('setup-modal').classList.add('open');
+    }
+    function closeModals() { document.querySelectorAll('.modal-bg').forEach(m => m.classList.remove('open')); }
+
+    document.querySelectorAll('.chip-row').forEach(r => {
+      r.addEventListener('click', e => {
+        if (!e.target.classList.contains('chip')) return;
+        r.querySelectorAll('.chip').forEach(c => c.classList.remove('sel'));
+        e.target.classList.add('sel');
+      });
+    });
+
+    function addCustomWidget() {
+      const sensor = document.getElementById('b-sensor').value;
+      const type = document.querySelector('#b-type .sel').dataset.v;
+      const size = document.querySelector('#b-size .sel').dataset.v;
+      PAGES[activePage].push({ id: Date.now(), sensor, type, size });
+      closeModals();
+      renderPager();
+    }
+
+    function toggleOrient() {
+      const p = document.getElementById('phone');
+      const l = p.classList.toggle('landscape');
+      document.getElementById('btn-orient').textContent = l ? 'Landscape' : 'Portrait';
+      document.getElementById('btn-orient').classList.toggle('active', l);
+    }
+    function toggleMirror() {
+      const p = document.getElementById('phone');
+      const m = p.classList.toggle('mirrored');
+      document.getElementById('btn-mirror').textContent = m ? 'HUD Mirror: On' : 'HUD Mirror';
+      document.getElementById('btn-mirror').classList.toggle('active', m);
+    }
+
+    let tick = 0;
+    setInterval(() => {
+      tick += 0.25;
+      SENSORS.rpm.val = Math.round(3000 + Math.sin(tick) * 1650);
+      SENSORS.gps_speed.val = Math.round(78 + Math.sin(tick * 0.7) * 24);
+      SENSORS.throttle.val = Math.min(98, Math.max(10, Math.round(36 + Math.sin(tick) * 30)));
+      SENSORS.maf.val = parseFloat((14 + SENSORS.throttle.val * 0.42).toFixed(1));
+      SENSORS.timing.val = parseFloat((12 + Math.cos(tick) * 8).toFixed(1));
+      SENSORS.voltage.val = parseFloat((14.0 + Math.sin(tick * 0.3) * 0.2).toFixed(1));
+      SENSORS.iat.val = Math.round(33 + Math.sin(tick * 0.2) * 2);
+      SENSORS.hp.val = Math.round(SENSORS.maf.val * 4.1);
+      SENSORS.torque.val = Math.round((SENSORS.hp.val * 7127) / Math.max(1000, SENSORS.rpm.val));
+
+      ['rpm', 'gps_speed', 'throttle', 'maf', 'timing', 'hp', 'torque'].forEach(k => {
+        const s = SENSORS[k];
+        const pct = (s.val - s.min) / (s.max - s.min);
+        s.hist.shift();
+        s.hist.push(Math.round(52 - pct * 44));
+      });
+      updateLiveValues();
+    }, 260);
+
+    renderPager();
+  </script>
+</body>
+</html>

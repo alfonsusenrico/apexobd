@@ -1,0 +1,24 @@
+# Gradle & Android
+.gradle/
+build/
+*/build/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+captures/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Local continuity & secrets
+PROJECT_STATE.md
+JOURNAL.md
+.env
+*.keystore
+*.jks
