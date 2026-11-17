@@ -35,9 +35,11 @@ data class PidDefinition(
     companion object {
         fun defaultQuantityForUnit(unit: String): SensorQuantity = when (unit) {
             "km/h" -> SensorQuantity.SPEED
+            "km" -> SensorQuantity.DISTANCE_KM
             "°C" -> SensorQuantity.TEMPERATURE
             "kPa" -> SensorQuantity.PRESSURE_KPA
             "g/s" -> SensorQuantity.AIRFLOW_GS
+            "L/h" -> SensorQuantity.FUEL_FLOW_LPH
             "Nm" -> SensorQuantity.TORQUE_NM
             else -> SensorQuantity.RAW
         }

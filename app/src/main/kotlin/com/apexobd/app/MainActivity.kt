@@ -12,7 +12,7 @@ import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.apexobd.app.ui.HudCanvasScreen
+import com.apexobd.app.ui.ApexAppRoot
 import com.apexobd.app.ui.HudViewModel
 import com.apexobd.app.ui.theme.TorqueEvoTheme
 
@@ -35,11 +35,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Immersive fullscreen HUD feel
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        insetsController.hide(WindowInsetsCompat.Type.systemBars())
 
         val perms = buildList {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -59,7 +57,16 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             TorqueEvoTheme {
-                HudCanvasScreen(viewModel = viewModel)
+                ApexAppRoot(
+                    viewModel = viewModel,
+                    onSystemChromeVisibility = { showSystemBars ->
+                        if (showSystemBars) {
+                            insetsController.show(WindowInsetsCompat.Type.systemBars())
+                        } else {
+                            insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                        }
+                    }
+                )
             }
         }
     }

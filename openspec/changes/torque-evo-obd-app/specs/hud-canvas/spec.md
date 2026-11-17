@@ -1,35 +1,27 @@
 # hud-canvas Specification
 
 ## Purpose
-Zero-navigation-chrome, swipeable N-page Torque Evo HUD canvas with dynamic user-created components, drag-and-drop editing, and HUD Mirror Mode.
+2-page driving UX: static/summary Home Menu (`#07090D`) and blank-default pure `#000000` zero-button N-page HUD Canvas with hold-tap hidden context menu, `8×4`/`4×8` Grid Snap + Freeform XY drag, dual optional Maps (`MapLibre Offline` / `Google Maps Online` / `Track Only`), and automotive-refined gauges.
 
 ## ADDED Requirements
 
-### Requirement: Zero-Chrome Swipeable N-Page Driving Canvas
-The application SHALL launch directly onto a pure `#000000` OLED fullscreen `HorizontalPager` displaying `N` user-configured pages without persistent bottom navigation bars or top tabs, allowing horizontal swiping between pages and dynamic page creation/deletion.
+### Requirement: 2-Page Architecture (Static Home Menu + Blank-Default Zero-Button HUD Canvas)
+The application SHALL separate Page 1 (`Home Menu` showing only static summary data and vehicle management with live OBD polling paused while idle on Home) from Page 2 (`HUD Canvas` starting blank with zero persistent chrome and revealing its menu only on long-press anywhere).
 
-#### Scenario: Swiping across user-configured driving pages
-- **WHEN** the user swipes horizontally on the HUD canvas
-- **THEN** the pager transitions smoothly between Page 1 (Tracking), Page 2 (DTC Checker), Page 3 (Performance HP/Torque), and any additional user-created pages
+#### Scenario: Blank default HUD and hold-tap context menu
+- **WHEN** the user opens the HUD Canvas for the first time and long-presses anywhere on the screen
+- **THEN** no default widgets or visible buttons clutter the screen, and the hidden context menu opens with `+ Add New Component`, `Move / Edit Components`, `Toggle Grid Snap`, `+ Add New Page`, persisted `Pause Fuel Avg`, and `← Back to Home Menu`
 
-#### Scenario: Adding a new blank page
-- **WHEN** the user selects "+ Add New Blank Page" from the canvas menu
-- **THEN** a new page is persisted in Room and immediately opened as the active swipe page
+### Requirement: Proportional Grid-Snap & Freeform XY Component Layout
+The HUD Canvas SHALL lay out components proportionally across `8×4` (Landscape) / `4×8` (Portrait) snap cells when Grid Snap is active, and SHALL support freeform XY pixel positioning when Grid Snap is toggled off, using horizontal baseline `value + inline unit` automotive typography across Radial Dial, Semi-Arc, Digital Tile, Line Bar, Area Chart, and Special Widgets (Available PIDs & Derived Sensors only).
 
-### Requirement: Dynamic Component Catalog, Display Types, and Sizes
-Each widget on any page SHALL be configurable by Sensor/Feature, Display Type (`Analog Dial`, `Semi-Digital`, `Digital`, `Bar`, `Chart`, `Special Widget`), and Size (`1x1`, `2x1`, `2x2`, `4x2`), rendered in the Torque Evo `#000000` + `#00A8FF` borderless aesthetic with `tabular-nums` typography.
+#### Scenario: Filtering picker to supported vehicle telemetry
+- **WHEN** connected to an ECU whose bitmask supports 16 Mode `01` PIDs
+- **THEN** the component picker offers only those 16 Mode `01` PIDs plus derivable calculated sensors and phone GPS/IMU sensors
 
-#### Scenario: Adding and morphing a component
-- **WHEN** the user opens the Component Picker, picks `Intake Flow / MAF`, `Chart`, and `2x1`, or taps `◐` in Edit Mode to cycle display types
-- **THEN** the widget renders immediately on the active page and persists across app restarts
+### Requirement: Dual Optional Maps, External Navigation, and HUD Mirror Mode
+The HUD Mini-Map and Home Last Run card SHALL support configurable map backends (`MapLibre Offline Vector` with local bounding-box & zoom downloader, optional `Google Maps Online` using `MAPS_API_KEY`, or `OLED Track Only`), a one-tap external `Navigate ↗` intent, and horizontal `HUD Mirror Mode`.
 
-#### Scenario: Drag-and-drop reordering and resizing in Edit Mode
-- **WHEN** the user activates Edit Mode, drags a widget to a new slot, or cycles its size (`⤢`)
-- **THEN** the page layout updates immediately and saves the new order and span to Room
-
-### Requirement: Embedded Google Mini-Map and HUD Mirror Mode
-The HUD SHALL provide a `Google Mini-Map` component that renders live GPS position and route trail, and SHALL support toggling horizontal `HUD Mirror Mode` for windshield reflection as well as Landscape/Portrait orientation and screen wake-lock while connected.
-
-#### Scenario: HUD Mirror Mode reflection
-- **WHEN** the user enables HUD Mirror Mode
-- **THEN** the entire HUD canvas flips horizontally (`scaleX = -1f`) while preserving live gauge updates
+#### Scenario: Dual Wi-Fi OBD and offline/online map operation
+- **WHEN** the user selects `MapLibre Offline` or `Google Maps Online` while connected to Wi-Fi ELM327
+- **THEN** OBD sockets bind to Wi-Fi while online maps request simultaneous cellular data or offline tiles render cleanly without API failures

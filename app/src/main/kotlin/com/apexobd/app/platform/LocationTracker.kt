@@ -2,7 +2,9 @@ package com.apexobd.app.platform
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.location.Location
+import android.net.Uri
 import android.os.Looper
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -20,6 +22,8 @@ data class GpsSnapshot(
     val longitude: Double = 106.8456,
     val speedKmh: Double = 0.0,
     val bearingDeg: Float = 0f,
+    val altitudeMeters: Double = 0.0,
+    val roadGradePct: Double = 0.0,
     val hasRealFix: Boolean = false,
     val trail: List<Pair<Double, Double>> = emptyList()
 )
@@ -30,21 +34,39 @@ class LocationTracker(context: Context) {
     private val _gps = MutableStateFlow(GpsSnapshot())
     val gps: StateFlow<GpsSnapshot> = _gps.asStateFlow()
 
-    private val trailBuffer = ArrayDeque<Pair<Double, Double>>(100)
+    private val trailBuffer = ArrayDeque<Pair<Double, Double>>(250)
     private var simTick = 0.0
     private var updatesRunning = false
     private var currentIntervalMs = 500L
+    private var lastGradeLoc: Location? = null
+    private var lastGradePct = 0.0
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc: Location = result.lastLocation ?: return
             val speedKmh = if (loc.hasSpeed()) loc.speed * 3.6 else 0.0
+            if (loc.hasAltitude()) {
+                val prev = lastGradeLoc
+                if (prev != null && prev.hasAltitude()) {
+                    val distM = prev.distanceTo(loc).toDouble()
+                    if (distM >= 20.0) {
+                        val dAlt = loc.altitude - prev.altitude
+                        lastGradePct = ((dAlt / distM) * 100.0).coerceIn(-25.0, 25.0)
+                        lastGradeLoc = loc
+                    }
+                } else {
+                    lastGradeLoc = loc
+                }
+            }
+
             appendTrailIfMoved(loc.latitude, loc.longitude)
             _gps.value = GpsSnapshot(
                 latitude = loc.latitude,
                 longitude = loc.longitude,
                 speedKmh = speedKmh,
                 bearingDeg = if (loc.hasBearing()) loc.bearing else 0f,
+                altitudeMeters = if (loc.hasAltitude()) loc.altitude else 0.0,
+                roadGradePct = lastGradePct,
                 hasRealFix = true,
                 trail = trailBuffer.toList()
             )
@@ -93,11 +115,25 @@ class LocationTracker(context: Context) {
 
     private fun appendTrailIfMoved(lat: Double, lon: Double) {
         val last = trailBuffer.lastOrNull()
-        // ~4m threshold avoids piling up stationary points while idling
         if (last != null && abs(last.first - lat) < 0.000035 && abs(last.second - lon) < 0.000035) {
             return
         }
-        if (trailBuffer.size >= 100) trailBuffer.removeFirst()
+        if (trailBuffer.size >= 250) trailBuffer.removeFirst()
         trailBuffer.addLast(lat to lon)
+    }
+
+    companion object {
+        fun launchExternalNavigation(context: Context, lat: Double, lon: Double) {
+            val gmapsNav = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$lat,$lon")).apply {
+                setPackage("com.google.android.apps.maps")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val geoFallback = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$lat,$lon")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            runCatching { context.startActivity(gmapsNav) }.onFailure {
+                runCatching { context.startActivity(geoFallback) }
+            }
+        }
     }
 }

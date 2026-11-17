@@ -1,556 +1,859 @@
 package com.apexobd.app.ui
 
-import android.content.res.Configuration
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.apexobd.app.data.db.HudWidgetEntity
 import com.apexobd.app.data.db.WidgetDisplayType
-import com.apexobd.app.ui.components.TorqueEvoWidgetCard
+import com.apexobd.app.ui.components.AnalogDialWidget
+import com.apexobd.app.ui.components.BarGaugeWidget
+import com.apexobd.app.ui.components.DataLoggerWidget
+import com.apexobd.app.ui.components.DigitalReadoutWidget
+import com.apexobd.app.ui.components.DtcCheckerWidget
+import com.apexobd.app.ui.components.FuelControlWidget
+import com.apexobd.app.ui.components.MiniMapWidget
+import com.apexobd.app.ui.components.PerfTimerWidget
+import com.apexobd.app.ui.components.SemiDigitalArcWidget
+import com.apexobd.app.ui.components.SparklineChartWidget
 import com.apexobd.app.ui.theme.TorqueEvoColors
-import com.apexobd.core.scheduler.ConnectionState
-import com.apexobd.core.scheduler.PollingProfile
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HudCanvasScreen(viewModel: HudViewModel) {
-    val pages by viewModel.pagesWithWidgets.collectAsState()
-    val liveValues by viewModel.liveValues.collectAsState()
-    val historyBuffers by viewModel.historyBuffers.collectAsState()
-    val gps by viewModel.locationTracker.gps.collectAsState()
-    val settings by viewModel.settings.collectAsState()
-    val connState by viewModel.connectionState.collectAsState()
-    val supportedPids by viewModel.supportedPids.collectAsState()
-    val pollingHz by viewModel.pollingHz.collectAsState()
-    val avgLatencyMs by viewModel.avgLatencyMs.collectAsState()
-    val diagnosticReport by viewModel.diagnosticReport.collectAsState()
-    val vin by viewModel.vin.collectAsState()
-    val timer0100 by viewModel.timer0100.collectAsState()
-    val isRecording by viewModel.isRecording.collectAsState()
-    val tripSessions by viewModel.tripSessions.collectAsState()
+fun ApexAppRoot(
+    viewModel: HudViewModel,
+    onSystemChromeVisibility: (showSystemBars: Boolean) -> Unit
+) {
+    var onHudPage by remember { mutableStateOf(false) }
+
+    LaunchedEffect(onHudPage) {
+        viewModel.setOnHudScreen(onHudPage)
+        onSystemChromeVisibility(!onHudPage)
+    }
+
+    if (!onHudPage) {
+        HomeMenuScreen(
+            viewModel = viewModel,
+            onOpenHudCanvas = { onHudPage = true }
+        )
+    } else {
+        HudCanvasScreen(
+            viewModel = viewModel,
+            onBackToHome = { onHudPage = false }
+        )
+    }
+}
+
+@Composable
+fun HudCanvasScreen(
+    viewModel: HudViewModel,
+    onBackToHome: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
+    val liveValues by viewModel.liveValues.collectAsStateWithLifecycle()
+    val historyBuffers by viewModel.historyBuffers.collectAsStateWithLifecycle()
+    val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
+    val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
+    val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
+    val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
+    val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+    val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
 
     var editMode by remember { mutableStateOf(false) }
-    var menuExpanded by remember { mutableStateOf(false) }
-    var showPicker by remember { mutableStateOf(false) }
-    var showParkedSetup by remember { mutableStateOf(false) }
+    var showContextMenu by remember { mutableStateOf(false) }
+    var showComponentPicker by remember { mutableStateOf(false) }
+
+    BackHandler {
+        when {
+            showComponentPicker -> showComponentPicker = false
+            showContextMenu -> showContextMenu = false
+            editMode -> editMode = false
+            else -> onBackToHome()
+        }
+    }
 
     val pagerState = rememberPagerState(pageCount = { pages.size.coerceAtLeast(1) })
-    LaunchedEffect(pagerState.currentPage) {
-        viewModel.setVisiblePageIndex(pagerState.currentPage)
+    LaunchedEffect(pagerState.currentPage, pages.size) {
+        if (pages.isNotEmpty()) {
+            viewModel.setVisiblePageIndex(pagerState.currentPage.coerceAtMost(pages.lastIndex))
+        }
     }
-    val scope = rememberCoroutineScope()
-    val isLandscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val gridColumns = if (isLandscape) 6 else 4
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(TorqueEvoColors.PureBlack)
-            .graphicsLayer {
-                scaleX = if (settings.hudMirror) -1f else 1f
+            .graphicsLayer { scaleX = if (settings.hudMirror) -1f else 1f }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onLongPress = { showContextMenu = true }
+                )
             }
     ) {
         if (pages.isNotEmpty()) {
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.fillMaxSize(),
-                userScrollEnabled = !editMode
-            ) { pageIndex ->
-                val pageBundle = pages[pageIndex]
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(gridColumns),
-                    contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 12.dp, bottom = 28.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    items(
-                        items = pageBundle.widgets,
-                        key = { it.id },
-                        span = { GridItemSpan(it.spanCols.coerceIn(1, gridColumns)) }
-                    ) { widget ->
-                        val heightDp = if (widget.spanRows >= 2) 172.dp else 84.dp
-                        TorqueEvoWidgetCard(
-                            widget = widget,
-                            catalogItem = viewModel.catalogItemFor(widget.sensorKey),
-                            rawValue = liveValues[widget.sensorKey],
-                            history = historyBuffers[widget.sensorKey].orEmpty(),
-                            gps = gps,
-                            diagnosticReport = diagnosticReport,
-                            timer0100 = timer0100,
-                            isRecording = isRecording,
-                            imperialUnits = settings.imperialUnits,
-                            editMode = editMode,
-                            onScanDtcs = { viewModel.scanDiagnostics() },
-                            onClearDtcs = { viewModel.clearDtcs() },
-                            onToggleRecord = { viewModel.toggleRecording() },
-                            onReset0100 = { viewModel.reset0100Best() },
-                            onCycleType = { viewModel.cycleWidgetDisplayType(widget) },
-                            onCycleSize = { viewModel.cycleWidgetSize(widget) },
-                            onMoveLeft = { viewModel.moveWidget(pageBundle.page.id, widget.id, -1) },
-                            onMoveRight = { viewModel.moveWidget(pageBundle.page.id, widget.id, +1) },
-                            onDelete = { viewModel.deleteWidget(widget.id) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(heightDp)
-                        )
-                    }
-                }
-            }
-        }
-
-        // Faint Bottom Page Indicator Dots
-        Row(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 8.dp)
-                .background(Color(0x88000000), RoundedCornerShape(99.dp))
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            pages.forEachIndexed { idx, _ ->
-                val active = pagerState.currentPage == idx
-                Box(
-                    modifier = Modifier
-                        .height(6.dp)
-                        .width(if (active) 20.dp else 6.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (active) TorqueEvoColors.ElectricBlue else Color.White.copy(alpha = 0.28f)
-                        )
-                        .clickable {
-                            scope.launch { pagerState.animateScrollToPage(idx) }
-                        }
+                userScrollEnabled = !editMode,
+                modifier = Modifier.fillMaxSize()
+            ) { pageIdx ->
+                val pageBundle = pages[pageIdx]
+                ProportionalHudPageCanvas(
+                    widgets = pageBundle.widgets,
+                    editMode = editMode,
+                    gridSnap = settings.gridSnapEnabled,
+                    pageIndex = pageIdx,
+                    viewModel = viewModel,
+                    liveValues = liveValues,
+                    historyBuffers = historyBuffers,
+                    onLongPress = { showContextMenu = true },
+                    onToggleRecord = { viewModel.toggleRecording() },
+                    onNavigateExternal = { viewModel.openExternalNavigation(context) },
+                    onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
+                    onScanDtc = { viewModel.scanDiagnostics() },
+                    onReset0100 = { viewModel.reset0100Best() },
+                    onMoveWidgetDelta = { wId, delta -> viewModel.moveWidget(pageBundle.page.id, wId, delta) },
+                    onCycleDisplay = { viewModel.cycleWidgetDisplayType(it) },
+                    onCycleSize = { viewModel.cycleWidgetSize(it) },
+                    onDeleteWidget = { viewModel.deleteWidget(it.id) },
+                    onUpdateFreeformPos = { w, xf, yf -> viewModel.updateWidgetFreeformPosition(w, xf, yf) },
+                    renderContextExtras = Triple(gps, diagReport, timer0100),
+                    extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0))
                 )
             }
         }
 
-        // Minimal unobtrusive corner trigger (replaces bulky navbars)
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 8.dp, end = 10.dp)
-        ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.alpha(if (editMode || menuExpanded) 1f else 0.36f)
+        // Subtle low-opacity edge dots (zero chrome, glance-only page awareness)
+        if (pages.size > 1) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                if (editMode) {
-                    Text(
-                        text = "Done",
-                        color = TorqueEvoColors.PureBlack,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
+                pages.forEachIndexed { idx, _ ->
+                    val active = idx == pagerState.currentPage
+                    Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(99.dp))
-                            .background(TorqueEvoColors.ElectricBlue)
-                            .clickable { editMode = false }
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                            .width(4.dp)
+                            .height(if (active) 14.dp else 5.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (active) TorqueEvoColors.ElectricBlue.copy(alpha = 0.7f)
+                                else Color(0x45FFFFFF)
+                            )
                     )
                 }
+            }
+        }
+
+        if (editMode) {
+            Text(
+                text = "EDITING · LONG-PRESS TO FINISH",
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 0.8.sp,
+                color = TorqueEvoColors.ElectricBlue,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xCC0D1016))
+                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                    .clickable { editMode = false }
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+    }
+
+    // HIDDEN HOLD-TAP CONTEXT MENU
+    if (showContextMenu) {
+        val currentPage = pages.getOrNull(pagerState.currentPage)
+        Dialog(onDismissRequest = { showContextMenu = false }) {
+            Column(
+                modifier = Modifier
+                    .width(280.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xFF0E1116))
+                    .border(1.dp, Color(0x2EFFFFFF), RoundedCornerShape(14.dp))
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
-                    text = "⚙ / +",
-                    color = TorqueEvoColors.ElectricBlue,
-                    fontSize = 11.sp,
+                    "HUD CANVAS MENU",
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(99.dp))
-                        .background(Color(0xCC0A101A))
-                        .clickable { menuExpanded = true }
-                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                    letterSpacing = 0.9.sp,
+                    color = TorqueEvoColors.TextSecondary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                 )
-            }
-
-            DropdownMenu(
-                expanded = menuExpanded,
-                onDismissRequest = { menuExpanded = false },
-                containerColor = TorqueEvoColors.ElevatedDark
-            ) {
-                DropdownMenuItem(
-                    text = { Text("+ Pick & Add Component") },
-                    onClick = {
-                        menuExpanded = false
-                        showPicker = true
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text(if (editMode) "Finish Editing Layout" else "✎ Edit / Move / Resize Widgets") },
-                    onClick = {
-                        menuExpanded = false
-                        editMode = !editMode
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("+ Add New Blank Page") },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.addPage("Page ${pages.size + 1}") { idx ->
-                            scope.launch { pagerState.animateScrollToPage(idx) }
-                        }
-                    }
-                )
-                if (pages.size > 1) {
-                    DropdownMenuItem(
-                        text = { Text("Delete Current Page", color = TorqueEvoColors.CriticalRed) },
-                        onClick = {
-                            menuExpanded = false
-                            val current = pages.getOrNull(pagerState.currentPage) ?: return@DropdownMenuItem
-                            viewModel.deletePage(current.page.id)
-                        }
-                    )
+                ContextMenuButton("+ Add New Component") {
+                    showContextMenu = false
+                    showComponentPicker = true
                 }
-                DropdownMenuItem(
-                    text = { Text("⇄ Toggle HUD Mirror (${if (settings.hudMirror) "On" else "Off"})") },
-                    onClick = {
-                        menuExpanded = false
-                        viewModel.toggleHudMirror()
+                ContextMenuButton("Move / Edit Components: ${if (editMode) "On" else "Off"}") {
+                    editMode = !editMode
+                    showContextMenu = false
+                }
+                ContextMenuButton("Grid Snap (8×4 / 4×8): ${if (settings.gridSnapEnabled) "On" else "Off"}") {
+                    viewModel.toggleGridSnap()
+                    showContextMenu = false
+                }
+                ContextMenuButton("+ Add New Blank Page") {
+                    viewModel.addBlankPage("Page ${pages.size + 1}") { newIdx ->
+                        scope.launch { pagerState.animateScrollToPage(newIdx) }
                     }
-                )
-                DropdownMenuItem(
-                    text = { Text("🔧 Parked Setup (Wi-Fi, DTC, Logs, PIDs)") },
-                    onClick = {
-                        menuExpanded = false
-                        showParkedSetup = true
+                    showContextMenu = false
+                }
+                if (pages.size > 1 && currentPage != null) {
+                    ContextMenuButton("Delete Current Page (${currentPage.page.title})", color = TorqueEvoColors.CriticalRed) {
+                        viewModel.deletePage(currentPage.page.id)
+                        showContextMenu = false
                     }
-                )
+                }
+                ContextMenuButton(
+                    "Pause Fuel Avg (Persisted): ${if (settings.pauseFuelCalculation) "On" else "Off"}",
+                    color = if (settings.pauseFuelCalculation) TorqueEvoColors.WarnAmber else TorqueEvoColors.TextPrimary
+                ) {
+                    viewModel.togglePauseFuelCalculation()
+                    showContextMenu = false
+                }
+                ContextMenuButton("← Back to Home Menu", color = TorqueEvoColors.ElectricBlue) {
+                    showContextMenu = false
+                    onBackToHome()
+                }
             }
         }
     }
 
-    if (showPicker) {
-        val currentPageId = pages.getOrNull(pagerState.currentPage)?.page?.id
-        if (currentPageId != null) {
-            ModalBottomSheet(
-                onDismissRequest = { showPicker = false },
-                containerColor = TorqueEvoColors.ElevatedDark
-            ) {
-                ComponentPickerSheetContent(
-                    catalog = viewModel.fullCatalog(),
-                    supportedPids = supportedPids,
-                    onAdd = { sensorKey, displayType, cols, rows ->
-                        viewModel.addWidget(currentPageId, sensorKey, displayType, cols, rows)
-                        showPicker = false
-                    }
-                )
-            }
-        }
-    }
-
-    if (showParkedSetup) {
-        ModalBottomSheet(
-            onDismissRequest = { showParkedSetup = false },
-            containerColor = TorqueEvoColors.ElevatedDark
-        ) {
-            ParkedSetupSheetContent(
-                viewModel = viewModel,
-                connState = connState,
-                supportedCount = supportedPids.size,
-                pollingHz = pollingHz,
-                avgLatencyMs = avgLatencyMs,
-                vin = vin,
-                diagnosticReport = diagnosticReport,
-                tripSessions = tripSessions,
-                settings = settings
+    // AVAILABLE-ONLY COMPONENT PICKER
+    if (showComponentPicker) {
+        val currentPage = pages.getOrNull(pagerState.currentPage)
+        if (currentPage != null) {
+            AvailableComponentPickerSheet(
+                groupedCatalog = viewModel.availableGroupedCatalog(),
+                supportedPidCount = supportedPids.size,
+                onAddComponent = { key, type, cols, rows ->
+                    viewModel.addWidget(currentPage.page.id, key, type, cols, rows)
+                    showComponentPicker = false
+                },
+                onDismiss = { showComponentPicker = false }
             )
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun ComponentPickerSheetContent(
-    catalog: List<SensorCatalogItem>,
-    supportedPids: Set<String>,
-    onAdd: (String, WidgetDisplayType, Int, Int) -> Unit
-) {
-    var selectedSensor by remember { mutableStateOf(catalog.first()) }
-    var selectedType by remember { mutableStateOf(WidgetDisplayType.ANALOG_DIAL) }
-    var selectedSize by remember { mutableStateOf(1 to 1) }
+private data class GridPlacement(
+    val widget: HudWidgetEntity,
+    val col: Int,
+    val row: Int,
+    val spanCols: Int,
+    val spanRows: Int
+)
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("Pick & Add HUD Component", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+private fun packWidgetsIntoGrid(
+    widgets: List<HudWidgetEntity>,
+    cols: Int,
+    rows: Int
+): List<GridPlacement> {
+    val occupied = Array(rows * 2) { BooleanArray(cols) }
+    val out = mutableListOf<GridPlacement>()
 
-        Text("1. Sensor / Feature", color = TorqueEvoColors.TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        LazyColumn(modifier = Modifier.height(170.dp)) {
-            items(catalog) { item ->
-                val isSel = item.key == selectedSensor.key
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(if (isSel) TorqueEvoColors.DimBlue else Color.Transparent)
-                        .clickable {
-                            selectedSensor = item
-                            selectedType = when (item.key) {
-                                "minimap" -> WidgetDisplayType.MINI_MAP
-                                "dtc_checker" -> WidgetDisplayType.DTC_CHECKER
-                                "timer_0100" -> WidgetDisplayType.PERF_TIMER
-                                "data_logger" -> WidgetDisplayType.DATA_LOGGER
-                                else -> selectedType
-                            }
+    for (w in widgets) {
+        val sw = w.spanCols.coerceIn(1, cols)
+        val sh = w.spanRows.coerceIn(1, rows)
+        var placed = false
+        for (r in 0 until occupied.size - sh + 1) {
+            for (c in 0..cols - sw) {
+                var fits = true
+                for (dr in 0 until sh) {
+                    for (dc in 0 until sw) {
+                        if (occupied[r + dr][c + dc]) {
+                            fits = false
+                            break
                         }
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(item.label, fontSize = 13.sp, color = if (isSel) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextPrimary)
-                    val isSupported = !item.pidLabel.startsWith("01") || item.pidLabel.removePrefix("01") in supportedPids
-                    val tagText = if (supportedPids.isNotEmpty() && isSupported) "✓ ${item.pidLabel}" else item.pidLabel
-                    Text(
-                        text = tagText,
-                        fontSize = 11.sp,
-                        color = if (supportedPids.isNotEmpty() && isSupported) TorqueEvoColors.NominalGreen else TorqueEvoColors.TextSecondary
-                    )
+                    }
+                    if (!fits) break
+                }
+                if (fits) {
+                    for (dr in 0 until sh) {
+                        for (dc in 0 until sw) {
+                            occupied[r + dr][c + dc] = true
+                        }
+                    }
+                    out += GridPlacement(w, c, r, sw, sh)
+                    placed = true
+                    break
+                }
+            }
+            if (placed) break
+        }
+        if (!placed) {
+            out += GridPlacement(w, 0, rows - 1, sw, sh)
+        }
+    }
+    return out
+}
+
+@Composable
+private fun ProportionalHudPageCanvas(
+    widgets: List<HudWidgetEntity>,
+    editMode: Boolean,
+    gridSnap: Boolean,
+    pageIndex: Int,
+    viewModel: HudViewModel,
+    liveValues: Map<String, Double>,
+    historyBuffers: Map<String, List<Double>>,
+    onLongPress: () -> Unit,
+    onToggleRecord: () -> Unit,
+    onNavigateExternal: () -> Unit,
+    onToggleFuelPause: () -> Unit,
+    onScanDtc: () -> Unit,
+    onReset0100: () -> Unit,
+    onMoveWidgetDelta: (Long, Int) -> Unit,
+    onCycleDisplay: (HudWidgetEntity) -> Unit,
+    onCycleSize: (HudWidgetEntity) -> Unit,
+    onDeleteWidget: (HudWidgetEntity) -> Unit,
+    onUpdateFreeformPos: (HudWidgetEntity, Float, Float) -> Unit,
+    renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
+    extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>
+) {
+    val density = LocalDensity.current
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 10.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(onLongPress = { onLongPress() })
+            }
+    ) {
+        val isLandscape = maxWidth > maxHeight
+        val cols = if (isLandscape) 8 else 4
+        val rows = if (isLandscape) 4 else 8
+        val gap = 8.dp
+
+        val availW = maxWidth
+        val availH = maxHeight
+        val cellW = (availW - gap * (cols - 1)) / cols
+        val cellH = (availH - gap * (rows - 1)) / rows
+        val availWPx = with(density) { availW.toPx() }
+        val availHPx = with(density) { availH.toPx() }
+
+        // Visual snap grid lines ONLY visible during Edit Mode + Grid Snap On
+        if (editMode && gridSnap) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cellWPx = cellW.toPx()
+                val cellHPx = cellH.toPx()
+                val gapPx = gap.toPx()
+                val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        val x = c * (cellWPx + gapPx)
+                        val y = r * (cellHPx + gapPx)
+                        drawRoundRect(
+                            color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.18f),
+                            topLeft = Offset(x, y),
+                            size = Size(cellWPx, cellHPx),
+                            cornerRadius = CornerRadius(10.dp.toPx()),
+                            style = Stroke(width = 1.dp.toPx(), pathEffect = dash)
+                        )
+                    }
                 }
             }
         }
 
-        if (selectedSensor.key !in setOf("minimap", "dtc_checker", "timer_0100", "data_logger")) {
-            Text("2. Display Type", color = TorqueEvoColors.TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    WidgetDisplayType.ANALOG_DIAL to "Analog Dial",
-                    WidgetDisplayType.SEMI_DIGITAL to "Semi-Digital",
-                    WidgetDisplayType.DIGITAL to "Digital",
-                    WidgetDisplayType.BAR to "Bar",
-                    WidgetDisplayType.CHART to "Chart"
-                ).forEach { (type, label) ->
-                    FilterChip(
-                        selected = selectedType == type,
-                        onClick = { selectedType = type },
-                        label = { Text(label, fontSize = 12.sp) }
-                    )
-                }
-            }
-        }
-
-        Text("3. Size", color = TorqueEvoColors.TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf((1 to 1) to "1×1 Small", (2 to 1) to "2×1 Wide", (2 to 2) to "2×2 Large").forEach { (dim, label) ->
-                FilterChip(
-                    selected = selectedSize == dim,
-                    onClick = { selectedSize = dim },
-                    label = { Text(label, fontSize = 12.sp) }
+        if (widgets.isEmpty()) {
+            Column(
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    "Blank HUD Canvas · Page ${pageIndex + 1}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0x73FFFFFF)
+                )
+                Text(
+                    "Hold tap anywhere to add components, toggle grid snap (${cols}×${rows}), pause idle fuel, or return to Home",
+                    fontSize = 12.sp,
+                    color = Color(0x40FFFFFF),
+                    textAlign = TextAlign.Center
                 )
             }
         }
 
-        Button(
-            onClick = { onAdd(selectedSensor.key, selectedType, selectedSize.first, selectedSize.second) },
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue)
-        ) {
-            Text("Add to Page", color = TorqueEvoColors.PureBlack, fontWeight = FontWeight.Bold)
+        val placements = remember(widgets, cols, rows, gridSnap) {
+            if (gridSnap) packWidgetsIntoGrid(widgets, cols, rows) else emptyList()
         }
-        Spacer(Modifier.height(12.dp))
+
+        if (gridSnap) {
+            placements.forEach { slot ->
+                val w = slot.widget
+                val boxW = cellW * slot.spanCols + gap * (slot.spanCols - 1)
+                val boxH = cellH * slot.spanRows + gap * (slot.spanRows - 1)
+                val xOff = (cellW + gap) * slot.col
+                val yOff = (cellH + gap) * slot.row
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = xOff, y = yOff)
+                        .size(width = boxW, height = boxH)
+                ) {
+                    HudWidgetSlotWrapper(
+                        widget = w,
+                        editMode = editMode,
+                        showFreeformArrows = true,
+                        onSwapPrev = { onMoveWidgetDelta(w.id, -1) },
+                        onSwapNext = { onMoveWidgetDelta(w.id, +1) },
+                        onCycleDisplay = { onCycleDisplay(w) },
+                        onCycleSize = { onCycleSize(w) },
+                        onDelete = { onDeleteWidget(w) }
+                    ) {
+                        RenderWidgetContent(
+                            widget = w,
+                            viewModel = viewModel,
+                            liveValues = liveValues,
+                            historyBuffers = historyBuffers,
+                            gps = renderContextExtras.first,
+                            diagReport = renderContextExtras.second,
+                            timer0100 = renderContextExtras.third,
+                            mapProvider = extraFlags.first,
+                            fuelPaused = extraFlags.second,
+                            isRecording = extraFlags.third.first,
+                            sampleCount = extraFlags.third.second,
+                            onToggleRecord = onToggleRecord,
+                            onNavigateExternal = onNavigateExternal,
+                            onToggleFuelPause = onToggleFuelPause,
+                            onScanDtc = onScanDtc,
+                            onReset0100 = onReset0100
+                        )
+                    }
+                }
+            }
+        } else {
+            widgets.forEach { w ->
+                val sw = w.spanCols.coerceIn(1, cols)
+                val sh = w.spanRows.coerceIn(1, rows)
+                val boxW = cellW * sw + gap * (sw - 1)
+                val boxH = cellH * sh + gap * (sh - 1)
+
+                var dragX by remember(w.id, w.freeformXFraction, availWPx) {
+                    mutableFloatStateOf(w.freeformXFraction * availWPx)
+                }
+                var dragY by remember(w.id, w.freeformYFraction, availHPx) {
+                    mutableFloatStateOf(w.freeformYFraction * availHPx)
+                }
+
+                Box(
+                    modifier = Modifier
+                        .offset { IntOffset(dragX.roundToInt(), dragY.roundToInt()) }
+                        .size(width = boxW, height = boxH)
+                        .then(
+                            if (editMode) {
+                                Modifier.pointerInput(w.id, availWPx, availHPx) {
+                                    detectDragGestures(
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragX = (dragX + dragAmount.x).coerceIn(0f, (availWPx - 40f).coerceAtLeast(10f))
+                                            dragY = (dragY + dragAmount.y).coerceIn(0f, (availHPx - 40f).coerceAtLeast(10f))
+                                        },
+                                        onDragEnd = {
+                                            if (availWPx > 1f && availHPx > 1f) {
+                                                onUpdateFreeformPos(w, dragX / availWPx, dragY / availHPx)
+                                            }
+                                        }
+                                    )
+                                }
+                            } else Modifier
+                        )
+                ) {
+                    HudWidgetSlotWrapper(
+                        widget = w,
+                        editMode = editMode,
+                        showFreeformArrows = false,
+                        onSwapPrev = {},
+                        onSwapNext = {},
+                        onCycleDisplay = { onCycleDisplay(w) },
+                        onCycleSize = { onCycleSize(w) },
+                        onDelete = { onDeleteWidget(w) }
+                    ) {
+                        RenderWidgetContent(
+                            widget = w,
+                            viewModel = viewModel,
+                            liveValues = liveValues,
+                            historyBuffers = historyBuffers,
+                            gps = renderContextExtras.first,
+                            diagReport = renderContextExtras.second,
+                            timer0100 = renderContextExtras.third,
+                            mapProvider = extraFlags.first,
+                            fuelPaused = extraFlags.second,
+                            isRecording = extraFlags.third.first,
+                            sampleCount = extraFlags.third.second,
+                            onToggleRecord = onToggleRecord,
+                            onNavigateExternal = onNavigateExternal,
+                            onToggleFuelPause = onToggleFuelPause,
+                            onScanDtc = onScanDtc,
+                            onReset0100 = onReset0100
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ParkedSetupSheetContent(
-    viewModel: HudViewModel,
-    connState: ConnectionState,
-    supportedCount: Int,
-    pollingHz: Int,
-    avgLatencyMs: Int,
-    vin: String?,
-    diagnosticReport: com.apexobd.core.protocol.DiagnosticReport?,
-    tripSessions: List<com.apexobd.app.data.db.TripSessionEntity>,
-    settings: com.apexobd.app.data.prefs.UserSettings
+private fun HudWidgetSlotWrapper(
+    widget: HudWidgetEntity,
+    editMode: Boolean,
+    showFreeformArrows: Boolean,
+    onSwapPrev: () -> Unit,
+    onSwapNext: () -> Unit,
+    onCycleDisplay: () -> Unit,
+    onCycleSize: () -> Unit,
+    onDelete: () -> Unit,
+    content: @Composable () -> Unit
 ) {
-    var hostInput by remember(settings.wifiHost) { mutableStateOf(settings.wifiHost) }
-    var portInput by remember(settings.wifiPort) { mutableStateOf(settings.wifiPort.toString()) }
-    var useSim by remember(settings.useSimulator) { mutableStateOf(settings.useSimulator) }
-    var pidName by remember { mutableStateOf("") }
-    var pidHex by remember { mutableStateOf("221E1C") }
-    var pidFormula by remember { mutableStateOf("((A*256)+B)/10-40") }
-    var pidUnit by remember { mutableStateOf("°C") }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(
+                if (editMode) {
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0x0D00A8FF))
+                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                } else Modifier
+            )
+    ) {
+        content()
 
-    LazyColumn(
+        if (editMode) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                if (showFreeformArrows) {
+                    EditPill("◀", Color.White, onSwapPrev)
+                    EditPill("▶", Color.White, onSwapNext)
+                }
+                if (widget.sensorKey !in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")) {
+                    EditPill("◐", TorqueEvoColors.SkyBlue, onCycleDisplay)
+                }
+                EditPill("⤢", TorqueEvoColors.SkyBlue, onCycleSize)
+                EditPill("×", TorqueEvoColors.CriticalRed, onDelete)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RenderWidgetContent(
+    widget: HudWidgetEntity,
+    viewModel: HudViewModel,
+    liveValues: Map<String, Double>,
+    historyBuffers: Map<String, List<Double>>,
+    gps: com.apexobd.app.platform.GpsSnapshot,
+    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
+    timer0100: com.apexobd.core.scheduler.Timer0100State,
+    mapProvider: com.apexobd.app.data.prefs.MapProvider,
+    fuelPaused: Boolean,
+    isRecording: Boolean,
+    sampleCount: Int,
+    onToggleRecord: () -> Unit,
+    onNavigateExternal: () -> Unit,
+    onToggleFuelPause: () -> Unit,
+    onScanDtc: () -> Unit,
+    onReset0100: () -> Unit
+) {
+    val type = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
+
+    when (widget.sensorKey) {
+        "minimap" -> MiniMapWidget(
+            gps = gps,
+            mapProvider = mapProvider,
+            isRecording = isRecording,
+            onToggleRecord = onToggleRecord,
+            onNavigateExternal = onNavigateExternal
+        )
+        "fuel_ctrl" -> {
+            val (kplVal, kplSym) = viewModel.convertForDisplay(
+                liveValues["kpl_road_avg"],
+                com.apexobd.core.model.SensorQuantity.FUEL_ECONOMY_KPL,
+                "km/L"
+            )
+            val (dteVal, dteSym) = viewModel.convertForDisplay(
+                liveValues["range_dte"],
+                com.apexobd.core.model.SensorQuantity.DISTANCE_KM,
+                "km"
+            )
+            FuelControlWidget(
+                kplValue = kplVal,
+                kplUnit = kplSym,
+                estRangeValue = dteVal,
+                estRangeUnit = dteSym,
+                paused = fuelPaused,
+                onTogglePause = onToggleFuelPause
+            )
+        }
+        "dtc_checker" -> DtcCheckerWidget(report = diagReport, onScan = onScanDtc)
+        "timer_0100" -> PerfTimerWidget(timer = timer0100, onReset = onReset0100)
+        "data_logger" -> DataLoggerWidget(isRecording = isRecording, latestSampleCount = sampleCount, onToggleRecord = onToggleRecord)
+        else -> {
+            val meta = viewModel.catalogItemFor(widget.sensorKey)
+            val rawVal = liveValues[widget.sensorKey]
+            val (dispVal, dispUnit) = viewModel.convertForDisplay(rawVal, meta.quantity, meta.unit)
+            val (cMin, cMax) = viewModel.convertBounds(meta.minValue, meta.maxValue, meta.quantity)
+            val warnConv = widget.warnThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
+            val critConv = widget.critThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
+
+            when (type) {
+                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                WidgetDisplayType.CHART -> {
+                    val hist = (historyBuffers[widget.sensorKey] ?: emptyList()).map {
+                        viewModel.convertForDisplay(it, meta.quantity, meta.unit).first ?: it
+                    }
+                    SparklineChartWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, hist)
+                }
+                else -> DigitalReadoutWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EditPill(symbol: String, tint: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(21.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .background(Color(0xEB080A0E))
+            .border(1.dp, Color(0x3DFFFFFF), RoundedCornerShape(5.dp))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(symbol, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = tint)
+    }
+}
+
+@Composable
+private fun ContextMenuButton(
+    label: String,
+    color: Color = TorqueEvoColors.TextPrimary,
+    onClick: () -> Unit
+) {
+    Text(
+        text = label,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Medium,
+        color = color,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 10.dp, vertical = 9.dp)
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun AvailableComponentPickerSheet(
+    groupedCatalog: List<GroupedSensorCatalogItem>,
+    supportedPidCount: Int,
+    onAddComponent: (sensorKey: String, displayType: WidgetDisplayType, spanCols: Int, spanRows: Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedGroup by remember { mutableStateOf(SensorCatalogGroup.ECU_MODE01) }
+    val filteredItems = groupedCatalog.filter { it.group == selectedGroup }
+    var selectedItem by remember(selectedGroup, filteredItems.size) {
+        mutableStateOf(filteredItems.firstOrNull()?.item ?: groupedCatalog.first().item)
+    }
+    var selectedType by remember { mutableStateOf(WidgetDisplayType.DIGITAL) }
+    var selectedSize by remember { mutableStateOf(2 to 1) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = TorqueEvoColors.ElevatedDark
     ) {
-        item {
-            Text("Parked Setup & Diagnostics", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            val statusLine = when (connState) {
-                is ConnectionState.Connected ->
-                    "Connected • ${connState.handshake.protocolName} • $supportedCount PIDs • ${pollingHz}Hz • ${avgLatencyMs}ms RTT"
-                is ConnectionState.Connecting -> "Connecting..."
-                is ConnectionState.Reconnecting -> "Reconnecting (#${connState.attempt}): ${connState.reason}"
-                ConnectionState.Disconnected -> "Disconnected"
-            }
-            Text(statusLine, color = TorqueEvoColors.SkyBlue, fontSize = 12.sp)
-            if (vin != null) {
-                Text("VIN (Mode 09): $vin", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
-            }
-        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 26.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text("Add Component", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+            Text(
+                if (supportedPidCount > 0) "Showing only $supportedPidCount ECU Mode 01 PIDs & derived metrics supported by this vehicle"
+                else "Showing standard PIDs & phone sensors (connect to car to filter by vehicle ECU)",
+                fontSize = 11.sp,
+                color = TorqueEvoColors.TextSecondary
+            )
 
-        // Latency & Battery Efficiency Profile
-        item {
-            Text("Polling Efficiency & Battery Profile", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                PollingProfile.entries.forEach { profile ->
-                    FilterChip(
-                        selected = settings.pollingProfile == profile,
-                        onClick = { viewModel.setPollingProfile(profile) },
-                        label = {
-                            val short = when (profile) {
-                                PollingProfile.MAX_PERFORMANCE -> "Max Speed"
-                                PollingProfile.BALANCED -> "Balanced"
-                                PollingProfile.ECO_BATTERY -> "Eco Battery"
-                            }
-                            Text(short, fontSize = 12.sp)
-                        }
-                    )
+                FilterChip(selected = selectedGroup == SensorCatalogGroup.ECU_MODE01, onClick = { selectedGroup = SensorCatalogGroup.ECU_MODE01 }, label = { Text("ECU Mode 01") })
+                FilterChip(selected = selectedGroup == SensorCatalogGroup.CALCULATED, onClick = { selectedGroup = SensorCatalogGroup.CALCULATED }, label = { Text("Calculated") })
+                FilterChip(selected = selectedGroup == SensorCatalogGroup.PHONE_AND_WIDGETS, onClick = { selectedGroup = SensorCatalogGroup.PHONE_AND_WIDGETS }, label = { Text("Phone & Widgets") })
+                if (groupedCatalog.any { it.group == SensorCatalogGroup.CUSTOM_PIDS }) {
+                    FilterChip(selected = selectedGroup == SensorCatalogGroup.CUSTOM_PIDS, onClick = { selectedGroup = SensorCatalogGroup.CUSTOM_PIDS }, label = { Text("Custom 21/22") })
                 }
             }
-        }
 
-        // Wi-Fi ELM327 Adapter Config
-        item {
-            Text("Wi-Fi ELM327 Adapter", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                Text("Use Built-in Simulator (Demo Mode)", fontSize = 13.sp)
-                Switch(checked = useSim, onCheckedChange = { useSim = it })
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = hostInput,
-                    onValueChange = { hostInput = it },
-                    label = { Text("IP Address") },
-                    modifier = Modifier.weight(1.5f),
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = portInput,
-                    onValueChange = { portInput = it },
-                    label = { Text("Port") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    viewModel.updateWifiEndpoint(hostInput, portInput.toIntOrNull() ?: 35000, useSim)
-                }) { Text("Apply & Reconnect") }
-                OutlinedButton(onClick = { viewModel.toggleImperialUnits() }) {
-                    Text(if (settings.imperialUnits) "Units: Imperial" else "Units: Metric")
-                }
-            }
-        }
-
-        // Diagnostics & Mode 04
-        item {
-            Text("Diagnostics (Modes 02 / 03 / 04 / 06 / 07 / 0A)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { viewModel.scanDiagnostics() }) { Text("Scan All DTCs & VIN") }
-                OutlinedButton(onClick = { viewModel.clearDtcs() }) {
-                    Text("Clear DTCs (04)", color = TorqueEvoColors.CriticalRed)
-                }
-            }
-            if (diagnosticReport != null) {
-                val count = diagnosticReport.confirmed.size + diagnosticReport.pending.size + diagnosticReport.permanent.size
-                Text("Found $count DTC(s) • Freeze Frame items: ${diagnosticReport.freezeFrame?.readings?.size ?: 0}", fontSize = 12.sp)
-            }
-        }
-
-        // Trip Logs & CSV / JSON Export
-        item {
-            Text("Recorded Trips (${tripSessions.size})", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
-            if (tripSessions.isEmpty()) {
-                Text("No recorded sessions yet. Tap Data Logger on the HUD to record.", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
-            }
-        }
-        items(tripSessions.take(5)) { session ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Trip #${session.id} • %.2f km".format(session.distanceKm), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text("${session.sampleCount} samples • Max %.0f km/h".format(session.maxSpeedKmh), fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
+                filteredItems.forEach { entry ->
+                    val item = entry.item
+                    val active = item.key == selectedItem.key
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (active) Color(0x2600A8FF) else TorqueEvoColors.CardSurface)
+                            .border(1.dp, if (active) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                            .clickable {
+                                selectedItem = item
+                                if (item.isSpecialWidget) {
+                                    selectedSize = if (item.key == "minimap") 2 to 3 else if (item.key == "dtc_checker") 4 to 1 else 2 to 1
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(item.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
+                            Text("${item.pidLabel} · Label: ${item.shortLabel}", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
+                        }
+                        if (item.unit.isNotBlank()) {
+                            Text(item.unit, fontSize = 11.sp, color = TorqueEvoColors.ElectricBlue, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
-                TextButton(onClick = { viewModel.exportSession(session, asJson = false) }) { Text("CSV") }
-                TextButton(onClick = { viewModel.exportSession(session, asJson = true) }) { Text("JSON") }
             }
-        }
 
-        // UDS Mode 22 Custom PID Entry
-        item {
-            Text("Add Custom UDS Mode 22 PID", fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
-            OutlinedTextField(value = pidName, onValueChange = { pidName = it }, label = { Text("Name (e.g. Trans Temp)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = pidHex, onValueChange = { pidHex = it }, label = { Text("Mode+PID") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(value = pidUnit, onValueChange = { pidUnit = it }, label = { Text("Unit") }, singleLine = true, modifier = Modifier.weight(0.7f))
+            if (!selectedItem.isSpecialWidget) {
+                Text("Component Visual Style", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        WidgetDisplayType.ANALOG_DIAL to "Precision Radial",
+                        WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
+                        WidgetDisplayType.DIGITAL to "Digital Tile",
+                        WidgetDisplayType.BAR to "Line Bar",
+                        WidgetDisplayType.CHART to "Area Chart"
+                    ).forEach { (dt, lbl) ->
+                        FilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = { Text(lbl, fontSize = 11.sp) })
+                    }
+                }
             }
-            OutlinedTextField(value = pidFormula, onValueChange = { pidFormula = it }, label = { Text("Formula (A, B...)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Button(onClick = {
-                viewModel.addManualCustomPid(pidName, pidHex, pidFormula, pidUnit)
-                pidName = ""
-            }) { Text("Save Custom PID") }
-            Spacer(Modifier.height(16.dp))
+
+            Text("Grid Size (8×4 Land / 4×8 Port)", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(
+                    (1 to 1) to "Small (1×1)",
+                    (2 to 1) to "Wide (2×1)",
+                    (2 to 2) to "Medium (2×2)",
+                    (3 to 2) to "Large (3×2)",
+                    (4 to 1) to "Banner (4×1)"
+                ).forEach { (sz, lbl) ->
+                    FilterChip(selected = selectedSize == sz, onClick = { selectedSize = sz }, label = { Text(lbl, fontSize = 11.sp) })
+                }
+            }
+
+            Button(
+                onClick = {
+                    val resolvedType = when (selectedItem.key) {
+                        "minimap" -> WidgetDisplayType.MINI_MAP
+                        "dtc_checker" -> WidgetDisplayType.DTC_CHECKER
+                        "timer_0100" -> WidgetDisplayType.PERF_TIMER
+                        "data_logger" -> WidgetDisplayType.DATA_LOGGER
+                        else -> selectedType
+                    }
+                    onAddComponent(selectedItem.key, resolvedType, selectedSize.first, selectedSize.second)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Add to Canvas", fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

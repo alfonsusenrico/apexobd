@@ -38,4 +38,17 @@ class TripExporterTest {
         assertTrue(json.contains("\"sessionId\": 7"))
         assertTrue(json.contains("\"gpsSpeedKmh\": 84"))
     }
+
+    @Test
+    fun `VehicleProfileEntity computes allTimeAvgKpl safely and RefuelLog cycle math stays independent`() {
+        val v = com.apexobd.app.data.db.VehicleProfileEntity(
+            name = "Avanza 1.3L",
+            allTimeRoadDistanceKm = 268.0,
+            allTimeRoadFuelLiters = 20.0
+        )
+        org.junit.Assert.assertEquals(13.4, v.allTimeAvgKpl(), 0.01)
+
+        val zeroFuel = com.apexobd.app.data.db.VehicleProfileEntity(name = "Empty", allTimeRoadDistanceKm = 100.0, allTimeRoadFuelLiters = 0.0)
+        org.junit.Assert.assertEquals(0.0, zeroFuel.allTimeAvgKpl(), 0.01)
+    }
 }

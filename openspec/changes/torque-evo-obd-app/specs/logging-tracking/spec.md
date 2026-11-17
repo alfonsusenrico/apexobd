@@ -1,20 +1,27 @@
 # logging-tracking Specification
 
 ## Purpose
-Background telemetry recording, GPS route tracking, HP/Torque & 0–100 km/h performance metrics, and CSV/JSON export.
+Background Strava-style run recording, multi-sensor derived fuel/torque/efficiency telemetry, all-time vehicle profiles, tank/range tracking, and independent refuel checkpoint logs.
 
 ## ADDED Requirements
 
-### Requirement: Foreground Telemetry & GPS Session Logging
-The system SHALL provide a toggleable logging session (backed by an Android Foreground Service when recording) that writes timestamped PID snapshots and GPS coordinates (`lat`, `lon`, `gpsSpeedKmh`) to Room/SQLite.
+### Requirement: Foreground Strava-Style Run Logging, All-Time Odometer, & Export
+The system SHALL track per-run GPS routes, distance, fuel used, `KPL Trip`, and IMU metrics via an Android Foreground Service, SHALL accumulate persistent global `All time avg` fuel economy and `All-Time Odometer` per `VehicleProfile` (`Gasoline`, `Diesel`, `Electric`), and SHALL export run logs to CSV/JSON using active global units.
 
-#### Scenario: Recording and exporting a trip log
-- **WHEN** the user starts logging, records live samples, stops logging, and taps Export CSV or Export JSON
-- **THEN** the app generates a valid CSV or JSON file containing timestamps, GPS coordinates, and all logged sensor columns and opens the Android share sheet
+#### Scenario: Recording and exporting a run log
+- **WHEN** the user toggles Start Run, drives, taps Stop Run, and selects Export CSV or JSON
+- **THEN** the per-run distance, fuel, `KPL Trip`, GPS polyline, and telemetry samples persist in Room and export in the selected unit system
 
-### Requirement: Performance Tracking (0–100 km/h & Calculated HP / Torque)
-The system SHALL compute real-time `0–100 km/h` acceleration runs using synchronized GPS/OBD speed, and SHALL estimate instantaneous Horsepower (`HP`) and Torque (`Nm`) from ECU Torque PIDs (`0162`/`0163`) when supported or MAF (`0110`) + RPM (`010C`) fallback.
+### Requirement: Multi-Sensor Fuel Economy, Persisted Idle Pause, Tank DTE, & Torque/HP Physics
+The system SHALL fuse supported ECU PIDs, IMU, and GPS signals to compute `KPL` (`All time avg`), `KPL Inst`, `KPL Trip`, `Eff.`, `Fuel Left`, `Est. Range`, `Torque`, and `Power` according to `Gasoline/Diesel/Electric` vehicle profiles while honoring a persisted `Pause Fuel Avg` toggle and subtracting fuel burned from tank capacity.
 
-#### Scenario: 0–100 km/h run trigger and completion
-- **WHEN** the timer is armed at `0 km/h` and vehicle speed transitions from `> 1 km/h` to `>= 100 km/h`
-- **THEN** the timer captures elapsed seconds accurately and records the best run
+#### Scenario: Persisted idle fuel pause protects KPL All Time Avg
+- **WHEN** the user enables Pause Fuel Avg while parked with the engine idling and restarts the app later
+- **THEN** the paused state remains restored on the HUD and stationary idling does not reduce `All time avg` (`KPL`)
+
+### Requirement: Independent Refuel Checkpoint Log
+The system SHALL record Refuel entries (`volume`, `price`, `currency`, `RON`, optional `fuelName`, `odometerKm`, timestamp) per vehicle profile, calculate refuel-cycle distance and fuel economy exclusively between consecutive refuel checkpoints without altering OBD `All time avg` or per-run calculations, and credit added fuel to `Estimated Fuel Left`.
+
+#### Scenario: Logging consecutive refuels computes cycle average independently
+- **WHEN** the user logs a refuel of `24.1 L` (`IDR 325,350`, `RON 95`, odometer `48,412 km`) after a previous checkpoint at `48,077 km`
+- **THEN** the log displays `335.0 km` cycle distance and `13.9 km/L` cycle average while keeping `All time avg` untouched and adding `24.1 L` to tank remaining fuel

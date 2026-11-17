@@ -5,6 +5,7 @@ import com.apexobd.core.elm.ElmHandshakeInfo
 import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.FormulaEvaluator
+import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.VehicleProfile
 import com.apexobd.core.protocol.DerivedSensorCatalog
 import com.apexobd.core.protocol.FuelEconomyTracker
@@ -72,6 +73,102 @@ object PerformanceCalculator {
             return torqueNm to wheelHp
         }
         return null to null
+    }
+
+    /**
+     * Multi-sensor torque & wheel HP calculation combining:
+     * 1) Native ECU torque PIDs (0162/0163) when available,
+     * 2) Willans-line BSFC (Load 0104) + Spark Timing Advance (010E) - FMEP(RPM) friction,
+     * 3) Longitudinal road-load dynamics (IMU accel, speed, Baro/IAT air density, grade) cross-blend.
+     */
+    fun estimatePhysicsTorqueAndHp(
+        profile: VehicleProfile,
+        rpm: Double?,
+        speedKmh: Double,
+        mafGramsPerSec: Double?,
+        actualTorquePct: Double?,
+        refTorqueNm: Double?,
+        engineLoadPct: Double?,
+        timingAdvanceDeg: Double?,
+        baroKpa: Double?,
+        iatCelsius: Double?,
+        imuAccelG: Double? = null,
+        roadGradePct: Double = 0.0,
+        dfcoActive: Boolean = false
+    ): Pair<Double?, Double?> {
+        if (dfcoActive) return 0.0 to 0.0
+
+        val wheelFactor = (1.0 - (profile.drivetrainLossPct / 100.0)).coerceIn(0.5, 1.0)
+
+        // Longitudinal road dynamics power at the wheels (for EV or active acceleration cross-check)
+        val vMs = (speedKmh / 3.6).coerceAtLeast(0.0)
+        val roadDynWheelKw = if (vMs > 2.5 && imuAccelG != null) {
+            val tempK = (iatCelsius ?: 25.0) + 273.15
+            val airDensity = (baroKpa ?: 101.325) / (0.287058 * tempK) // kg/m^3
+            val effMass = profile.weightKg * 1.05
+            val aMs2 = imuAccelG * 9.80665
+            val fInertia = effMass * aMs2
+            val fAero = 0.5 * airDensity * profile.dragCoefficientAreaCdA * vMs * vMs
+            val fRoll = profile.rollingResistanceCrr * profile.weightKg * 9.80665
+            val fGrade = profile.weightKg * 9.80665 * (roadGradePct / 100.0).coerceIn(-0.25, 0.25)
+            ((fInertia + fAero + fRoll + fGrade) * vMs / 1000.0)
+        } else null
+
+        if (profile.fuelType == FuelType.ELECTRIC) {
+            val kw = roadDynWheelKw ?: return null to null
+            val hp = kw * 1.34102
+            val tq = if (rpm != null && rpm > 100.0) (hp * 7127.0) / rpm else 0.0
+            return tq to hp
+        }
+
+        if (rpm == null || rpm < 100.0) return null to null
+
+        if (actualTorquePct != null && refTorqueNm != null && refTorqueNm > 0.0) {
+            val torqueNm = (actualTorquePct / 100.0) * refTorqueNm * wheelFactor
+            val hp = (torqueNm * rpm) / 7127.0
+            return torqueNm.coerceAtLeast(0.0) to hp.coerceAtLeast(0.0)
+        }
+
+        if (mafGramsPerSec == null) {
+            if (roadDynWheelKw != null && roadDynWheelKw > 0.5) {
+                val hp = roadDynWheelKw * 1.34102
+                val tq = (hp * 7127.0) / rpm
+                return tq.coerceAtLeast(0.0) to hp.coerceAtLeast(0.0)
+            }
+            return null to null
+        }
+
+        // Willans-line BSFC curve: lowest BSFC (~255 g/kWh gasoline, ~205 g/kWh diesel) at mid-high load
+        val load = (engineLoadPct ?: 40.0).coerceIn(5.0, 100.0)
+        val baseBsfc = if (profile.fuelType == FuelType.DIESEL) 210.0 else 258.0
+        val bsfc = when {
+            load < 25.0 -> baseBsfc * 1.38
+            load <= 78.0 -> baseBsfc
+            else -> baseBsfc * 1.12
+        }
+        val sparkEff = when {
+            timingAdvanceDeg == null -> 1.0
+            timingAdvanceDeg < 5.0 -> 0.86 // knocked/retarded timing loses BMEP
+            timingAdvanceDeg in 12.0..38.0 -> 1.0
+            else -> 0.96
+        }
+
+        val fuelGps = (mafGramsPerSec / profile.fuelType.stoichiometricAfr).coerceAtLeast(0.0)
+        val grossKw = ((fuelGps * 3600.0) / bsfc) * sparkEff
+        // Mechanical FMEP + accessory pumping intercept scales with displacement and RPM^1.3
+        val rpmNorm = (rpm / 1000.0).coerceAtLeast(0.4)
+        val frictionKw = profile.displacementLiters * (1.25 * rpmNorm + 0.16 * rpmNorm * rpmNorm)
+        val crankKw = (grossKw - frictionKw).coerceAtLeast(0.0)
+        val thermoWheelKw = crankKw * wheelFactor
+
+        val finalWheelKw = if (roadDynWheelKw != null && imuAccelG != null && imuAccelG > 0.05 && thermoWheelKw > 5.0) {
+            (thermoWheelKw * 0.65) + (roadDynWheelKw.coerceAtLeast(0.0) * 0.35)
+        } else {
+            thermoWheelKw
+        }
+        val finalWheelHp = (finalWheelKw * 1.34102).coerceAtLeast(0.0)
+        val torqueNm = (finalWheelHp * 7127.0) / rpm
+        return torqueNm to finalWheelHp
     }
 }
 
@@ -155,6 +252,12 @@ class ObdPollingEngine(
     @Volatile
     private var externalGpsSpeedKmh: Double? = null
 
+    @Volatile
+    private var externalImuAccelG: Double? = null
+
+    @Volatile
+    private var externalRoadGradePct: Double = 0.0
+
     private var pollJob: Job? = null
 
     fun setActiveSensors(keys: Set<String>) {
@@ -169,8 +272,9 @@ class ObdPollingEngine(
         pollingProfile = profile
     }
 
-    fun setVehicleProfile(profile: VehicleProfile) {
+    fun setVehicleProfile(profile: VehicleProfile, resetFuelSession: Boolean = false) {
         vehicleProfile = profile
+        fuelTracker.seedFromProfile(profile, force = resetFuelSession)
     }
 
     fun setFuelCalculationPaused(paused: Boolean) {
@@ -179,6 +283,12 @@ class ObdPollingEngine(
 
     fun updateExternalGpsSpeed(speedKmh: Double?) {
         externalGpsSpeedKmh = speedKmh
+    }
+
+    fun updateExternalTelemetry(gpsSpeedKmh: Double?, imuAccelG: Double? = null, roadGradePct: Double = 0.0) {
+        externalGpsSpeedKmh = gpsSpeedKmh
+        externalImuAccelG = imuAccelG
+        externalRoadGradePct = roadGradePct
     }
 
     fun start() {
@@ -365,23 +475,37 @@ class ObdPollingEngine(
     }
 
     private fun expandDependencies(requested: Set<String>, discovered: Set<String>): Set<String> {
-        val fuelKeys = setOf("kpl_instant", "kpl_road_avg", "kpl_trip_avg", "fuel_flow_lph", "fuel_used_l", "efficiency_score")
+        val fuelKeys = setOf(
+            "kpl_instant", "kpl_road_avg", "kpl_trip_avg",
+            "fuel_flow_lph", "fuel_used_l", "fuel_remaining", "range_dte", "efficiency_score"
+        )
         return buildSet {
             addAll(requested)
             if (requested.any { it in fuelKeys }) {
-                add("maf")
-                add("obd_speed")
-                add("throttle")
-                add("rpm")
+                if ("5E" in discovered) add("fuel_rate")
+                if ("10" in discovered) add("maf")
+                if ("0D" in discovered) add("obd_speed")
+                if ("0C" in discovered) add("rpm")
+                if ("45" in discovered) add("rel_throttle") else if ("11" in discovered) add("throttle")
                 if ("0B" in discovered) add("map")
                 if ("0F" in discovered) add("iat")
+                if ("33" in discovered) add("baro")
                 if ("04" in discovered) add("engine_load")
+                if ("05" in discovered) add("coolant")
+                if ("06" in discovered) add("stft_b1")
+                if ("07" in discovered) add("ltft_b1")
+                if ("44" in discovered) add("lambda")
+                if ("2F" in discovered) add("fuel_level")
             }
             if ("ve_pct" in requested) {
                 add("maf"); add("map"); add("rpm"); add("iat")
             }
             if ("hp" in requested || "torque" in requested) {
-                add("rpm"); add("maf"); add("map")
+                add("rpm"); add("maf"); add("map"); add("obd_speed")
+                if ("04" in discovered) add("engine_load")
+                if ("0E" in discovered) add("timing_advance")
+                if ("33" in discovered) add("baro")
+                if ("0F" in discovered) add("iat")
                 if ("62" in discovered && "63" in discovered) {
                     add("actual_torque_pct")
                     add("ref_torque_nm")
@@ -416,32 +540,60 @@ class ObdPollingEngine(
         return false to rtt
     }
 
+    private fun averageTrim(b1: Double?, b2: Double?): Double? = when {
+        b1 != null && b2 != null -> (b1 + b2) / 2.0
+        b1 != null -> b1
+        else -> b2
+    }
+
     private fun emitDerivedAndSnapshot(values: MutableMap<String, Double>) {
         val vp = vehicleProfile
-        val speedKmh = externalGpsSpeedKmh ?: values["obd_speed"] ?: 0.0
+        externalGpsSpeedKmh?.let { values["gps_speed"] = it }
+        externalImuAccelG?.let { values["accel_g"] = it }
+
+        val speedKmh = values["obd_speed"] ?: externalGpsSpeedKmh ?: 0.0
         val rpm = values["rpm"]
         val mapKpa = values["map"]
         val iat = values["iat"]
+        val baroKpa = values["baro"] ?: 101.325
+        val loadPct = values["engine_load"]
         val maf = values["maf"] ?: FuelEconomyTracker.estimateMafSpeedDensity(
             displacementLiters = vp.displacementLiters,
             vePct = vp.volumetricEfficiencyPct,
             rpm = rpm,
             mapKpa = mapKpa,
-            iatCelsius = iat
+            iatCelsius = iat,
+            baroKpa = baroKpa,
+            engineLoadPct = loadPct
         )
 
-        val (tq, hp) = PerformanceCalculator.estimateTorqueAndHp(
+        val relThrottle = values["rel_throttle"]
+        val absThrottle = values["throttle"]
+        val dfcoProbable = vp.fuelType != FuelType.ELECTRIC &&
+            speedKmh > 12.0 &&
+            (rpm ?: 0.0) > 1150.0 &&
+            (if (relThrottle != null) relThrottle <= 1.5 else (absThrottle != null && absThrottle <= 12.0 && (mapKpa == null || mapKpa <= baroKpa * 0.30))) &&
+            (mapKpa == null || mapKpa <= baroKpa * 0.36)
+
+        val (tq, hp) = PerformanceCalculator.estimatePhysicsTorqueAndHp(
+            profile = vp,
             rpm = rpm,
+            speedKmh = speedKmh,
             mafGramsPerSec = maf,
             actualTorquePct = values["actual_torque_pct"],
             refTorqueNm = values["ref_torque_nm"],
-            drivetrainLossPct = vp.drivetrainLossPct
+            engineLoadPct = loadPct,
+            timingAdvanceDeg = values["timing_advance"],
+            baroKpa = baroKpa,
+            iatCelsius = iat,
+            imuAccelG = externalImuAccelG,
+            roadGradePct = externalRoadGradePct,
+            dfcoActive = dfcoProbable
         )
         if (hp != null) values["hp"] = hp
         if (tq != null) values["torque"] = tq
 
         if (mapKpa != null) {
-            val baroKpa = values["baro"] ?: 101.3
             val boostKpa = mapKpa - baroKpa
             values["boost_kpa"] = boostKpa
             values["boost_bar"] = boostKpa / 100.0
@@ -455,7 +607,9 @@ class ObdPollingEngine(
             iatCelsius = iat
         )?.let { values["ve_pct"] = it }
 
-        if (maf != null || values["maf"] != null) {
+        val ecuFuelRate = values["fuel_rate"]
+        if (maf != null || ecuFuelRate != null || vp.fuelType == FuelType.ELECTRIC) {
+            val wheelKw = hp?.let { it * 0.7457 }
             val fuel = fuelTracker.update(
                 profile = vp,
                 speedKmh = speedKmh,
@@ -464,20 +618,40 @@ class ObdPollingEngine(
                 mapKpa = mapKpa,
                 iatCelsius = iat,
                 lambda = values["lambda"],
-                throttlePct = values["throttle"]
+                throttlePct = absThrottle,
+                relThrottlePct = relThrottle,
+                baroKpa = baroKpa,
+                coolantCelsius = values["coolant"],
+                engineLoadPct = loadPct,
+                stftPct = averageTrim(values["stft_b1"], values["stft_b2"]),
+                ltftPct = averageTrim(values["ltft_b1"], values["ltft_b2"]),
+                ecuFuelRateLph = ecuFuelRate,
+                ecuFuelLevelPct = values["fuel_level"],
+                wheelPowerKw = wheelKw
             )
             values["fuel_flow_lph"] = fuel.fuelFlowLitersPerHour
             values["kpl_instant"] = fuel.instantKpl
             values["kpl_trip_avg"] = fuel.tripAvgKpl
-            values["kpl_road_avg"] = fuel.roadOnlyAvgKpl
+            values["kpl_road_avg"] = fuel.allTimeRoadAvgKpl.takeIf { it > 0.0 } ?: fuel.roadOnlyAvgKpl
             values["fuel_used_l"] = fuel.totalFuelUsedLiters
-            values["efficiency_score"] = FuelEconomyTracker.computeDrivingEfficiencyScore(
+            values["fuel_remaining"] = fuel.estimatedRemainingFuelLiters
+            values["range_dte"] = fuel.estimatedRangeKm
+            values["efficiency_score"] = fuelTracker.computeEfficiencyDeltaScore(
                 instantKpl = fuel.instantKpl,
-                throttlePct = values["throttle"],
-                engineLoadPct = values["engine_load"],
-                speedKmh = speedKmh
+                baselineAvgKpl = fuel.allTimeRoadAvgKpl.takeIf { it > 1.0 } ?: fuel.roadOnlyAvgKpl,
+                throttlePct = absThrottle,
+                engineLoadPct = loadPct,
+                speedKmh = speedKmh,
+                accelG = externalImuAccelG,
+                dfcoActive = fuel.dfcoActive
             )
             _fuelMetrics.value = fuel
+        } else {
+            // Still expose configured static Tank/Range estimate even before live fuel PIDs stream
+            fuelTracker.seedFromProfile(vp)
+            values["fuel_remaining"] = vp.estimatedRemainingFuelLiters
+            val estAvg = if (vp.allTimeRoadFuelLiters > 0.01) vp.allTimeRoadDistanceKm / vp.allTimeRoadFuelLiters else 12.0
+            values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
         }
 
         _liveValues.value = values.toMap()

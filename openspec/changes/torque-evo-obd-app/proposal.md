@@ -1,17 +1,16 @@
 # Proposal: Torque Evo Android OBD-II App
 
-Approved in session: 2026-11-16 (owner selected "Torque Evo" design concept).
+Approved in session: 2026-11-16 (initial scaffold), revised and approved 2026-11-17 (2-Page Home + Blank Canvas, Dual Offline MapLibre + Optional Google Maps, Refuel Checkpoint Log, Multi-Sensor Derived Physics, Persistent Idle Fuel Pause).
 
 ## Why
-The owner uses Torque as a secondary digital HUD dashboard and DTC scanner, but Torque's UI/UX is outdated. The owner wants a modern Android-only Kotlin/Jetpack Compose replacement that preserves Torque's driving-first zero-navigation-chrome multi-page canvas and full component freedom while adding modern OLED aesthetics, embedded Google Mini-Map GPS tracking, high-frequency logging, and UDS Mode 22 support.
+The owner uses Torque as a secondary digital HUD dashboard and DTC scanner, but Torque's UI/UX is outdated, its polling stalls slowly on multi-PID frames, its stationary idle calculation distorts all-time fuel average, and it lacks modern offline map tracking and independent refuel-cycle checkpoints. The owner wants a high-efficiency Android Kotlin/Jetpack Compose replacement tailored to real ECU support (including Toyota Avanza CAN `7E8`) while adapting cleanly to any OBD-II vehicle.
 
 ## Expected Outcome
-An installable Android Kotlin + Jetpack Compose application (`ApexOBD / Torque Evo`) that:
-- Connects to Wi-Fi ELM327 adapters (`192.168.0.10:35000`) with automatic Android Wi-Fi network binding, plus a built-in Demo Simulator transport for offline testing.
-- Discovers and decodes full SAE J1979 Modes `01`–`0A` and UDS Mode `22` / Torque-CSV custom PIDs.
-- Opens directly onto a zero-chrome, swipeable N-page `#000000` OLED canvas with `#00A8FF` blue borderless dials, semi-digital arcs, digital readouts, bars, charts, embedded Google Mini-Map, DTC Checker, 0–100 km/h timer, and HP/Torque gauges.
-- Supports dynamic page creation/deletion, drag-and-drop widget reordering, live display-type morphing, resizing, HUD Mirror Mode, and Landscape/Portrait layouts.
-- Logs high-frequency telemetry + GPS routes to Room/SQLite with CSV/JSON export.
+An installable Android Kotlin + Jetpack Compose application (`ApexOBD`) that:
+- Connects to Wi-Fi ELM327 adapters (`192.168.0.10:35000`) with automatic Wi-Fi socket binding + simultaneous Cellular Mobile Data request for online apps/maps, plus a built-in Demo Simulator.
+- Queries SAE J1979 Mode `01` bitmasks and shows **only supported live PIDs & available derived calculations** in the component picker, using `2x` high-priority RPM interleaving and blocking TCP reads for minimal latency and battery draw.
+- Separates **Page 1 Home Menu** (static/summary only: elevated Car Profile with `Gasoline/Diesel/Electric`, Tank Capacity & Remaining Fuel/Range, `All time avg`, All-Time Odometer, `Best 0–100`, compact Strava Last Saved Run Map + `Navigate ↗`, **Refuel Log** checkpoint tracker, Fault Codes, Run Logs & Offline Maps, ECU PIDs, elevated Settings) from **Page 2 Blank-Default HUD Canvas** (swipeable N-page `#000000` canvas, zero visible chrome, hold-tap anywhere for hidden context menu, `8×4`/`4×8` Grid Snap + Freeform XY drag, persistent Idle Fuel Pause, refined horizontal-unit automotive components).
+- Provides dual optional map backends (`Offline MapLibre Vector` with user-defined bounding-box & size downloader, optional `Google Maps Online`, and `OLED Track Path Only`), background Foreground Service run recording, and global unit switching (`km/h`/`mph`, `L`/`gal`/`kWh`, `bar`/`psi`/`kPa`, etc.).
 
 ## What Changes
 - New Android multi-module Gradle project (`app` + `obd-core` pure Kotlin/JVM protocol library so protocol/PID/DTC/formula tests run fast on JVM without an emulator).

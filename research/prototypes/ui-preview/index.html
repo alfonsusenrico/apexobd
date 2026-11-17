@@ -3,437 +3,630 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ApexOBD — Modern Component Design &amp; 2-Page UX Preview</title>
+  <title>ApexOBD — Responsive 411×891 / 891×411 Home &amp; Canvas</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
     body {
       font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #05070b;
-      color: #f8fafc;
+      background: #060709;
+      color: #f3f5f8;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 14px 14px 36px;
+      padding: 12px 14px 28px;
     }
     .num { font-variant-numeric: tabular-nums; }
     .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
 
-    /* Top Preview Bar */
+    /* Preview Controls */
     .studio {
-      width: 100%; max-width: 1120px;
-      background: #0d121b; border: 1px solid rgba(0,168,255,0.22);
-      border-radius: 16px; padding: 14px 16px; margin-bottom: 14px;
-      display: flex; flex-direction: column; gap: 10px;
+      width: 100%; max-width: 1020px;
+      background: #0e1116; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; padding: 12px 16px; margin-bottom: 14px;
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
     }
-    .studio-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
-    .studio h1 { font-size: 16px; font-weight: 700; color: #f8fafc; }
-    .studio p { font-size: 12px; color: #8b98ab; margin-top: 2px; }
-    .ctrls { display: flex; flex-wrap: wrap; gap: 8px; }
+    .studio h1 { font-size: 14px; font-weight: 600; }
+    .studio p { font-size: 11px; color: #8b94a5; margin-top: 2px; }
+    .ctrls { display: flex; flex-wrap: wrap; gap: 6px; }
     .btn {
-      border: 1px solid rgba(255,255,255,0.16); background: #141c29; color: #f8fafc;
-      font-size: 12px; font-weight: 600; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.14); background: #161a22; color: #e5e9f0;
+      font-size: 11px; font-weight: 600; padding: 6px 11px; border-radius: 7px; cursor: pointer;
     }
-    .btn.active { border-color: #00a8ff; color: #00a8ff; background: rgba(0,168,255,0.14); }
-    .btn.primary { background: #00a8ff; color: #030a12; border: none; font-weight: 700; }
+    .btn.active { border-color: #00a8ff; color: #00a8ff; background: rgba(0,168,255,0.12); }
+    .btn.primary { background: #00a8ff; color: #000; border: none; font-weight: 700; }
 
-    /* Phone Shell */
+    /* Exact RMX1921 Viewport: 1080x2340 @ 420dpi = 411x891 dp */
     .phone {
-      width: 412px; height: 820px; background: #000000; border-radius: 38px;
-      border: 8px solid #1c222e; box-shadow: 0 32px 90px rgba(0,0,0,0.88);
-      overflow: hidden; position: relative; display: flex; flex-direction: column;
-      transition: width 0.25s ease, height 0.25s ease;
+      width: 411px;
+      height: 891px;
+      background: #000;
+      border-radius: 36px;
+      border: 7px solid #1d2129;
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 28px 80px rgba(0,0,0,0.85);
     }
-    .phone.landscape { width: 920px; height: 446px; border-radius: 28px; }
-    .screen { flex: 1; width: 100%; height: 100%; position: relative; overflow: hidden; background: #000000; }
+    .phone.landscape {
+      width: 891px;
+      height: 411px;
+      border-radius: 26px;
+    }
+    .screen { flex: 1; width: 100%; height: 100%; position: relative; overflow: hidden; background: #000; }
+    .ico { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.75; fill: none; flex-shrink: 0; }
 
     /* =====================================================================
-       PAGE 1: MAIN MENU HUB (Modernized Torque Launcher)
+       PAGE 1: A+B REVISED HOME MENU
        ===================================================================== */
-    .hub {
-      display: none; width: 100%; height: 100%; padding: 16px;
-      background: radial-gradient(circle at top right, rgba(0,168,255,0.1), #000000 55%);
-      flex-direction: column; gap: 12px; overflow-y: auto;
+    .home {
+      display: none; width: 100%; height: 100%; background: #07090d; padding: 14px 16px;
     }
-    .hub.active { display: flex; }
-    .hub-top {
+    .home.active {
+      display: grid; grid-template-rows: auto auto auto 1fr auto auto; gap: 9px;
+    }
+    .phone.landscape .home.active {
+      grid-template-columns: 1.12fr 1fr; grid-template-rows: auto 1fr auto; gap: 11px; padding: 12px 16px;
+    }
+    .home-top {
       display: flex; justify-content: space-between; align-items: center;
-      padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.08);
     }
-    .profile-pill {
-      display: flex; align-items: center; gap: 10px;
-      background: #0a101a; border: 1px solid rgba(0,168,255,0.3);
-      border-radius: 14px; padding: 10px 14px; cursor: pointer;
+    .phone:not(.landscape) .home-top { order: 1; }
+    .phone:not(.landscape) .car-profile-card { order: 2; }
+    .phone:not(.landscape) .stat-strip { order: 3; }
+    .phone:not(.landscape) .home-center-left { order: 4; }
+    .phone:not(.landscape) .modules-grid { order: 5; }
+    .phone:not(.landscape) .settings-card { order: 6; }
+    .phone.landscape .home-top { grid-column: 1 / -1; }
+
+    .car-profile-card {
+      background: #121722; border: 1px solid rgba(0,168,255,0.38); border-left: 4px solid #00a8ff;
+      border-radius: 12px; padding: 12px 14px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer;
     }
-    .hub-grid {
-      display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+    .car-avatar {
+      width: 40px; height: 40px; border-radius: 10px;
+      background: rgba(0,168,255,0.14); color: #00a8ff; display: grid; place-items: center; flex-shrink: 0;
     }
-    .phone.landscape .hub-grid { grid-template-columns: repeat(3, 1fr); }
-    .hub-card {
-      background: #080c14; border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 16px; padding: 14px; text-align: left; color: #f8fafc;
-      cursor: pointer; display: flex; flex-direction: column; justify-content: space-between; min-height: 98px;
+    .stat-strip {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+      background: #0d1016; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 9px 10px;
     }
-    .hub-card.hero {
-      grid-column: span 2; background: linear-gradient(135deg, rgba(0,168,255,0.18), #070b12);
-      border-color: #00a8ff;
+    .stat-cell { cursor: pointer; }
+    .stat-cell small { font-size: 9px; color: #7e8796; text-transform: uppercase; letter-spacing: 0.04em; display: block; white-space: nowrap; }
+    .stat-cell strong { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; display: block; }
+
+    .home-center-left { display: grid; grid-template-rows: auto 1fr; gap: 10px; min-height: 0; }
+    .phone.landscape .home-center-left { grid-column: 1; grid-row: 2; }
+    .phone.landscape .home-right-col {
+      grid-column: 2; grid-row: 2; display: grid; grid-template-rows: auto auto 1fr; gap: 8px; min-height: 0;
     }
-    .phone.landscape .hub-card.hero { grid-column: span 1; grid-row: span 2; }
+    .phone:not(.landscape) .home-right-col { display: contents; }
+
+    .launch-hud-btn {
+      background: #00a8ff; color: #020810; border: none; border-radius: 12px; padding: 13px 16px;
+      display: flex; align-items: center; justify-content: space-between; cursor: pointer; text-align: left;
+    }
+    .run-map-card {
+      background: #0d1118; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
+      padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-height: 126px;
+    }
+    .run-map-canvas {
+      flex: 1; min-height: 78px; border-radius: 8px; overflow: hidden;
+      background: #070e17; border: 1px solid rgba(255,255,255,0.08); position: relative;
+    }
+    .modules-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .mod-card {
+      background: #10141c; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 9px 10px;
+      color: #f3f5f8; text-align: left; cursor: pointer;
+      display: flex; align-items: center; gap: 9px;
+    }
+    .mod-card.refuel { border-color: rgba(34,197,94,0.28); background: #0f1614; }
+    .settings-card {
+      background: #141923; border: 1px solid rgba(255,255,255,0.18); border-radius: 12px; padding: 10px 14px;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; color: #f3f5f8;
+    }
+    .phone.landscape .settings-card { grid-column: 1 / -1; grid-row: 3; }
 
     /* =====================================================================
-       PAGE 2: PURE ZERO-BUTTON HUD CANVAS (Blank by default OR Component Showcase)
-       Long-press anywhere opens hidden menu!
+       PAGE 2: PROPORTIONAL GRID-SNAP (8×4 Landscape / 4×8 Portrait) + FREEFORM XY
+       Zero wasted gaps, zero clipping across orientations!
        ===================================================================== */
     .hud-wrap { display: none; width: 100%; height: 100%; position: relative; background: #000000; }
     .hud-wrap.active { display: block; }
 
-    .grid-overlay {
-      display: none; position: absolute; inset: 0; pointer-events: none; z-index: 1;
-      background-image: linear-gradient(to right, rgba(0,168,255,0.1) 1px, transparent 1px),
-                        linear-gradient(to bottom, rgba(0,168,255,0.1) 1px, transparent 1px);
-      background-size: 40px 40px;
+    .grid-guide {
+      display: none; position: absolute; inset: 10px 16px 10px 10px; z-index: 1; pointer-events: none;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      gap: 8px;
     }
-    .grid-on .grid-overlay { display: block; }
+    .phone.landscape .grid-guide {
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+    }
+    .grid-on .grid-guide { display: grid; }
+    .guide-cell {
+      border: 1px dashed rgba(0, 168, 255, 0.18);
+      border-radius: 10px;
+    }
 
-    .hud-pager {
-      width: 100%; height: 100%; display: flex; transition: transform 0.28s cubic-bezier(0.22,1,0.36,1);
-    }
+    .hud-pager { width: 100%; height: 100%; display: flex; transition: transform 0.25s cubic-bezier(0.22,1,0.36,1); }
     .hud-page {
       flex: 0 0 100%; width: 100%; height: 100%; position: relative; overflow: hidden;
+      padding: 10px 16px 10px 10px;
     }
+
+    /* When Grid Snap = On, page uses full proportional 4×8 (Portrait) or 8×4 (Landscape) CSS Grid! */
+    .hud-page.snapped {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(8, 1fr);
+      gap: 8px;
+    }
+    .phone.landscape .hud-page.snapped {
+      grid-template-columns: repeat(8, 1fr);
+      grid-template-rows: repeat(4, 1fr);
+    }
+
+    .comp-node {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 4px; position: relative; overflow: hidden;
+    }
+    .hud-page.freeform .comp-node {
+      position: absolute;
+    }
+    .comp-node.selected { outline: 1px dashed #00a8ff; border-radius: 12px; background: rgba(0,168,255,0.05); }
+    .comp-node.moving { cursor: move; z-index: 10; }
+
+    .node-edit-pills {
+      display: none; position: absolute; top: 4px; right: 4px; gap: 3px; z-index: 12;
+    }
+    .moving .node-edit-pills { display: flex; }
+    .ep {
+      width: 20px; height: 20px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.25);
+      background: rgba(8,10,14,0.92); color: #fff; font-size: 10px; font-weight: 700; cursor: pointer;
+    }
+
     .blank-hint {
       position: absolute; inset: 0; display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 6px;
-      color: rgba(255,255,255,0.22); font-size: 13px; pointer-events: none; text-align: center; padding: 20px;
+      color: rgba(255,255,255,0.24); font-size: 13px; pointer-events: none; text-align: center; padding: 24px;
     }
-
-    /* Freeform / Snap-able Modern Components */
-    .comp-node {
-      position: absolute;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      padding: 6px;
-      transition: box-shadow 0.15s ease;
-    }
-    .comp-node.selected { outline: 1.5px dashed #00a8ff; border-radius: 14px; background: rgba(0,168,255,0.05); }
-    .comp-node.moving { cursor: move; opacity: 0.9; z-index: 10; }
-
-    /* Right-Edge Subtle Dots (Just like Torque!) */
     .edge-dots {
-      position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+      position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
       display: flex; flex-direction: column; gap: 6px; z-index: 15; opacity: 0.45;
     }
-    .e-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.3); cursor: pointer; }
+    .e-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,0.35); cursor: pointer; }
     .e-dot.active { background: #00a8ff; height: 14px; border-radius: 99px; }
 
-    /* Hidden Long-Press Context Menu */
-    .ctx-bg {
-      display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.72);
-      backdrop-filter: blur(5px); z-index: 30; align-items: center; justify-content: center; padding: 16px;
+    /* Context Menu & Picker */
+    .ctx-bg, .sheet-bg {
+      display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.8);
+      z-index: 30; align-items: center; justify-content: center; padding: 14px;
     }
-    .ctx-bg.open { display: flex; }
+    .ctx-bg.open, .sheet-bg.open { display: flex; }
+    .sheet-bg { align-items: flex-end; }
     .ctx-menu {
-      width: 270px; background: #0b111c; border: 1px solid #00a8ff; border-radius: 18px;
-      padding: 10px; display: flex; flex-direction: column; gap: 4px;
+      width: 270px; background: #0e1116; border: 1px solid rgba(255,255,255,0.18); border-radius: 12px;
+      padding: 8px; display: flex; flex-direction: column; gap: 2px;
     }
-    .ctx-menu h3 { font-size: 12px; color: #38bdf8; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 10px 6px; }
+    .ctx-menu h3 { font-size: 10px; color: #7b8494; text-transform: uppercase; letter-spacing: 0.08em; padding: 6px 10px; }
     .ctx-menu button {
-      text-align: left; background: transparent; border: none; color: #f8fafc;
-      padding: 10px 12px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer;
+      text-align: left; background: transparent; border: none; color: #f2f4f8;
+      padding: 9px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer;
     }
-    .ctx-menu button:hover { background: rgba(0,168,255,0.16); color: #00a8ff; }
+    .ctx-menu button:hover { background: rgba(0,168,255,0.12); color: #00a8ff; }
 
-    /* Component Picker Sheet */
-    .sheet-bg {
-      display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.82);
-      backdrop-filter: blur(6px); z-index: 40; align-items: flex-end; padding: 12px;
-    }
-    .sheet-bg.open { display: flex; }
     .sheet {
-      width: 100%; max-height: 90%; overflow-y: auto; background: #0a101a;
-      border: 1px solid #00a8ff; border-radius: 20px; padding: 14px;
+      width: 100%; max-height: 90%; overflow-y: auto; background: #0e1116;
+      border: 1px solid rgba(255,255,255,0.18); border-radius: 16px; padding: 14px;
       display: flex; flex-direction: column; gap: 10px;
     }
     .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .chip {
-      padding: 6px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.16);
-      background: #131c2b; color: #fff; font-size: 11px; font-weight: 600; cursor: pointer;
+      padding: 6px 10px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15);
+      background: #161a22; color: #fff; font-size: 11px; font-weight: 600; cursor: pointer;
     }
-    .chip.sel { border-color: #00a8ff; background: rgba(0,168,255,0.2); color: #38bdf8; }
+    .chip.sel { border-color: #00a8ff; background: rgba(0,168,255,0.14); color: #00a8ff; }
     select.sel {
-      width: 100%; padding: 9px; border-radius: 10px; background: #131c2b;
-      color: #fff; border: 1px solid rgba(255,255,255,0.18); font-size: 12px; font-weight: 600;
-    }
-
-    /* Component Shapes Showcase Modal */
-    .showcase-grid {
-      display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+      width: 100%; padding: 9px; border-radius: 8px; background: #161a22;
+      color: #fff; border: 1px solid rgba(255,255,255,0.15); font-size: 12px; font-weight: 500;
     }
   </style>
 </head>
 <body>
   <div class="studio">
-    <div class="studio-row">
-      <div>
-        <h1>ApexOBD — Modern Component Shapes &amp; 2-Page UX Preview</h1>
-        <p>Page 1 = Main Menu Hub • Page 2 = Pure Zero-Button HUD (Hold tap / long-press anywhere for hidden menu) • Swipe left/right between pages</p>
-      </div>
-      <div class="ctrls">
-        <button class="btn" id="btn-p1" onclick="showPage1()">Page 1: Main Menu</button>
-        <button class="btn active" id="btn-p2" onclick="showPage2()">Page 2: HUD Canvas</button>
-        <button class="btn" onclick="loadBlankCanvas()">Reset to Blank Canvas</button>
-        <button class="btn primary" onclick="loadComponentGallery()">Load All 7 Modern Component Types</button>
-        <button class="btn" onclick="openContextMenu()">Simulate Hold-Tap Menu</button>
-        <button class="btn active" id="btn-orient" onclick="toggleOrient()">Landscape</button>
-      </div>
+    <div>
+      <h1>ApexOBD — Proportional 411×891dp / 891×411dp Home &amp; HUD Canvas</h1>
+      <p>Canvas now uses a responsive 8×4 (Landscape) / 4×8 (Portrait) snap grid filling 100% of the screen, plus pixel-free drag when Grid Snap is toggled off</p>
+    </div>
+    <div class="ctrls">
+      <button class="btn" id="btn-p1" onclick="showPage1()">Page 1: Home Menu</button>
+      <button class="btn active" id="btn-p2" onclick="showPage2()">Page 2: HUD Canvas</button>
+      <button class="btn" onclick="loadBlankCanvas()">Reset HUD Blank</button>
+      <button class="btn primary" onclick="loadGallery()">Showcase Components</button>
+      <button class="btn" onclick="openContextMenu()">Hold-Tap Menu</button>
+      <button class="btn active" id="btn-orient" onclick="toggleOrient()">Landscape (891×411)</button>
     </div>
   </div>
 
-  <!-- Phone Frame -->
+  <!-- Exact RMX1921 Frame: 411x891dp / 891x411dp -->
   <div class="phone landscape" id="phone">
-    <div class="screen" id="screen">
+    <div class="screen">
 
-      <!-- PAGE 1: MAIN MENU HUB -->
-      <div class="hub" id="hub-view">
-        <div class="hub-top">
-          <div>
-            <div style="font-size:18px; font-weight:800; letter-spacing:-0.02em;">ApexOBD</div>
-            <div style="font-size:11px; color:#22c55e;">● Wi-Fi CAN 11/500 • 16 ECU PIDs Ready</div>
+      <!-- PAGE 1: HOME MENU -->
+      <div class="home" id="hub-view">
+        <div class="home-top">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:15px; font-weight:700; letter-spacing:0.03em;">ApexOBD</span>
+            <span class="mono" style="font-size:10px; color:#7e8796;">v1.0</span>
           </div>
-          <div class="profile-pill" onclick="alert('Vehicle Profile Editor: Displacement 1.3L, Weight 1175kg, MAF Trim 100%, Fuel Type Gasoline')">
+          <span class="mono" style="font-size:11px; color:#00a8ff;">CAN 11/500 · 16 PIDs · 192.168.0.10</span>
+        </div>
+
+        <div class="home-center-left">
+          <button class="launch-hud-btn" onclick="showPage2()">
             <div>
-              <div style="font-size:12px; font-weight:700; color:#00a8ff;">Avanza 1.3L</div>
-              <div style="font-size:10px; color:#8b98ab;">1175 kg • Gasoline</div>
+              <div style="font-size:10px; font-weight:800; letter-spacing:0.08em; opacity:0.75;">LIVE DRIVING DISPLAY</div>
+              <div style="font-size:18px; font-weight:800; margin-top:1px;">Open HUD Canvas</div>
+              <div style="font-size:11px; font-weight:600; opacity:0.8; margin-top:1px;">2 Pages · Grid Snap On · Hold tap to edit</div>
             </div>
-            <span style="color:#00a8ff;">✎</span>
+            <svg class="ico" style="width:22px; height:22px; stroke:#020810;" viewBox="0 0 24 24"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+          </button>
+
+          <div class="run-map-card">
+            <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px;">
+              <span style="font-weight:700; color:#e5e9f0;">Last Saved Run · Yesterday</span>
+              <span class="num" style="color:#00a8ff; font-weight:600;">18.4 km · 13.8 km/L · 26 min</span>
+            </div>
+            <div class="run-map-canvas">
+              <svg width="100%" height="100%" viewBox="0 0 420 120" preserveAspectRatio="none">
+                <path d="M0 90 L420 35 M95 0 L130 120 M290 0 L265 120" stroke="#152132" stroke-width="8" fill="none"/>
+                <path d="M24 102 Q 150 54, 220 48 T 392 18" stroke="#00a8ff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+                <circle cx="24" cy="102" r="4.5" fill="#22c55e"/>
+                <circle cx="392" cy="18" r="4.5" fill="#ef4444"/>
+              </svg>
+              <button onclick="alert('Opens Google Maps Navigation')" style="position:absolute; bottom:6px; right:8px; background:rgba(7,9,13,0.88); border:1px solid rgba(255,255,255,0.16); color:#00a8ff; font-size:10px; font-weight:600; padding:4px 8px; border-radius:6px; cursor:pointer;">Navigate ↗</button>
+            </div>
           </div>
         </div>
 
-        <div class="hub-grid">
-          <button class="hub-card hero" onclick="showPage2()">
-            <span style="font-size:24px; color:#00a8ff;">◎</span>
-            <div>
-              <div style="font-size:16px; font-weight:700;">Realtime HUD Canvas</div>
-              <div style="font-size:11px; color:#8b98ab; margin-top:3px;">Pure zero-button canvas • Hold anywhere to add/move components or toggle grid snap</div>
+        <div class="home-right-col">
+          <div class="car-profile-card" onclick="openVehicleSheet()">
+            <div style="display:flex; align-items:center; gap:11px;">
+              <div class="car-avatar">
+                <svg class="ico" viewBox="0 0 24 24"><path d="M5 17h14v-5l-2-5H7l-2 5v5zm2 0v2m10-2v2M7.5 14h.01M16.5 14h.01"/></svg>
+              </div>
+              <div>
+                <div style="font-size:10px; color:#00a8ff; font-weight:700; letter-spacing:0.06em;">VEHICLE PROFILE</div>
+                <div style="font-size:15px; font-weight:700;" id="hdr-car-name">Avanza 1.3L</div>
+                <div style="font-size:11px; color:#8b94a5;" id="hdr-car-sub">1.3L · 1,175 kg · Gasoline · Tank 28.4/45 L (~381 km)</div>
+              </div>
             </div>
-          </button>
-          <button class="hub-card" onclick="alert('Fault Codes: Modes 03/07/0A + Clear 04')">
-            <span style="font-size:20px; color:#f59e0b;">⚠</span>
-            <div><div style="font-size:14px; font-weight:700;">Fault Codes</div><div style="font-size:11px; color:#8b98ab;">0 Confirmed • Scan/Clear</div></div>
-          </button>
-          <button class="hub-card" onclick="alert('Strava-Style Run Tracker: GPS route paths, KPL Road-Only Avg, CSV/JSON export, Open Google Maps Navigation')">
-            <span style="font-size:20px; color:#22c55e;">∿</span>
-            <div><div style="font-size:14px; font-weight:700;">Run Paths &amp; Logs</div><div style="font-size:11px; color:#8b98ab;">Strava-style GPS + Fuel Avg</div></div>
-          </button>
-          <button class="hub-card" onclick="alert('Vehicle Profiles & Units: KPL / L/100km / MPG, KM/H / MPH, Bar / PSI, Calibration Trim')">
-            <span style="font-size:20px; color:#38bdf8;">🚗</span>
-            <div><div style="font-size:14px; font-weight:700;">Car Profiles &amp; Units</div><div style="font-size:11px; color:#8b98ab;">Avanza 1.3L • KPL • °C</div></div>
-          </button>
-          <button class="hub-card" onclick="alert('Adapter & Polling Settings: 192.168.0.10:35000, Max Speed / Balanced / Eco')">
-            <span style="font-size:20px; color:#8b98ab;">⚙</span>
-            <div><div style="font-size:14px; font-weight:700;">Adapter &amp; Settings</div><div style="font-size:11px; color:#8b98ab;">Wi-Fi • Fast Interleaved</div></div>
-          </button>
+            <span class="btn" style="padding:5px 9px;">Edit ▾</span>
+          </div>
+
+          <div class="stat-strip" onclick="openVehicleSheet()">
+            <div class="stat-cell"><small>All time avg</small><strong style="color:#00a8ff;" id="st-alltime">13.4 km/L</strong></div>
+            <div class="stat-cell"><small>Odometer</small><strong id="st-odo">48,412 km</strong></div>
+            <div class="stat-cell"><small>Est. Range</small><strong style="color:#22c55e;" id="st-range">381 km</strong></div>
+            <div class="stat-cell"><small>Best 0–100</small><strong>6.84 s</strong></div>
+          </div>
+
+          <div class="modules-grid">
+            <button class="mod-card refuel" onclick="openRefuelSheet()">
+              <svg class="ico" style="color:#22c55e;" viewBox="0 0 24 24"><path d="M3 22h12M4 9h10M4 22V4a2 2 0 012-2h6a2 2 0 012 2v18M14 13h2a2 2 0 012 2v3a2 2 0 002 2h0a2 2 0 002-2V9.83a2 2 0 00-.59-1.42L18 5"/></svg>
+              <div>
+                <div style="font-size:12px; font-weight:700;">Refuel Log</div>
+                <div style="font-size:10px; color:#8b94a5;" id="refuel-card-sub">24.1L · RON 95 · 13.9 km/L</div>
+              </div>
+            </button>
+            <button class="mod-card" onclick="alert('Fault Codes (03/07/0A + Clear 04)')">
+              <svg class="ico" style="color:#f59e0b;" viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01M10.3 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+              <div>
+                <div style="font-size:12px; font-weight:700;">Fault Codes</div>
+                <div style="font-size:10px; color:#22c55e;">0 DTCs · Ready</div>
+              </div>
+            </button>
+            <button class="mod-card" onclick="alert('Run History · Offline Map Packs (MapLibre)')">
+              <svg class="ico" style="color:#38bdf8;" viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/></svg>
+              <div>
+                <div style="font-size:12px; font-weight:700;">Run Logs &amp; Maps</div>
+                <div style="font-size:10px; color:#8b94a5;">6 Trips · Offline Tiles</div>
+              </div>
+            </button>
+            <button class="mod-card" onclick="alert('ECU PID Explorer · Mode 01 + Mode 21')">
+              <svg class="ico" style="color:#a78bfa;" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+              <div>
+                <div style="font-size:12px; font-weight:700;">ECU PIDs</div>
+                <div style="font-size:10px; color:#8b94a5;">16 Mode 01 + 21</div>
+              </div>
+            </button>
+          </div>
         </div>
+
+        <button class="settings-card" onclick="alert('Settings: Wi-Fi 192.168.0.10:35000, Units, Offline Map Region, Polling')">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <svg class="ico" style="color:#00a8ff;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            <div style="text-align:left;">
+              <div style="font-size:13px; font-weight:700;">Adapter, Units, Map Mode &amp; Polling</div>
+              <div style="font-size:11px; color:#8b94a5;">Wi-Fi 192.168.0.10:35000 · Map: Offline (MapLibre) / G-Maps</div>
+            </div>
+          </div>
+          <span style="font-size:12px; color:#00a8ff; font-weight:700;">Configure →</span>
+        </button>
       </div>
 
-      <!-- PAGE 2: ZERO-BUTTON HUD CANVAS (Hold tap anywhere for hidden menu!) -->
+      <!-- PAGE 2: PROPORTIONAL PURE #000000 ZERO-BUTTON HUD CANVAS -->
       <div class="hud-wrap active" id="hud-wrap">
-        <div class="grid-overlay"></div>
+        <div class="grid-guide" id="grid-guide"></div>
         <div class="hud-pager" id="hud-pager"></div>
         <div class="edge-dots" id="edge-dots"></div>
       </div>
 
-      <!-- HIDDEN CONTEXT MENU (Triggered by Long-Press / Hold Tap Anywhere) -->
+      <!-- HIDDEN HOLD-TAP CONTEXT MENU -->
       <div class="ctx-bg" id="ctx-bg" onclick="if(event.target===this) closeCtx()">
         <div class="ctx-menu">
-          <h3>HUD Canvas Menu (Hold Tap)</h3>
+          <h3>HUD Canvas Menu</h3>
           <button onclick="openAddComponent()">+ Add New Component</button>
-          <button onclick="toggleMoveMode()" id="ctx-move">✥ Move / Edit Components: Off</button>
-          <button onclick="toggleGridSnap()" id="ctx-snap">⊞ Toggle Grid Snap: On</button>
-          <button onclick="addHudPage()">＋ Add New Page (Swipe)</button>
-          <button onclick="toggleFuelPause()" id="ctx-fuel">⏸ Pause Fuel Avg (Idle/Rest): Off</button>
-          <button onclick="showPage1(); closeCtx();">← Back to Main Menu</button>
+          <button onclick="toggleMoveMode()" id="ctx-move">Move / Edit Components: Off</button>
+          <button onclick="toggleGridSnap()" id="ctx-snap">Grid Snap (8×4 / 4×8): On</button>
+          <button onclick="addHudPage()">+ Add New Page</button>
+          <button onclick="toggleFuelPause()" id="ctx-fuel">Pause Fuel Avg (Persisted): Off</button>
+          <button onclick="showPage1(); closeCtx();">← Back to Home Menu</button>
         </div>
       </div>
 
-      <!-- ADD / EDIT COMPONENT PICKER -->
+      <!-- COMPONENT PICKER -->
       <div class="sheet-bg" id="picker-bg">
         <div class="sheet">
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <strong style="font-size:14px;">Pick Available Value &amp; Component Shape</strong>
+            <strong style="font-size:14px;">Add Component</strong>
             <button class="btn" onclick="closePicker()">✕</button>
           </div>
-          <div>
-            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">AVAILABLE ON THIS CAR (AVANZA 1.3L — 16 ECU + 12 CALC + PHONE + DTC)</div>
-            <select class="sel" id="p-sensor">
-              <optgroup label="ECU Mode 01 (Verified Available)">
-                <option value="rpm">Engine RPM (010C) — 802 RPM</option>
-                <option value="obd_speed">OBD Speed (010D) — km/h</option>
-                <option value="coolant">Coolant Temp (0105) — 84 °C</option>
-                <option value="iat">Intake Air Temp (010F) — 65 °C</option>
-                <option value="timing">Timing Advance (010E) — 7.0 °</option>
-                <option value="maf">Intake Flow / MAF (0110) — 1.57 g/s</option>
-                <option value="throttle">Throttle Position (0111) — 10.6 %</option>
-                <option value="rel_throttle">Relative Throttle (0145) — 0.0 %</option>
-                <option value="load">Engine Load (0104) — 15.3 %</option>
-                <option value="voltage">Control Module Voltage (0142) — 13.9 V</option>
-                <option value="stft">STFT Bank 1 (0106) — +3.9 %</option>
-                <option value="ltft">LTFT Bank 1 (0107) — -2.3 %</option>
-                <option value="map">Manifold Pressure / MAP (010B) — 29 kPa</option>
-                <option value="baro">Barometric Pressure (0133) — 100 kPa</option>
-                <option value="o2_v">O2 B1S1 Voltage (0114) — 0.06 V</option>
-                <option value="o2_stft">O2 B1S1 Fuel Trim (0114) — +21.1 %</option>
-                <option value="evap">Evap Purge (012E) — 0.0 %</option>
-              </optgroup>
-              <optgroup label="Calculated Values (From Avanza 1.3L Raw Data)">
-                <option value="kpl_road">Fuel Avg — Road-Only (No Idle) — km/L</option>
-                <option value="kpl_inst">Fuel Economy Instant (KPL) — km/L</option>
-                <option value="kpl_trip">Fuel Avg — Full Trip — km/L</option>
-                <option value="fuel_flow">Fuel Flow Rate — L/h</option>
-                <option value="boost">Boost / Vacuum (MAP - Baro) — bar</option>
-                <option value="ve">Volumetric Efficiency — %</option>
-                <option value="hp">Estimated Horsepower — HP</option>
-                <option value="torque">Estimated Torque — Nm</option>
-                <option value="eff">Driving Efficiency Score — /100</option>
-              </optgroup>
-              <optgroup label="Phone &amp; Functional Components">
-                <option value="gps_speed">GPS Speed — km/h</option>
-                <option value="accel_g">Acceleration G-Force (IMU) — g</option>
-                <option value="minimap">Strava-Style Run &amp; Nav Mini-Map</option>
-                <option value="fuel_ctrl">Fuel Avg + Idle-Pause Toggle</option>
-                <option value="dtc">DTC Checker &amp; Clear (03/07/04)</option>
-              </optgroup>
-            </select>
+          <select class="sel" id="p-sensor">
+            <optgroup label="ECU Mode 01 (Available)">
+              <option value="rpm">Engine RPM (010C)</option>
+              <option value="obd_speed">OBD Speed (010D)</option>
+              <option value="coolant">Coolant Temp (0105)</option>
+              <option value="iat">Intake Air Temp (010F)</option>
+              <option value="timing">Timing Advance (010E)</option>
+              <option value="maf">Intake Flow / MAF (0110)</option>
+              <option value="throttle">Throttle Position (0111)</option>
+              <option value="load">Engine Load (0104)</option>
+              <option value="voltage">Control Module Voltage (0142)</option>
+              <option value="stft">STFT B1 (0106)</option>
+              <option value="ltft">LTFT B1 (0107)</option>
+              <option value="map">MAP (010B)</option>
+            </optgroup>
+            <optgroup label="Calculated Values (Multi-Sensor)">
+              <option value="kpl_road">All Time Avg (KPL)</option>
+              <option value="kpl_trip">Trip Fuel Avg (KPL Trip)</option>
+              <option value="kpl_inst">Instant Fuel Economy (KPL Inst)</option>
+              <option value="fuel_left">Estimated Fuel Left (L / %)</option>
+              <option value="range_km">Estimated Range / DTE (km)</option>
+              <option value="boost">Boost / Vacuum</option>
+              <option value="ve">Volumetric Efficiency (%)</option>
+              <option value="hp">Estimated Horsepower (HP)</option>
+              <option value="torque">Estimated Torque (Nm)</option>
+              <option value="eff">Driving Efficiency (Eff.)</option>
+            </optgroup>
+            <optgroup label="Phone &amp; Functional">
+              <option value="gps_speed">GPS Speed</option>
+              <option value="accel_g">Accel G-Force (IMU)</option>
+              <option value="minimap">Run &amp; Nav Mini-Map</option>
+              <option value="fuel_ctrl">Fuel Avg + Persistent Idle Pause</option>
+              <option value="dtc">DTC Checker (03/07/04)</option>
+            </optgroup>
+          </select>
+          <div class="chip-row" id="p-type">
+            <button class="chip sel" data-v="radial">Precision Radial</button>
+            <button class="chip" data-v="semi">Semi-Arc</button>
+            <button class="chip" data-v="digital">Digital</button>
+            <button class="chip" data-v="bar">Line Bar</button>
+            <button class="chip" data-v="chart">Area Chart</button>
+            <button class="chip" data-v="special">Widget / Map</button>
           </div>
-          <div>
-            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">MODERN COMPONENT SHAPE / TYPE</div>
-            <div class="chip-row" id="p-type">
-              <button class="chip sel" data-v="radial">Modern Radial Dial</button>
-              <button class="chip" data-v="semi">Halo Semi-Arc</button>
-              <button class="chip" data-v="digital">Minimalist Digital</button>
-              <button class="chip" data-v="bar">Linear Precision Bar</button>
-              <button class="chip" data-v="chart">Area Sparkline Chart</button>
-              <button class="chip" data-v="special">Map / Fuel / DTC Widget</button>
-            </div>
+          <div class="chip-row" id="p-size">
+            <button class="chip sel" data-v="1x1">Small (1×1)</button>
+            <button class="chip" data-v="2x1">Wide (2×1)</button>
+            <button class="chip" data-v="2x2">Medium (2×2)</button>
+            <button class="chip" data-v="3x2">Large (3×2)</button>
           </div>
-          <div>
-            <div style="font-size:10px; color:#8b98ab; font-weight:700; margin-bottom:4px;">COMPONENT SIZE</div>
-            <div class="chip-row" id="p-size">
-              <button class="chip sel" data-v="S">Small (120×90)</button>
-              <button class="chip" data-v="W">Wide (240×90)</button>
-              <button class="chip" data-v="M">Medium (180×180)</button>
-              <button class="chip" data-v="L">Large (260×210)</button>
-            </div>
-          </div>
-          <button class="btn primary" style="padding:10px;" onclick="addPickedComponent()">Add to HUD Canvas</button>
+          <button class="btn primary" style="padding:10px;" onclick="addPickedComponent()">Add to Canvas</button>
         </div>
       </div>
+
+      <!-- VEHICLE PROFILE + ODO / TRIP A / TRIP B SHEET -->
+      <div class="sheet-bg" id="veh-bg" onclick="if(event.target===this) closeVehicleSheet()">
+        <div class="sheet">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <strong style="font-size:14px;">Vehicle Profile &amp; Odometers</strong>
+            <button class="btn" onclick="closeVehicleSheet()">✕</button>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;">
+            <div>
+              <div style="color:#7e8796; margin-bottom:4px;">FUEL TYPE</div>
+              <div class="chip-row" id="v-fueltype">
+                <button class="chip sel" data-ft="Gasoline" onclick="pickFuelType('Gasoline')">Gasoline</button>
+                <button class="chip" data-ft="Diesel" onclick="pickFuelType('Diesel')">Diesel</button>
+                <button class="chip" data-ft="Electric" onclick="pickFuelType('Electric')">Electric</button>
+              </div>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:4px;">ALL-TIME ODOMETER (km)</div>
+              <input id="v-odo-in" type="number" step="0.1" value="48412.0" style="width:100%; padding:7px; border-radius:7px; background:#161a22; border:1px solid rgba(255,255,255,0.16); color:#fff; font-size:12px;" onchange="syncVehicleCounters()"/>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;">
+            <div>
+              <div style="color:#7e8796; margin-bottom:4px;" id="v-cap-lbl">TANK CAPACITY (L)</div>
+              <input id="v-cap-in" type="number" step="0.5" value="45.0" style="width:100%; padding:7px; border-radius:7px; background:#161a22; border:1px solid rgba(255,255,255,0.16); color:#fff; font-size:12px;" onchange="syncVehicleCounters()"/>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:4px;" id="v-rem-lbl">EST. CURRENT FUEL (L)</div>
+              <input id="v-rem-in" type="number" step="0.5" value="28.4" style="width:100%; padding:7px; border-radius:7px; background:#161a22; border:1px solid rgba(255,255,255,0.16); color:#fff; font-size:12px;" onchange="syncVehicleCounters()"/>
+            </div>
+          </div>
+          <button class="btn primary" style="padding:9px;" onclick="closeVehicleSheet()">Done</button>
+        </div>
+      </div>
+
+      <!-- REFUEL CHECKPOINT LOG SHEET -->
+      <div class="sheet-bg" id="refuel-bg" onclick="if(event.target===this) closeRefuelSheet()">
+        <div class="sheet">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <strong style="font-size:14px;">Refuel Checkpoint Log</strong>
+              <div style="font-size:10px; color:#7e8796;">Cycle Avg calculated between refuels · Independent of All-Time &amp; Run tracking</div>
+            </div>
+            <button class="btn" onclick="closeRefuelSheet()">✕</button>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px; font-size:11px;">
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;" id="rf-vol-lbl">Volume (L)</div>
+              <input id="rf-vol" type="number" step="0.1" value="24.1" style="width:100%; padding:6px; border-radius:6px; background:#161a22; border:1px solid rgba(255,255,255,0.15); color:#fff;"/>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;">Price</div>
+              <input id="rf-price" type="number" value="325350" style="width:100%; padding:6px; border-radius:6px; background:#161a22; border:1px solid rgba(255,255,255,0.15); color:#fff;"/>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;">Currency</div>
+              <select id="rf-curr" class="sel" style="padding:6px;">
+                <option value="IDR">IDR</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="MYR">MYR</option><option value="SGD">SGD</option>
+              </select>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;">RON</div>
+              <input id="rf-ron" type="number" value="95" style="width:100%; padding:6px; border-radius:6px; background:#161a22; border:1px solid rgba(255,255,255,0.15); color:#fff;"/>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1.2fr 1fr auto; gap:6px; align-items:end; font-size:11px;">
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;">Fuel Name (Optional)</div>
+              <input id="rf-name" type="text" placeholder="e.g. Pertamax / V-Power" value="Pertamax Green" style="width:100%; padding:6px; border-radius:6px; background:#161a22; border:1px solid rgba(255,255,255,0.15); color:#fff;"/>
+            </div>
+            <div>
+              <div style="color:#7e8796; margin-bottom:2px;">Odometer Now (km)</div>
+              <input id="rf-odo" type="number" step="0.1" value="48747.0" style="width:100%; padding:6px; border-radius:6px; background:#161a22; border:1px solid rgba(255,255,255,0.15); color:#fff;"/>
+            </div>
+            <button class="btn primary" style="padding:7px 12px;" onclick="addRefuelEntry()">+ Log</button>
+          </div>
+          <div id="rf-list" style="display:flex; flex-direction:column; gap:5px; max-height:140px; overflow-y:auto;"></div>
+        </div>
+      </div>
+
     </div>
   </div>
 
   <script>
     const DATA = {
       rpm: { label: 'RPM', unit: 'RPM', val: 2450, min: 0, max: 7000 },
-      obd_speed: { label: 'OBD Speed', unit: 'km/h', val: 64, min: 0, max: 200 },
-      gps_speed: { label: 'GPS Spd', unit: 'km/h', val: 63, min: 0, max: 200 },
+      obd_speed: { label: 'OBD Spd', unit: 'km/h', val: 64, min: 0, max: 200 },
+      gps_speed: { label: 'GPS Spd', unit: 'km/h', val: 64, min: 0, max: 200 },
       coolant: { label: 'Coolant', unit: '°C', val: 84, min: 0, max: 120 },
       iat: { label: 'Intake', unit: '°C', val: 65, min: 0, max: 100 },
-      timing: { label: 'Timing Adv', unit: '°', val: 14.5, min: -10, max: 45 },
-      maf: { label: 'MAF Flow', unit: 'g/s', val: 11.4, min: 0, max: 120 },
+      timing: { label: 'Timing', unit: '°', val: 14.5, min: -10, max: 45 },
+      maf: { label: 'MAF', unit: 'g/s', val: 11.4, min: 0, max: 120 },
       throttle: { label: 'Throttle', unit: '%', val: 26, min: 0, max: 100 },
-      rel_throttle: { label: 'Rel TPS', unit: '%', val: 14, min: 0, max: 100 },
       load: { label: 'Load', unit: '%', val: 41, min: 0, max: 100 },
-      voltage: { label: 'Volts(CM)', unit: 'V', val: 13.9, min: 10, max: 16 },
-      stft: { label: 'STFT B1', unit: '%', val: 3.9, min: -25, max: 25 },
-      ltft: { label: 'LTFT B1', unit: '%', val: -2.3, min: -25, max: 25 },
+      voltage: { label: 'Volts', unit: 'V', val: 13.9, min: 10, max: 16 },
+      stft: { label: 'STFT', unit: '%', val: 3.9, min: -25, max: 25 },
+      ltft: { label: 'LTFT', unit: '%', val: -2.3, min: -25, max: 25 },
       map: { label: 'MAP', unit: 'kPa', val: 58, min: 0, max: 150 },
-      baro: { label: 'Baro', unit: 'kPa', val: 100, min: 80, max: 110 },
-      o2_v: { label: 'O2 B1S1', unit: 'V', val: 0.65, min: 0, max: 1.2 },
-      o2_stft: { label: 'O2 Trim', unit: '%', val: 2.1, min: -25, max: 25 },
-      evap: { label: 'Evap', unit: '%', val: 0, min: 0, max: 100 },
-      kpl_road: { label: 'KPL Road', unit: 'km/L', val: 13.4, min: 0, max: 30 },
+      kpl_road: { label: 'KPL', unit: 'km/L', val: 13.4, min: 0, max: 30 },
+      kpl_trip: { label: 'KPL Trip', unit: 'km/L', val: 12.9, min: 0, max: 30 },
       kpl_inst: { label: 'KPL Inst', unit: 'km/L', val: 14.8, min: 0, max: 30 },
-      kpl_trip: { label: 'KPL Trip', unit: 'km/L', val: 11.9, min: 0, max: 30 },
-      fuel_flow: { label: 'Fuel/h', unit: 'L/h', val: 4.3, min: 0, max: 30 },
-      boost: { label: 'Boost/Vac', unit: 'bar', val: -0.42, min: -1, max: 1.5 },
-      ve: { label: 'Vol Eff', unit: '%', val: 84, min: 0, max: 120 },
+      fuel_left: { label: 'Fuel Left', unit: 'L', val: 28.4, min: 0, max: 45 },
+      range_km: { label: 'Est. Range', unit: 'km', val: 381, min: 0, max: 650 },
+      boost: { label: 'Boost', unit: 'bar', val: -0.42, min: -1, max: 1.5 },
+      ve: { label: 'VE', unit: '%', val: 84, min: 0, max: 120 },
       hp: { label: 'Power', unit: 'HP', val: 68, min: 0, max: 150 },
       torque: { label: 'Torque', unit: 'Nm', val: 108, min: 0, max: 200 },
-      eff: { label: 'Eff Score', unit: '/100', val: 88, min: 0, max: 100 },
+      eff: { label: 'Eff.', unit: '/100', val: 86, min: 0, max: 100 },
       accel_g: { label: 'Accel', unit: 'g', val: 0.14, min: -1, max: 1 },
-      minimap: { label: 'Run Map', unit: '', val: 0, min: 0, max: 1 },
-      fuel_ctrl: { label: 'Fuel Control', unit: '', val: 0, min: 0, max: 1 },
-      dtc: { label: 'DTC Checker', unit: '', val: 0, min: 0, max: 1 }
+      minimap: { label: 'Map', unit: '', val: 0, min: 0, max: 1 },
+      fuel_ctrl: { label: 'Fuel', unit: '', val: 0, min: 0, max: 1 },
+      dtc: { label: 'DTC', unit: '', val: 0, min: 0, max: 1 }
     };
 
-    const SIZES = {
-      S: { w: 120, h: 92 },
-      W: { w: 248, h: 92 },
-      M: { w: 184, h: 176 },
-      L: { w: 268, h: 210 }
-    };
-
-    // Showcase starts with all 7 modern component types, OR user can reset to blank!
+    // Grid spans fill 8×4 (Landscape 891×411) or auto-flow cleanly into 4×8 (Portrait 411×891)!
     let pages = [
       [
-        { id: 1, s: 'rpm', type: 'radial', size: 'M', x: 16, y: 16 },
-        { id: 2, s: 'kpl_road', type: 'semi', size: 'M', x: 208, y: 16 },
-        { id: 3, s: 'coolant', type: 'digital', size: 'S', x: 400, y: 16 },
-        { id: 4, s: 'voltage', type: 'digital', size: 'S', x: 528, y: 16 },
-        { id: 5, s: 'throttle', type: 'bar', size: 'W', x: 400, y: 112 },
-        { id: 6, s: 'maf', type: 'chart', size: 'W', x: 16, y: 204 },
-        { id: 7, s: 'minimap', type: 'special', size: 'L', x: 644, y: 16 },
-        { id: 8, s: 'fuel_ctrl', type: 'special', size: 'W', x: 276, y: 204 },
-        { id: 9, s: 'dtc', type: 'special', size: 'W', x: 536, y: 236 }
+        { id: 1, s: 'rpm',       type: 'radial',  w: 2, h: 2, fx: 20,  fy: 20 },
+        { id: 2, s: 'kpl_road',  type: 'semi',    w: 2, h: 2, fx: 230, fy: 20 },
+        { id: 3, s: 'coolant',   type: 'digital', w: 1, h: 1, fx: 440, fy: 20 },
+        { id: 4, s: 'voltage',   type: 'digital', w: 1, h: 1, fx: 540, fy: 20 },
+        { id: 5, s: 'minimap',   type: 'special', w: 2, h: 3, fx: 640, fy: 20 },
+        { id: 6, s: 'throttle',  type: 'bar',     w: 2, h: 1, fx: 440, fy: 115 },
+        { id: 7, s: 'maf',       type: 'chart',   w: 2, h: 2, fx: 20,  fy: 205 },
+        { id: 8, s: 'fuel_ctrl', type: 'special', w: 2, h: 1, fx: 230, fy: 205 },
+        { id: 9, s: 'iat',       type: 'digital', w: 1, h: 1, fx: 440, fy: 205 },
+        { id: 10, s: 'timing',   type: 'digital', w: 1, h: 1, fx: 540, fy: 205 },
+        { id: 11, s: 'dtc',      type: 'special', w: 4, h: 1, fx: 230, fy: 300 },
+        { id: 12, s: 'gps_speed',type: 'digital', w: 2, h: 1, fx: 640, fy: 300 }
       ],
-      [] // Page 2 starts blank!
+      []
     ];
 
-    let activePage = 0;
-    let moveMode = false;
-    let gridSnap = true;
-    let fuelPaused = false;
-    let runTracking = true;
-    let holdTimer = null;
-    let dragNode = null;
-    let dragOffsetX = 0;
-    let dragOffsetY = 0;
+    let activePage = 0, onHudPage = true, moveMode = false, gridSnap = true, runTracking = true;
+    let fuelPaused = localStorage.getItem('apex_fuel_paused') === 'true';
+    let holdTimer = null, dragNode = null, dragOffsetX = 0, dragOffsetY = 0;
+
+    // Populate 32 guide cells for 8x4 / 4x8 visual grid
+    const guide = document.getElementById('grid-guide');
+    for (let i = 0; i < 32; i++) {
+      const c = document.createElement('div');
+      c.className = 'guide-cell';
+      guide.appendChild(c);
+    }
+
+    function syncFuelLabels() {
+      document.getElementById('ctx-fuel').textContent = `Pause Fuel Avg (Persisted): ${fuelPaused ? 'On' : 'Off'}`;
+    }
+    function toggleFuelPause() {
+      fuelPaused = !fuelPaused;
+      localStorage.setItem('apex_fuel_paused', String(fuelPaused));
+      syncFuelLabels(); closeCtx();
+      if (onHudPage) renderHud();
+    }
 
     function showPage1() {
+      onHudPage = false;
       document.getElementById('hub-view').classList.add('active');
       document.getElementById('hud-wrap').classList.remove('active');
       document.getElementById('btn-p1').classList.add('active');
       document.getElementById('btn-p2').classList.remove('active');
     }
-
     function showPage2() {
+      onHudPage = true;
       document.getElementById('hub-view').classList.remove('active');
       document.getElementById('hud-wrap').classList.add('active');
       document.getElementById('btn-p2').classList.add('active');
       document.getElementById('btn-p1').classList.remove('active');
-    }
-
-    function loadBlankCanvas() {
-      pages = [[]];
-      activePage = 0;
-      showPage2();
       renderHud();
     }
-
-    function loadComponentGallery() {
+    function loadBlankCanvas() { pages = [[]]; activePage = 0; showPage2(); }
+    function loadGallery() {
       pages[0] = [
-        { id: 1, s: 'rpm', type: 'radial', size: 'M', x: 16, y: 16 },
-        { id: 2, s: 'kpl_road', type: 'semi', size: 'M', x: 208, y: 16 },
-        { id: 3, s: 'coolant', type: 'digital', size: 'S', x: 400, y: 16 },
-        { id: 4, s: 'voltage', type: 'digital', size: 'S', x: 528, y: 16 },
-        { id: 5, s: 'throttle', type: 'bar', size: 'W', x: 400, y: 112 },
-        { id: 6, s: 'maf', type: 'chart', size: 'W', x: 16, y: 204 },
-        { id: 7, s: 'minimap', type: 'special', size: 'L', x: 644, y: 16 },
-        { id: 8, s: 'fuel_ctrl', type: 'special', size: 'W', x: 276, y: 204 },
-        { id: 9, s: 'dtc', type: 'special', size: 'W', x: 536, y: 236 }
+        { id: 1, s: 'rpm',       type: 'radial',  w: 2, h: 2, fx: 20,  fy: 20 },
+        { id: 2, s: 'kpl_road',  type: 'semi',    w: 2, h: 2, fx: 230, fy: 20 },
+        { id: 3, s: 'coolant',   type: 'digital', w: 1, h: 1, fx: 440, fy: 20 },
+        { id: 4, s: 'voltage',   type: 'digital', w: 1, h: 1, fx: 540, fy: 20 },
+        { id: 5, s: 'minimap',   type: 'special', w: 2, h: 3, fx: 640, fy: 20 },
+        { id: 6, s: 'throttle',  type: 'bar',     w: 2, h: 1, fx: 440, fy: 115 },
+        { id: 7, s: 'maf',       type: 'chart',   w: 2, h: 2, fx: 20,  fy: 205 },
+        { id: 8, s: 'fuel_ctrl', type: 'special', w: 2, h: 1, fx: 230, fy: 205 },
+        { id: 9, s: 'iat',       type: 'digital', w: 1, h: 1, fx: 440, fy: 205 },
+        { id: 10, s: 'timing',   type: 'digital', w: 1, h: 1, fx: 540, fy: 205 },
+        { id: 11, s: 'dtc',      type: 'special', w: 4, h: 1, fx: 230, fy: 300 },
+        { id: 12, s: 'gps_speed',type: 'digital', w: 2, h: 1, fx: 640, fy: 300 }
       ];
-      activePage = 0;
-      showPage2();
-      renderHud();
+      activePage = 0; showPage2();
     }
 
     function renderNodeInner(n) {
@@ -441,106 +634,122 @@
       const pct = Math.min(1, Math.max(0, (d.val - d.min) / (d.max - d.min)));
 
       if (n.s === 'minimap') {
-        return `<div style="width:100%; height:100%; background:#07111e; border:1px solid rgba(0,168,255,0.28); border-radius:16px; position:relative; overflow:hidden;">
+        return `<div style="width:100%; height:100%; background:#09111b; border:1px solid rgba(255,255,255,0.12); border-radius:12px; position:relative; overflow:hidden;">
           <svg width="100%" height="100%" viewBox="0 0 260 200" preserveAspectRatio="none">
-            <path d="M0 140 L260 65 M75 0 L115 200 M195 0 L175 200" stroke="#17273e" stroke-width="10" fill="none"/>
-            <path d="M22 175 Q 105 110, 145 92 T 242 26" stroke="#00a8ff" stroke-width="4.5" fill="none" stroke-linecap="round"/>
-            <circle cx="145" cy="92" r="6" fill="#00a8ff"/>
-            <circle cx="145" cy="92" r="16" fill="rgba(0,168,255,0.22)"/>
+            <path d="M0 140 L260 65 M75 0 L115 200 M195 0 L175 200" stroke="#162233" stroke-width="9" fill="none"/>
+            <path d="M22 175 Q 105 110, 145 92 T 242 26" stroke="#00a8ff" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+            <circle cx="145" cy="92" r="5" fill="#00a8ff"/>
           </svg>
           <div style="position:absolute; top:8px; left:8px; right:8px; display:flex; justify-content:space-between; font-size:10px;">
-            <span style="background:rgba(0,0,0,0.75); padding:3px 7px; border-radius:6px; color:#38bdf8; font-weight:700;">Strava Run • 2.4 km</span>
-            <button onclick="event.stopPropagation(); runTracking=!runTracking; renderHud();" style="background:${runTracking?'rgba(239,68,68,0.85)':'rgba(34,197,94,0.85)'}; border:none; color:#fff; font-size:10px; font-weight:700; padding:3px 8px; border-radius:6px; cursor:pointer;">${runTracking?'■ Stop Run':'● Start Run'}</button>
+            <span style="background:rgba(0,0,0,0.75); padding:3px 7px; border-radius:5px; color:#cbd5e1;">Run · 2.4 km</span>
+            <button onclick="event.stopPropagation(); runTracking=!runTracking; renderHud();" style="background:${runTracking?'#dc2626':'#16a34a'}; border:none; color:#fff; font-size:10px; font-weight:700; padding:3px 8px; border-radius:5px; cursor:pointer;">${runTracking?'Stop':'Start'}</button>
           </div>
-          <span style="position:absolute; bottom:7px; right:8px; background:rgba(0,0,0,0.75); color:#00a8ff; font-size:10px; font-weight:700; padding:3px 8px; border-radius:6px;">↗ Navigate</span>
+          <span style="position:absolute; bottom:7px; right:8px; background:rgba(0,0,0,0.75); color:#00a8ff; font-size:10px; font-weight:600; padding:3px 8px; border-radius:5px;">Navigate ↗</span>
         </div>`;
       }
-
       if (n.s === 'fuel_ctrl') {
-        return `<div style="width:100%; height:100%; background:#070c14; border:1px solid rgba(0,168,255,0.25); border-radius:14px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center;">
+        return `<div style="width:100%; height:100%; border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:8px 10px; display:flex; justify-content:space-between; align-items:center;">
           <div>
-            <div style="font-size:10px; color:#38bdf8; font-weight:700;">ROAD-ONLY KPL (NO IDLE)</div>
-            <div class="num" style="font-size:24px; font-weight:800;">${DATA.kpl_road.val} <span style="font-size:11px; color:#8b98ab;">km/L</span></div>
-            <div style="font-size:10px; color:#8b98ab;">Trip Avg: ${DATA.kpl_trip.val} km/L</div>
+            <div style="font-size:9px; color:#7b8494; font-weight:700; letter-spacing:0.05em;">KPL · ALL TIME · ${Math.round(remFuel*DATA.kpl_road.val)} KM DTE</div>
+            <div class="num" style="font-size:20px; font-weight:700;">${DATA.kpl_road.val} <span style="font-size:10px; color:#7b8494;">km/L</span></div>
           </div>
-          <button onclick="event.stopPropagation(); toggleFuelPause(); renderHud();" style="background:${fuelPaused?'#f59e0b':'rgba(0,168,255,0.16)'}; color:${fuelPaused?'#000':'#00a8ff'}; border:1px solid ${fuelPaused?'#f59e0b':'#00a8ff'}; font-size:10px; font-weight:700; padding:6px 9px; border-radius:8px; cursor:pointer;">${fuelPaused?'Paused\n(Idle/Rest)':'Pause\nIdle Avg'}</button>
+          <button onclick="event.stopPropagation(); toggleFuelPause();" style="background:transparent; color:${fuelPaused?'#f59e0b':'#00a8ff'}; border:1px solid ${fuelPaused?'#f59e0b':'#00a8ff'}; font-size:10px; font-weight:600; padding:5px 8px; border-radius:6px; cursor:pointer;">${fuelPaused?'Paused':'Pause Idle'}</button>
         </div>`;
       }
-
       if (n.s === 'dtc') {
-        return `<div style="width:100%; height:100%; background:#070c14; border:1px solid rgba(255,255,255,0.12); border-radius:14px; padding:10px 12px; display:flex; justify-content:space-between; align-items:center;">
+        return `<div style="width:100%; height:100%; border:1px solid rgba(255,255,255,0.12); border-radius:10px; padding:8px 12px; display:flex; justify-content:space-between; align-items:center;">
           <div>
-            <div style="font-size:10px; color:#38bdf8; font-weight:700;">DTC CHECKER (03/07)</div>
-            <div style="font-size:14px; font-weight:700; color:#22c55e; margin-top:2px;">✓ 0 Faults • CAN 7E8</div>
+            <div style="font-size:9px; color:#7b8494; font-weight:600;">FAULT CHECK (03/07)</div>
+            <div style="font-size:13px; font-weight:600; color:#22c55e; margin-top:2px;">0 Faults · CAN 7E8</div>
           </div>
-          <span style="font-size:10px; color:#8b98ab; border:1px solid rgba(255,255,255,0.18); padding:4px 8px; border-radius:6px;">Scan</span>
+          <span style="font-size:10px; color:#cbd5e1; border:1px solid rgba(255,255,255,0.16); padding:4px 8px; border-radius:6px;">Scan</span>
         </div>`;
       }
-
       if (n.type === 'radial') {
-        const dim = Math.min(SIZES[n.size].w, SIZES[n.size].h) - 18;
         const ang = -125 + pct * 250;
-        const off = Math.round(235 - pct * 235);
-        return `<svg width="${dim}" height="${dim * 0.88}" viewBox="0 0 150 132">
-          <path d="M 20 112 A 56 56 0 1 1 130 112" fill="none" stroke="rgba(0,168,255,0.14)" stroke-width="7" stroke-linecap="round"/>
-          <path d="M 20 112 A 56 56 0 1 1 130 112" fill="none" stroke="#00a8ff" stroke-width="7" stroke-linecap="round"
-            stroke-dasharray="235" stroke-dashoffset="${off}"/>
-          <g transform="translate(75,78) rotate(${ang})">
-            <line x1="0" y1="6" x2="0" y2="-45" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round"/>
-            <circle cx="0" cy="0" r="4" fill="#00a8ff"/>
+        const off = Math.round(252 - pct * 252);
+        const warnDash = 44; // top ~18% redline/warning arc
+        return `<svg width="100%" height="100%" viewBox="0 0 160 144" preserveAspectRatio="xMidYMid meet">
+          <circle cx="80" cy="78" r="65" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="1" stroke-dasharray="1 5"/>
+          <path d="M 22 116 A 60 60 0 1 1 138 116" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M 122 36 A 60 60 0 0 1 138 116" fill="none" stroke="rgba(239,68,68,0.28)" stroke-width="4.5" stroke-linecap="round"/>
+          <path d="M 22 116 A 60 60 0 1 1 138 116" fill="none" stroke="${pct>0.82?'#ef4444':'#00a8ff'}" stroke-width="5" stroke-linecap="round"
+            stroke-dasharray="252" stroke-dashoffset="${off}"/>
+          <g transform="translate(80,78) rotate(${ang})">
+            <polygon points="-2.5,6 0,-53 2.5,6" fill="#f8fafc"/>
+            <circle cx="0" cy="0" r="6" fill="#090d14" stroke="#00a8ff" stroke-width="2"/>
           </g>
-          <text x="75" y="104" text-anchor="middle" fill="#fff" font-size="22" font-weight="800" class="num">${d.val}</text>
-          <text x="75" y="120" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="700">${d.label} (${d.unit})</text>
+          <text x="80" y="34" text-anchor="middle" fill="#6e788a" font-size="9" font-weight="700" letter-spacing="1.1">${d.label.toUpperCase()}</text>
+          <text x="80" y="120" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="700" class="num">${d.val}<tspan fill="#7b8494" font-size="9.5" font-weight="600" dx="3">${d.unit}</tspan></text>
         </svg>`;
       }
-
       if (n.type === 'semi') {
-        const off = Math.round(180 - pct * 180);
-        return `<svg width="160" height="120" viewBox="0 0 160 120">
-          <path d="M 18 100 A 62 62 0 1 1 142 100" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="10" stroke-linecap="round"/>
-          <path d="M 18 100 A 62 62 0 1 1 142 100" fill="none" stroke="#00a8ff" stroke-width="10" stroke-linecap="round"
-            stroke-dasharray="180" stroke-dashoffset="${off}"/>
-          <text x="80" y="78" text-anchor="middle" fill="#fff" font-size="28" font-weight="800" class="num">${d.val}</text>
-          <text x="80" y="96" text-anchor="middle" fill="#38bdf8" font-size="10" font-weight="700">${d.label} • ${d.unit}</text>
+        const off = Math.round(188 - pct * 188);
+        return `<svg width="100%" height="100%" viewBox="0 0 166 122" preserveAspectRatio="xMidYMid meet">
+          <text x="83" y="18" text-anchor="middle" fill="#6e788a" font-size="9" font-weight="700" letter-spacing="1">${d.label.toUpperCase()}</text>
+          <path d="M 18 100 A 64 64 0 1 1 148 100" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="7" stroke-linecap="round"/>
+          <path d="M 18 100 A 64 64 0 1 1 148 100" fill="none" stroke="#00a8ff" stroke-width="7" stroke-linecap="round"
+            stroke-dasharray="188" stroke-dashoffset="${off}"/>
+          <text x="83" y="88" text-anchor="middle" fill="#f8fafc" font-size="27" font-weight="700" class="num">${d.val}<tspan fill="#7b8494" font-size="10.5" font-weight="600" dx="4">${d.unit}</tspan></text>
+          <line x1="34" y1="108" x2="132" y2="108" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+          <text x="34" y="118" fill="#5b6474" font-size="8.5" class="num">${d.min}</text>
+          <text x="132" y="118" text-anchor="end" fill="#5b6474" font-size="8.5" class="num">${d.max}</text>
         </svg>`;
       }
-
       if (n.type === 'bar') {
-        return `<div style="width:100%; padding:0 8px;">
-          <div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:6px;">
-            <span style="color:#38bdf8; font-weight:700;">${d.label.toUpperCase()}</span>
-            <strong class="num" style="font-size:16px;">${d.val} ${d.unit}</strong>
+        const fillPct = Math.round(pct * 100);
+        return `<div style="width:100%; height:100%; border-left:2px solid #00a8ff; background:rgba(255,255,255,0.025); border-radius:6px; padding:6px 10px; display:flex; flex-direction:column; justify-content:center; gap:7px;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <span style="font-size:10px; color:#7b8494; font-weight:700; letter-spacing:0.06em;">${d.label.toUpperCase()}</span>
+            <div class="num"><strong style="font-size:18px; color:#f8fafc;">${d.val}</strong><span style="font-size:10px; color:#7b8494; margin-left:3px;">${d.unit}</span></div>
           </div>
-          <div style="height:8px; background:rgba(255,255,255,0.12); border-radius:99px; overflow:hidden;">
-            <div style="height:100%; width:${Math.round(pct*100)}%; background:linear-gradient(90deg, #00a8ff, #38bdf8);"></div>
+          <div style="position:relative; height:6px; background:rgba(255,255,255,0.09); border-radius:3px; overflow:hidden;">
+            <div style="height:100%; width:${fillPct}%; background:linear-gradient(90deg, #0077cc, #00a8ff); border-radius:3px;"></div>
           </div>
         </div>`;
       }
-
       if (n.type === 'chart') {
-        return `<div style="width:100%; padding:0 8px;">
-          <div style="font-size:10px; color:#38bdf8; font-weight:700;">${d.label.toUpperCase()} • ${d.val} ${d.unit}</div>
-          <svg width="100%" height="52" viewBox="0 0 220 52" preserveAspectRatio="none" style="margin-top:4px;">
-            <defs><linearGradient id="gblue" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="rgba(0,168,255,0.35)"/><stop offset="100%" stop-color="rgba(0,168,255,0)"/></linearGradient></defs>
-            <polygon fill="url(#gblue)" points="0,52 0,36 35,28 70,32 105,18 140,22 175,14 220,${Math.round(46 - pct*38)} 220,52"/>
-            <polyline fill="none" stroke="#00a8ff" stroke-width="2.2" points="0,36 35,28 70,32 105,18 140,22 175,14 220,${Math.round(46 - pct*38)}"/>
+        const yNow = Math.round(62 - pct * 52);
+        return `<div style="width:100%; height:100%; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02); border-radius:10px; padding:6px 9px; display:flex; flex-direction:column; justify-content:space-between;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <span style="font-size:9.5px; color:#7b8494; font-weight:700; letter-spacing:0.06em;">${d.label.toUpperCase()}</span>
+            <span class="num"><strong style="font-size:15px; color:#f8fafc;">${d.val}</strong><span style="font-size:9.5px; color:#7b8494; margin-left:3px;">${d.unit}</span></span>
+          </div>
+          <svg width="100%" height="100%" viewBox="0 0 220 70" preserveAspectRatio="none" style="flex:1; margin-top:4px;">
+            <defs>
+              <linearGradient id="areaG-${n.id}" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#00a8ff" stop-opacity="0.32"/>
+                <stop offset="100%" stop-color="#00a8ff" stop-opacity="0.0"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="35" x2="220" y2="35" stroke="rgba(255,255,255,0.06)" stroke-dasharray="3 4"/>
+            <polygon fill="url(#areaG-${n.id})" points="0,70 0,50 35,38 70,44 105,24 140,30 175,18 220,${yNow} 220,70"/>
+            <polyline fill="none" stroke="#00a8ff" stroke-width="2" points="0,50 35,38 70,44 105,24 140,30 175,18 220,${yNow}"/>
+            <circle cx="218" cy="${yNow}" r="3" fill="#fff" stroke="#00a8ff" stroke-width="2"/>
           </svg>
         </div>`;
       }
-
-      // Minimalist Digital (Pure Torque Evo typography)
-      return `<div style="text-align:center;">
-        <div style="font-size:11px; color:#38bdf8; font-weight:700; letter-spacing:0.06em;">${d.label}</div>
-        <div class="num" style="font-size:30px; font-weight:700; color:#f8fafc; line-height:1.1;">${d.val}</div>
-        <div style="font-size:11px; color:#8b98ab;">${d.unit}</div>
+      // Modern Research-Backed Digital Tile: top-left sensor tag + tight inline unit beside baseline value + bottom hairline range bar
+      const warn = pct > 0.85 ? '#f59e0b' : '#00a8ff';
+      return `<div style="width:100%; height:100%; border:1px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.02); border-radius:9px; padding:7px 9px; display:flex; flex-direction:column; justify-content:space-between;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:9px; color:#7b8494; font-weight:700; letter-spacing:0.06em;">${d.label.toUpperCase()}</span>
+          <span style="width:5px; height:5px; border-radius:50%; background:${warn};"></span>
+        </div>
+        <div class="num" style="display:flex; align-items:baseline; gap:3px;">
+          <span style="font-size:24px; font-weight:700; color:#f8fafc; line-height:1;">${d.val}</span>
+          <span style="font-size:10px; color:#7b8494; font-weight:600;">${d.unit}</span>
+        </div>
+        <div style="height:2px; background:rgba(255,255,255,0.08); border-radius:2px; overflow:hidden;">
+          <div style="height:100%; width:${Math.round(pct*100)}%; background:${warn};"></div>
+        </div>
       </div>`;
     }
 
     function renderHud() {
       const pager = document.getElementById('hud-pager');
       const dots = document.getElementById('edge-dots');
-      pager.innerHTML = '';
-      dots.innerHTML = '';
+      pager.innerHTML = ''; dots.innerHTML = '';
 
       pages.forEach((nodes, pIdx) => {
         const dot = document.createElement('span');
@@ -549,39 +758,85 @@
         dots.appendChild(dot);
 
         const pageEl = document.createElement('div');
-        pageEl.className = 'hud-page';
+        pageEl.className = 'hud-page ' + (gridSnap ? 'snapped' : 'freeform');
 
         if (nodes.length === 0) {
           pageEl.innerHTML = `<div class="blank-hint">
-            <strong style="color:rgba(0,168,255,0.55); font-size:15px;">Blank HUD Canvas (Page ${pIdx + 1})</strong>
-            <span>Hold tap (long-press) anywhere to Add Component, Toggle Grid Snap, or Add Page</span>
+            <strong style="color:rgba(255,255,255,0.45); font-size:14px;">Blank HUD Canvas · Page ${pIdx + 1}</strong>
+            <span>Hold tap anywhere to add components, toggle grid snap, pause idle fuel, or return to menu</span>
           </div>`;
         }
 
         nodes.forEach(n => {
-          const sz = SIZES[n.size];
           const el = document.createElement('div');
           el.className = 'comp-node' + (moveMode ? ' selected moving' : '');
-          el.style.left = n.x + 'px';
-          el.style.top = n.y + 'px';
-          el.style.width = sz.w + 'px';
-          el.style.height = sz.h + 'px';
-          el.innerHTML = renderNodeInner(n);
+          if (gridSnap) {
+            el.style.gridColumn = `span ${n.w}`;
+            el.style.gridRow = `span ${n.h}`;
+          } else {
+            el.style.left = n.fx + 'px';
+            el.style.top = n.fy + 'px';
+            el.style.width = (n.w * 102) + 'px';
+            el.style.height = (n.h * 92) + 'px';
+          }
+
+          el.innerHTML = `
+            <div class="node-edit-pills">
+              <button class="ep" title="Cycle Type" onclick="event.stopPropagation(); cycleType(${pIdx}, ${n.id})">◐</button>
+              <button class="ep" title="Cycle Size" onclick="event.stopPropagation(); cycleSize(${pIdx}, ${n.id})">⤢</button>
+              <button class="ep" style="color:#ef4444;" onclick="event.stopPropagation(); delNode(${pIdx}, ${n.id})">×</button>
+            </div>
+            ${renderNodeInner(n)}
+          `;
 
           el.addEventListener('pointerdown', e => {
             if (!moveMode) return;
             e.stopPropagation();
             dragNode = n;
-            dragOffsetX = e.clientX - n.x;
-            dragOffsetY = e.clientY - n.y;
+            if (!gridSnap) {
+              dragOffsetX = e.clientX - n.fx;
+              dragOffsetY = e.clientY - n.fy;
+            }
           });
+          el.addEventListener('dragover', e => e.preventDefault());
+          el.draggable = moveMode && gridSnap;
+          el.addEventListener('dragstart', () => { dragNode = n; });
+          el.addEventListener('drop', () => {
+            if (!moveMode || !gridSnap || !dragNode || dragNode.id === n.id) return;
+            const a = nodes.findIndex(x => x.id === dragNode.id);
+            const b = nodes.findIndex(x => x.id === n.id);
+            const [m] = nodes.splice(a, 1);
+            nodes.splice(b, 0, m);
+            dragNode = null;
+            renderHud();
+          });
+
           pageEl.appendChild(el);
         });
-
         pager.appendChild(pageEl);
       });
       pager.style.transform = `translateX(-${activePage * 100}%)`;
       document.getElementById('hud-wrap').classList.toggle('grid-on', moveMode && gridSnap);
+    }
+
+    function cycleType(pIdx, id) {
+      const n = pages[pIdx].find(x => x.id === id);
+      if (n.type === 'special') return;
+      const ord = ['radial', 'semi', 'digital', 'bar', 'chart'];
+      n.type = ord[(ord.indexOf(n.type) + 1) % ord.length];
+      renderHud();
+    }
+    function cycleSize(pIdx, id) {
+      const n = pages[pIdx].find(x => x.id === id);
+      const ord = [[1,1], [2,1], [2,2], [3,2], [4,1]];
+      const cur = ord.findIndex(o => o[0] === n.w && o[1] === n.h);
+      const next = ord[(cur + 1) % ord.length];
+      n.w = next[0]; n.h = next[1];
+      renderHud();
+    }
+    function delNode(pIdx, id) {
+      pages[pIdx] = pages[pIdx].filter(x => x.id !== id);
+      renderHud();
     }
 
     const hudWrap = document.getElementById('hud-wrap');
@@ -589,21 +844,12 @@
     hudWrap.addEventListener('pointerdown', e => {
       if (moveMode) return;
       swipeX = e.clientX;
-      holdTimer = setTimeout(() => {
-        swipeX = null;
-        openContextMenu();
-      }, 520);
+      holdTimer = setTimeout(() => { swipeX = null; openContextMenu(); }, 480);
     });
     hudWrap.addEventListener('pointermove', e => {
-      if (dragNode && moveMode) {
-        let nx = e.clientX - dragOffsetX;
-        let ny = e.clientY - dragOffsetY;
-        if (gridSnap) {
-          nx = Math.round(nx / 20) * 20;
-          ny = Math.round(ny / 20) * 20;
-        }
-        dragNode.x = Math.max(0, nx);
-        dragNode.y = Math.max(0, ny);
+      if (dragNode && moveMode && !gridSnap) {
+        dragNode.fx = Math.max(4, e.clientX - dragOffsetX);
+        dragNode.fy = Math.max(4, e.clientY - dragOffsetY);
         renderHud();
       } else if (swipeX !== null && Math.abs(e.clientX - swipeX) > 15) {
         clearTimeout(holdTimer);
@@ -611,7 +857,7 @@
     });
     hudWrap.addEventListener('pointerup', e => {
       clearTimeout(holdTimer);
-      dragNode = null;
+      if (!gridSnap) dragNode = null;
       if (!moveMode && swipeX !== null) {
         const dx = e.clientX - swipeX;
         if (dx < -50) goPage(activePage + 1);
@@ -625,36 +871,20 @@
       document.getElementById('hud-pager').style.transform = `translateX(-${activePage * 100}%)`;
       document.querySelectorAll('.e-dot').forEach((d, idx) => d.classList.toggle('active', idx === activePage));
     }
-
-    function openContextMenu() { document.getElementById('ctx-bg').classList.add('open'); }
+    function openContextMenu() { syncFuelLabels(); document.getElementById('ctx-bg').classList.add('open'); }
     function closeCtx() { document.getElementById('ctx-bg').classList.remove('open'); }
-
     function toggleMoveMode() {
       moveMode = !moveMode;
-      document.getElementById('ctx-move').textContent = `✥ Move / Edit Components: ${moveMode ? 'On' : 'Off'}`;
-      closeCtx();
-      renderHud();
+      document.getElementById('ctx-move').textContent = `Move / Edit Components: ${moveMode ? 'On' : 'Off'}`;
+      closeCtx(); renderHud();
     }
     function toggleGridSnap() {
       gridSnap = !gridSnap;
-      document.getElementById('ctx-snap').textContent = `⊞ Toggle Grid Snap: ${gridSnap ? 'On' : 'Off'}`;
-      renderHud();
+      document.getElementById('ctx-snap').textContent = `Grid Snap (8×4 / 4×8): ${gridSnap ? 'On' : 'Off'}`;
+      closeCtx(); renderHud();
     }
-    function toggleFuelPause() {
-      fuelPaused = !fuelPaused;
-      document.getElementById('ctx-fuel').textContent = `⏸ Pause Fuel Avg (Idle/Rest): ${fuelPaused ? 'On' : 'Off'}`;
-      closeCtx();
-    }
-    function addHudPage() {
-      pages.push([]);
-      activePage = pages.length - 1;
-      closeCtx();
-      renderHud();
-    }
-    function openAddComponent() {
-      closeCtx();
-      document.getElementById('picker-bg').classList.add('open');
-    }
+    function addHudPage() { pages.push([]); activePage = pages.length - 1; closeCtx(); renderHud(); }
+    function openAddComponent() { closeCtx(); document.getElementById('picker-bg').classList.add('open'); }
     function closePicker() { document.getElementById('picker-bg').classList.remove('open'); }
 
     document.querySelectorAll('.chip-row').forEach(r => {
@@ -664,34 +894,111 @@
         e.target.classList.add('sel');
       });
     });
-
     function addPickedComponent() {
       const s = document.getElementById('p-sensor').value;
       const type = document.querySelector('#p-type .sel').dataset.v;
-      const size = document.querySelector('#p-size .sel').dataset.v;
-      pages[activePage].push({ id: Date.now(), s, type, size, x: 20, y: 20 });
-      closePicker();
-      renderHud();
+      const [w, h] = document.querySelector('#p-size .sel').dataset.v.split('x').map(Number);
+      pages[activePage].push({ id: Date.now(), s, type, w, h, fx: 20, fy: 20 });
+      closePicker(); showPage2();
     }
-
     function toggleOrient() {
       const p = document.getElementById('phone');
       const l = p.classList.toggle('landscape');
-      document.getElementById('btn-orient').textContent = l ? 'Landscape' : 'Portrait';
+      document.getElementById('btn-orient').textContent = l ? 'Landscape (891×411)' : 'Portrait (411×891)';
       document.getElementById('btn-orient').classList.toggle('active', l);
+      if (onHudPage) renderHud();
     }
 
     let t = 0;
     setInterval(() => {
-      if (dragNode) return;
+      if (!onHudPage || dragNode) return;
       t += 0.25;
       DATA.rpm.val = Math.round(2300 + Math.sin(t) * 1400);
+      DATA.gps_speed.val = Math.round(62 + Math.sin(t * 0.6) * 18);
+      DATA.load.val = Math.round(41 + Math.sin(t) * 16);
       DATA.maf.val = parseFloat((9.5 + Math.sin(t) * 4.5).toFixed(1));
       DATA.throttle.val = Math.round(26 + Math.sin(t) * 18);
       DATA.kpl_road.val = parseFloat((13.4 + Math.cos(t * 0.5) * 1.4).toFixed(1));
       renderHud();
-    }, 320);
+    }, 280);
 
+    let carFuelType = 'Gasoline', carOdoKm = 48412.0, tankCap = 45.0, remFuel = 28.4;
+    let refuelLogs = [
+      { odo: 48412.0, vol: 24.1, price: 325350, curr: 'IDR', ron: 95, name: 'Pertamax Green', dist: 335.0 },
+      { odo: 48077.0, vol: 22.8, price: 294120, curr: 'IDR', ron: 92, name: 'Pertamax', dist: 301.2 }
+    ];
+    function refreshCarSubtitle() {
+      const u = carFuelType === 'Electric' ? 'kWh' : 'L';
+      const range = Math.round(remFuel * DATA.kpl_road.val);
+      DATA.fuel_left.val = parseFloat(remFuel.toFixed(1));
+      DATA.fuel_left.max = tankCap;
+      DATA.fuel_left.unit = u;
+      DATA.range_km.val = range;
+      document.getElementById('st-range').textContent = range + ' km';
+      document.getElementById('hdr-car-sub').textContent = `1.3L · 1,175 kg · ${carFuelType} · Tank ${remFuel.toFixed(1)}/${tankCap.toFixed(0)} ${u} (~${range} km)`;
+    }
+    function openVehicleSheet() {
+      document.getElementById('v-odo-in').value = carOdoKm.toFixed(1);
+      document.getElementById('v-cap-in').value = tankCap.toFixed(1);
+      document.getElementById('v-rem-in').value = remFuel.toFixed(1);
+      document.getElementById('veh-bg').classList.add('open');
+    }
+    function closeVehicleSheet() { document.getElementById('veh-bg').classList.remove('open'); }
+    function pickFuelType(ft) {
+      carFuelType = ft;
+      document.querySelectorAll('#v-fueltype .chip').forEach(c => c.classList.toggle('sel', c.dataset.ft === ft));
+      document.getElementById('v-cap-lbl').textContent = ft === 'Electric' ? 'BATTERY CAPACITY (kWh)' : 'TANK CAPACITY (L)';
+      document.getElementById('v-rem-lbl').textContent = ft === 'Electric' ? 'EST. CURRENT CHARGE (kWh)' : 'EST. CURRENT FUEL (L)';
+      document.getElementById('rf-vol-lbl').textContent = ft === 'Electric' ? 'Energy (kWh)' : 'Volume (L)';
+      refreshCarSubtitle();
+    }
+    function syncVehicleCounters() {
+      carOdoKm = parseFloat(document.getElementById('v-odo-in').value) || carOdoKm;
+      tankCap = Math.max(1, parseFloat(document.getElementById('v-cap-in').value) || tankCap);
+      remFuel = Math.min(tankCap, Math.max(0, parseFloat(document.getElementById('v-rem-in').value) || 0));
+      document.getElementById('st-odo').textContent = Math.round(carOdoKm).toLocaleString() + ' km';
+      refreshCarSubtitle();
+    }
+    function openRefuelSheet() { renderRefuelList(); document.getElementById('refuel-bg').classList.add('open'); }
+    function closeRefuelSheet() { document.getElementById('refuel-bg').classList.remove('open'); }
+    function addRefuelEntry() {
+      const vol = parseFloat(document.getElementById('rf-vol').value) || 0;
+      const price = parseFloat(document.getElementById('rf-price').value) || 0;
+      const curr = document.getElementById('rf-curr').value;
+      const ron = parseInt(document.getElementById('rf-ron').value, 10) || 0;
+      const name = document.getElementById('rf-name').value.trim();
+      const odo = parseFloat(document.getElementById('rf-odo').value) || carOdoKm;
+      if (vol <= 0) return;
+      const prevOdo = refuelLogs.length ? refuelLogs[0].odo : carOdoKm;
+      const dist = Math.max(0, odo - prevOdo);
+      refuelLogs.unshift({ odo, vol, price, curr, ron, name, dist });
+      if (odo > carOdoKm) { carOdoKm = odo; document.getElementById('st-odo').textContent = Math.round(carOdoKm).toLocaleString() + ' km'; }
+      remFuel = Math.min(tankCap, remFuel + vol);
+      refreshCarSubtitle();
+      const cyc = dist > 0 ? (dist / vol).toFixed(1) + (carFuelType === 'Electric' ? ' km/kWh' : ' km/L') : 'First checkpoint';
+      const u = carFuelType === 'Electric' ? 'kWh' : 'L';
+      document.getElementById('refuel-card-sub').textContent = `${vol}${u}${ron ? ' · RON ' + ron : ''} · ${cyc}`;
+      renderRefuelList();
+    }
+    function renderRefuelList() {
+      const unit = carFuelType === 'Electric' ? 'kWh' : 'L';
+      const effU = carFuelType === 'Electric' ? 'km/kWh' : 'km/L';
+      document.getElementById('rf-list').innerHTML = refuelLogs.map(r => {
+        const avg = r.dist > 0 ? (r.dist / r.vol).toFixed(1) + ' ' + effU : 'Base checkpoint';
+        return `<div style="background:#141923; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:7px 9px; display:flex; justify-content:space-between; font-size:11px;">
+          <div>
+            <strong>${r.name || carFuelType}</strong>${r.ron && carFuelType==='Gasoline' ? ` · <span style="color:#00a8ff;">RON ${r.ron}</span>` : ''}
+            <div style="font-size:10px; color:#7e8796;">Odo ${r.odo.toFixed(1)} km · ${r.vol} ${unit} · ${r.curr} ${r.price.toLocaleString()}</div>
+          </div>
+          <div style="text-align:right;">
+            <strong style="color:#22c55e;" class="num">${avg}</strong>
+            <div style="font-size:10px; color:#7e8796;">${r.dist > 0 ? '+' + r.dist.toFixed(1) + ' km cycle' : 'Start'}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    syncFuelLabels();
     renderHud();
   </script>
 </body>

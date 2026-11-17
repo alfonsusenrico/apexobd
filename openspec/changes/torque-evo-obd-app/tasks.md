@@ -19,7 +19,10 @@
 - [x] 3.3 Implement Edit Mode (reorder ◀/▶, display-type cycling ◐, size cycling ⤢, delete ×), Component Picker sheet (`Sensor → Display Type → Size`), Page Manager (`+ Add New Blank Page` / delete), and Parked Setup sheet (Wi-Fi config, Mode `09` VIN, Mode `04` Clear DTCs, Trip CSV/JSON export, UDS Mode `22` custom PIDs) — **Evidence:** Compiled in `:app:assembleDebug`.
 - **Expected Result:** Debug APK `app/build/outputs/apk/debug/app-debug.apk` built cleanly (18 MB) and all 14 unit tests pass.
 
-## Phase 4: Verification & Delivery
-- [x] 4.1 Record verification evidence in `openspec/changes/torque-evo-obd-app/verification.md` and update `PROJECT_STATE.md`.
-- [ ] 4.2 Owner tests APK on Android device/Wi-Fi ELM327 adapter and accepts result before archiving OpenSpec change and merging to `main`.
-- **Expected Result:** Owner receives verified APK and build/install instructions.
+## Phase 4: Hardware Discovery, Multi-Sensor Physics, & Approved 2-Page Architecture
+- [x] 4.1 Read-only live ECU scan on Toyota Avanza CAN `7E8`, ELM327 `ATDP` ordering & echo/delay fixes (`01XX1` 43–50ms single-PID baseline, blocking TCP reads, `2x` RPM interleaving).
+- [x] 4.2 Upgrade `:obd-core` with approved labels (`KPL`, `KPL Inst`, `KPL Trip`, `Eff.`, `Fuel Left`, `Est. Range`), `Gasoline/Diesel/Electric` physics, Tank Capacity & DTE, DFCO (`0145` + `MAP/Baro`), `STFT/LTFT/Coolant` trims & cold enrichment, Willans-Line BSFC + `Timing Advance 010E` + Road Dynamics Torque/HP, global unit conversions, and unit tests.
+- [x] 4.3 Upgrade `:app` database & platform layers: `VehicleProfileEntity` (All-time Odometer, `All time avg` totals, Fuel Type, Tank Capacity, Est. Fuel), `RefuelLogEntity` checkpoint tracker, `HudWidgetEntity` (`freeformX/Y` + `8×4`/`4×8` grid + blank Page 1 default), persisted `Pause Fuel Avg` & `Grid Snap`, `AccelSensorTracker` IMU, `WifiNetworkBinder` cellular request alongside Wi-Fi OBD, and `MapLibre` offline region downloader + optional `Google Maps` & `Track Only` providers.
+- [x] 4.4 Rewrite Compose UI to match approved preview (`HomeMenuScreen.kt` A+B static Home with Refuel Log / Vehicle Profile / Odometer / Faults / Run Logs / ECU PIDs / Settings, blank-default zero-chrome `HudCanvasScreen.kt` with hold-tap context menu & `8×4`/`4×8`/freeform layout, refined horizontal-unit `TorqueEvoWidgets.kt`), validate `:obd-core:test`, `:app:testDebugUnitTest`, `:app:assembleDebug`, and `openspec validate --all --strict`.
+- [x] 4.5 Record verification evidence in `openspec/changes/torque-evo-obd-app/verification.md` and `PROJECT_STATE.md`.
+- [ ] 4.6 Owner installs and tests APK on phone/car before archiving OpenSpec change and merging to `main`.
