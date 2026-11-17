@@ -35,6 +35,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -610,31 +613,63 @@ fun MiniMapWidget(
             modifier = Modifier.fillMaxSize()
         )
         Row(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(Color(0xBF000000))
+                .padding(horizontal = 7.dp, vertical = 3.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (isRecording) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFEF4444))
+                )
+            }
             Text(
                 text = if (isRecording) "Recording Run" else "Live GPS",
                 fontSize = 10.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = TorqueEvoColors.TextPrimary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(Color(0xBF000000))
-                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                color = TorqueEvoColors.TextPrimary
             )
-            Text(
-                text = if (isRecording) "Stop" else "Start",
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(if (isRecording) Color(0xFFDC2626) else Color(0xFF16A34A))
-                    .clickable { onToggleRecord() }
-                    .padding(horizontal = 9.dp, vertical = 3.dp)
-            )
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(8.dp)
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(if (isRecording) Color(0xE0180909) else Color(0xD90A0D14))
+                .border(
+                    width = 2.dp,
+                    color = if (isRecording) Color(0xFFEF4444) else Color(0xE6FFFFFF),
+                    shape = CircleShape
+                )
+                .semantics {
+                    contentDescription = if (isRecording) "Stop Recording" else "Record Run"
+                }
+                .clickable(role = Role.Button, onClick = onToggleRecord),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isRecording) {
+                Box(
+                    modifier = Modifier
+                        .size(13.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Color(0xFFEF4444))
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFEF4444))
+                )
+            }
         }
     }
 }
