@@ -1,6 +1,7 @@
 package com.apexobd.app
 
 import android.Manifest
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -59,11 +60,16 @@ class MainActivity : ComponentActivity() {
             TorqueEvoTheme {
                 ApexAppRoot(
                     viewModel = viewModel,
-                    onSystemChromeVisibility = { showSystemBars ->
-                        if (showSystemBars) {
-                            insetsController.show(WindowInsetsCompat.Type.systemBars())
+                    onHudModeChanged = { inHud ->
+                        requestedOrientation = if (inHud) {
+                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
                         } else {
+                            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                        }
+                        if (inHud) {
                             insetsController.hide(WindowInsetsCompat.Type.systemBars())
+                        } else {
+                            insetsController.show(WindowInsetsCompat.Type.systemBars())
                         }
                     }
                 )

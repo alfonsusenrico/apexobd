@@ -14,8 +14,11 @@ import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.PidDefinition
 import com.apexobd.core.protocol.PollTier
 import com.apexobd.core.transport.ObdTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -293,7 +296,7 @@ class ObdPollingEngine(
 
     fun start() {
         if (pollJob?.isActive == true) return
-        pollJob = scope.launch {
+        pollJob = scope.launch(Dispatchers.IO) {
             var attempt = 0
             while (isActive) {
                 try {
@@ -311,6 +314,8 @@ class ObdPollingEngine(
                     attempt = 0
 
                     runPollingLoop(handshake, discovered)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     if (!isActive) break
                     attempt++
@@ -328,8 +333,9 @@ class ObdPollingEngine(
     }
 
     suspend fun stop() {
-        pollJob?.cancel()
+        val job = pollJob
         pollJob = null
+        job?.cancel()
         runCatching { transport.disconnect() }
         _connectionState.value = ConnectionState.Disconnected
         _pollingHz.value = 0
@@ -361,7 +367,7 @@ class ObdPollingEngine(
         var supportsMultiPid = handshake.isCanProtocol
         val values = _liveValues.value.toMutableMap()
 
-        while (scope.isActive && transport.isConnected.value) {
+        while (currentCoroutineContext().isActive && transport.isConnected.value) {
             val profile = pollingProfile
             val requested = activeSensorKeys.ifEmpty {
                 setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "throttle", "maf", "timing_advance")
@@ -376,7 +382,7 @@ class ObdPollingEngine(
 
             if (supportsMultiPid && standardTargets.size >= 2) {
                 for (chunk in standardTargets.chunked(5)) {
-                    if (!transport.isConnected.value) break
+                    if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
                     if (chunk.size == 1) {
                         val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values)
                         if (ok) samplesInSec++
@@ -422,7 +428,7 @@ class ObdPollingEngine(
                     rttCount++
                 } else {
                     for ((idx, pid) in others.withIndex()) {
-                        if (!transport.isConnected.value) break
+                        if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
                         if (rpmPid != null && idx % 2 == 0) {
                             val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
                             if (okRpm) samplesInSec++
@@ -635,7 +641,8 @@ class ObdPollingEngine(
             values["kpl_road_avg"] = fuel.allTimeRoadAvgKpl.takeIf { it > 0.0 } ?: fuel.roadOnlyAvgKpl
             values["fuel_used_l"] = fuel.totalFuelUsedLiters
             values["fuel_remaining"] = fuel.estimatedRemainingFuelLiters
-            values["range_dte"] = fuel.estimatedRangeKm
+            val dteKm = fuel.estimatedRangeKm
+            if (dteKm != null) values["range_dte"] = dteKm else values.remove("range_dte")
             values["efficiency_score"] = fuelTracker.computeEfficiencyDeltaScore(
                 instantKpl = fuel.instantKpl,
                 baselineAvgKpl = fuel.allTimeRoadAvgKpl.takeIf { it > 1.0 } ?: fuel.roadOnlyAvgKpl,
@@ -647,11 +654,16 @@ class ObdPollingEngine(
             )
             _fuelMetrics.value = fuel
         } else {
-            // Still expose configured static Tank/Range estimate even before live fuel PIDs stream
+            // Only expose DTE if real fuel economy history already exists (no fabricated 12.0 default)
             fuelTracker.seedFromProfile(vp)
             values["fuel_remaining"] = vp.estimatedRemainingFuelLiters
-            val estAvg = if (vp.allTimeRoadFuelLiters > 0.01) vp.allTimeRoadDistanceKm / vp.allTimeRoadFuelLiters else 12.0
-            values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
+            val estAvg = vp.recentDteKpl?.takeIf { it > 0.5 }
+                ?: if (vp.allTimeRoadFuelLiters > 0.01) (vp.allTimeRoadDistanceKm / vp.allTimeRoadFuelLiters).takeIf { it > 0.5 } else null
+            if (estAvg != null) {
+                values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
+            } else {
+                values.remove("range_dte")
+            }
         }
 
         _liveValues.value = values.toMap()

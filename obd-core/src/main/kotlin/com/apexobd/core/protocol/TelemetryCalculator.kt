@@ -20,7 +20,8 @@ data class FuelMetricsSnapshot(
     val allTimeRoadFuelLiters: Double,
     val allTimeOdometerKm: Double,
     val estimatedRemainingFuelLiters: Double,
-    val estimatedRangeKm: Double,
+    val estimatedRangeKm: Double?,
+    val dteEconomyKpl: Double?,
     val dfcoActive: Boolean,
     val fuelCalculationPaused: Boolean
 )
@@ -42,6 +43,10 @@ class FuelEconomyTracker {
     private var allTimeRoadFuelL = 0.0
     private var allTimeOdometerKm = 0.0
     private var estimatedFuelLiters = 0.0
+    private var recentDteKpl: Double? = null
+    private var displayedRangeKm: Double? = null
+    private var recentSliceDistKm = 0.0
+    private var recentSliceFuelL = 0.0
     private var seededProfileId: Long? = null
     private var lastUpdateMs: Long = 0L
     private var lastThrottlePct: Double? = null
@@ -57,17 +62,23 @@ class FuelEconomyTracker {
             allTimeRoadFuelL = profile.allTimeRoadFuelLiters
             allTimeOdometerKm = profile.allTimeOdometerKm
             estimatedFuelLiters = profile.estimatedRemainingFuelLiters.coerceIn(0.0, profile.tankCapacityLiters)
+            recentDteKpl = profile.recentDteKpl?.takeIf { it > 0.5 }
+            displayedRangeKm = null
+            recentSliceDistKm = 0.0
+            recentSliceFuelL = 0.0
         }
     }
 
     fun applyRefuelAdded(addedVolumeLiters: Double, tankCapacityLiters: Double) {
         if (addedVolumeLiters <= 0.0) return
         estimatedFuelLiters = (estimatedFuelLiters + addedVolumeLiters).coerceIn(0.0, tankCapacityLiters)
+        displayedRangeKm = null
     }
 
     fun syncManualProfileCounters(profile: VehicleProfile) {
         allTimeOdometerKm = profile.allTimeOdometerKm
         estimatedFuelLiters = profile.estimatedRemainingFuelLiters.coerceIn(0.0, profile.tankCapacityLiters)
+        displayedRangeKm = null
     }
 
     fun resetSession() {
@@ -76,6 +87,9 @@ class FuelEconomyTracker {
         totalFuelLiters = 0.0
         roadFuelLiters = 0.0
         idleFuelLiters = 0.0
+        recentSliceDistKm = 0.0
+        recentSliceFuelL = 0.0
+        displayedRangeKm = null
         lastUpdateMs = 0L
     }
 
@@ -83,6 +97,7 @@ class FuelEconomyTracker {
         resetSession()
         allTimeRoadDistKm = 0.0
         allTimeRoadFuelL = 0.0
+        recentDteKpl = null
     }
 
     fun update(
@@ -171,6 +186,19 @@ class FuelEconomyTracker {
                     roadFuelLiters += dFuelL
                     allTimeRoadDistKm += dDistKm
                     allTimeRoadFuelL += dFuelL
+
+                    // Moving-only Dual-Window EWMA update (~4 km distance constant)
+                    if (dDistKm > 0.0) {
+                        recentSliceDistKm += dDistKm
+                        recentSliceFuelL += dFuelL
+                        if (recentSliceDistKm >= 0.008 && recentSliceFuelL > 0.00005) {
+                            val sliceKpl = (recentSliceDistKm / recentSliceFuelL).coerceIn(1.5, 45.0)
+                            val alpha = (recentSliceDistKm / 4.0).coerceIn(0.01, 0.30)
+                            recentDteKpl = recentDteKpl?.let { prev -> alpha * sliceKpl + (1.0 - alpha) * prev } ?: sliceKpl
+                            recentSliceDistKm = 0.0
+                            recentSliceFuelL = 0.0
+                        }
+                    }
                 } else {
                     idleFuelLiters += dFuelL
                 }
@@ -178,18 +206,45 @@ class FuelEconomyTracker {
         }
         if (ecuFuelLevelPct != null && ecuFuelLevelPct in 0.0..100.0) {
             estimatedFuelLiters = (ecuFuelLevelPct / 100.0) * profile.tankCapacityLiters
+            displayedRangeKm = null
         }
         lastUpdateMs = nowMs
 
         val tripAvg = if (totalFuelLiters > 0.0005) (totalDistanceKm / totalFuelLiters).coerceIn(0.0, 99.9) else 0.0
         val roadAvg = if (roadFuelLiters > 0.0005) (roadDistanceKm / roadFuelLiters).coerceIn(0.0, 99.9) else 0.0
         val allTimeRoadAvg = if (allTimeRoadFuelL > 0.0005) (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.0, 99.9) else roadAvg
-        val rangeAvg = when {
-            allTimeRoadAvg > 0.5 -> allTimeRoadAvg
-            roadAvg > 0.5 -> roadAvg
-            else -> 12.0
+
+        val slowBaseline = if (allTimeRoadFuelL > 0.005) {
+            (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.5, 99.9)
+        } else if (roadFuelLiters > 0.002) {
+            roadAvg.takeIf { it > 0.5 }
+        } else null
+        val fastWindow = recentDteKpl ?: roadAvg.takeIf { roadFuelLiters > 0.002 && it > 0.5 }
+
+        val dteKpl: Double? = when {
+            fastWindow != null && slowBaseline != null -> {
+                val tankFrac = (estimatedFuelLiters / profile.tankCapacityLiters.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
+                val wRecent = if (tankFrac <= 0.25) 0.72 else 0.55
+                (wRecent * fastWindow + (1.0 - wRecent) * slowBaseline).coerceIn(0.5, 99.9)
+            }
+            fastWindow != null -> fastWindow
+            slowBaseline != null -> slowBaseline
+            else -> null
         }
-        val estRangeKm = (estimatedFuelLiters * rangeAvg).coerceAtLeast(0.0)
+
+        val estRangeRaw = dteKpl?.let { (estimatedFuelLiters * it).coerceAtLeast(0.0) }
+        val smoothedRange: Double? = if (estRangeRaw != null) {
+            val prev = displayedRangeKm
+            if (prev == null) {
+                estRangeRaw
+            } else {
+                val delta = (estRangeRaw - prev).coerceIn(-2.0, 1.5)
+                (prev + delta).coerceAtLeast(0.0)
+            }
+        } else {
+            null
+        }
+        displayedRangeKm = smoothedRange
 
         return FuelMetricsSnapshot(
             fuelFlowLitersPerHour = fuelFlowLph,
@@ -206,7 +261,8 @@ class FuelEconomyTracker {
             allTimeRoadFuelLiters = allTimeRoadFuelL,
             allTimeOdometerKm = allTimeOdometerKm,
             estimatedRemainingFuelLiters = estimatedFuelLiters,
-            estimatedRangeKm = estRangeKm,
+            estimatedRangeKm = smoothedRange,
+            dteEconomyKpl = dteKpl,
             dfcoActive = isDfcoCoasting,
             fuelCalculationPaused = paused
         )

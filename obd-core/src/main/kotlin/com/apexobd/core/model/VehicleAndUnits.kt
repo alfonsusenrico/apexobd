@@ -60,6 +60,7 @@ data class VehicleProfile(
     val allTimeOdometerKm: Double = 0.0,
     val allTimeRoadDistanceKm: Double = 0.0,
     val allTimeRoadFuelLiters: Double = 0.0,
+    val recentDteKpl: Double? = null,
     val best0To100Sec: Double? = null
 )
 

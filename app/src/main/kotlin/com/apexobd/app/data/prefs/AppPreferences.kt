@@ -27,6 +27,13 @@ enum class MapProvider(val label: String) {
     TRACK_ONLY("Track Path Only (OLED)")
 }
 
+enum class HudGridScale(val label: String, val cols: Int, val rows: Int) {
+    LARGE_6X3("Large (6×3)", 6, 3),
+    STANDARD_8X4("Standard (8×4)", 8, 4),
+    BALANCED_10X5("Balanced (10×5)", 10, 5),
+    DYNAMIC_12X6("Dense (12×6)", 12, 6)
+}
+
 data class UserSettings(
     val wifiHost: String = "192.168.0.10",
     val wifiPort: Int = 35000,
@@ -34,6 +41,7 @@ data class UserSettings(
     val hudMirror: Boolean = false,
     val keepScreenOn: Boolean = true,
     val gridSnapEnabled: Boolean = true,
+    val hudGridScale: HudGridScale = HudGridScale.STANDARD_8X4,
     val pauseFuelCalculation: Boolean = false,
     val dualCellularKeepalive: Boolean = true,
     val mapProvider: MapProvider = MapProvider.OFFLINE_MAPLIBRE,
@@ -70,6 +78,7 @@ class AppPreferences(private val context: Context) {
         val HUD_MIRROR = booleanPreferencesKey("hud_mirror")
         val KEEP_SCREEN_ON = booleanPreferencesKey("keep_screen_on")
         val GRID_SNAP = booleanPreferencesKey("grid_snap")
+        val HUD_GRID_SCALE = stringPreferencesKey("hud_grid_scale")
         val PAUSE_FUEL = booleanPreferencesKey("pause_fuel_calculation")
         val DUAL_CELLULAR = booleanPreferencesKey("dual_cellular_keepalive")
         val MAP_PROVIDER = stringPreferencesKey("map_provider")
@@ -97,6 +106,7 @@ class AppPreferences(private val context: Context) {
             hudMirror = prefs[Keys.HUD_MIRROR] ?: false,
             keepScreenOn = prefs[Keys.KEEP_SCREEN_ON] ?: true,
             gridSnapEnabled = prefs[Keys.GRID_SNAP] ?: true,
+            hudGridScale = enumOrDefault(prefs[Keys.HUD_GRID_SCALE], HudGridScale.STANDARD_8X4),
             pauseFuelCalculation = prefs[Keys.PAUSE_FUEL] ?: false,
             dualCellularKeepalive = prefs[Keys.DUAL_CELLULAR] ?: true,
             mapProvider = enumOrDefault(prefs[Keys.MAP_PROVIDER], MapProvider.OFFLINE_MAPLIBRE),
@@ -131,6 +141,10 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setGridSnapEnabled(enabled: Boolean) {
         context.dataStore.edit { it[Keys.GRID_SNAP] = enabled }
+    }
+
+    suspend fun setHudGridScale(scale: HudGridScale) {
+        context.dataStore.edit { it[Keys.HUD_GRID_SCALE] = scale.name }
     }
 
     suspend fun setPauseFuelCalculation(paused: Boolean) {

@@ -12,12 +12,12 @@ The system SHALL track per-run GPS routes, distance, fuel used, `KPL Trip`, and 
 - **WHEN** the user toggles Start Run, drives, taps Stop Run, and selects Export CSV or JSON
 - **THEN** the per-run distance, fuel, `KPL Trip`, GPS polyline, and telemetry samples persist in Room and export in the selected unit system
 
-### Requirement: Multi-Sensor Fuel Economy, Persisted Idle Pause, Tank DTE, & Torque/HP Physics
-The system SHALL fuse supported ECU PIDs, IMU, and GPS signals to compute `KPL` (`All time avg`), `KPL Inst`, `KPL Trip`, `Eff.`, `Fuel Left`, `Est. Range`, `Torque`, and `Power` according to `Gasoline/Diesel/Electric` vehicle profiles while honoring a persisted `Pause Fuel Avg` toggle and subtracting fuel burned from tank capacity.
+### Requirement: Multi-Sensor Fuel Economy, Persisted Idle Pause, Dual-EWMA DTE, & Torque/HP Physics
+The system SHALL fuse supported ECU PIDs, IMU, and GPS signals to compute `KPL` (`All time avg`), `KPL Inst`, `KPL Trip`, `Eff.`, `Fuel Left`, `Est. Range`, `Torque`, and `Power` according to `Gasoline/Diesel/Electric` profiles while honoring persisted `Pause Fuel Avg` and tank depletion. `Est. Range` SHALL return empty (`null` / `—`) without fuel-economy history and otherwise use moving-only Dual-Window EWMA blending with idle fuel deduction and smoothing.
 
-#### Scenario: Persisted idle fuel pause protects KPL All Time Avg
-- **WHEN** the user enables Pause Fuel Avg while parked with the engine idling and restarts the app later
-- **THEN** the paused state remains restored on the HUD and stationary idling does not reduce `All time avg` (`KPL`)
+#### Scenario: Persisted idle fuel pause protects KPL All Time Avg and blank DTE without data
+- **WHEN** a fresh profile has zero consumption history (`0.0 km/L` avg), `Est. Range` displays `—`; and when driving begins and Pause Fuel Avg is enabled while idling
+- **THEN** active EWMA DTE computes distance-to-empty from real remaining fuel and blended consumption while stationary idling deducts fuel burned without dragging down `All time avg` (`KPL`)
 
 ### Requirement: Independent Refuel Checkpoint Log
 The system SHALL record Refuel entries (`volume`, `price`, `currency`, `RON`, optional `fuelName`, `odometerKm`, timestamp) per vehicle profile, calculate refuel-cycle distance and fuel economy exclusively between consecutive refuel checkpoints without altering OBD `All time avg` or per-run calculations, and credit added fuel to `Estimated Fuel Left`.

@@ -122,4 +122,25 @@ class EngineAndPerformanceTest {
         assertTrue(report.pending.isEmpty())
         assertFalse(DtcDecoder.clearDtcs(client))
     }
+
+    @Test
+    fun `ObdPollingEngine stop cancels SimulatedObdTransport polling loop promptly without hanging`() {
+        kotlinx.coroutines.runBlocking {
+            val engineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(SimulatedObdTransport(responseDelayMs = 15L), engineScope)
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(100L)
+            kotlinx.coroutines.withTimeout(1000L) {
+                engine.stop()
+            }
+            assertEquals(ConnectionState.Disconnected, engine.connectionState.value)
+            engineScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
+    }
 }

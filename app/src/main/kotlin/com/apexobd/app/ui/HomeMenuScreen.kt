@@ -105,10 +105,11 @@ fun HomeMenuScreen(
     }
 
     val allTimeAvgKpl = activeVehicle?.allTimeAvgKpl() ?: 0.0
+    val dteAvgKpl = activeVehicle?.recentDteKpl?.takeIf { it > 0.1 } ?: allTimeAvgKpl.takeIf { it > 0.1 }
     val (dispAvg, avgSym) = UnitConverter.convertFuelEconomy(allTimeAvgKpl, unitPrefs, fuelType)
     val (dispOdo, distSym) = UnitConverter.convertDistanceKm(activeVehicle?.allTimeOdometerKm ?: 0.0, unitPrefs)
-    val estRangeKm = (activeVehicle?.estimatedRemainingFuelLiters ?: 0.0) * (allTimeAvgKpl.takeIf { it > 1.0 } ?: 12.0)
-    val (dispRange, _) = UnitConverter.convertDistanceKm(estRangeKm, unitPrefs)
+    val estRangeKm: Double? = dteAvgKpl?.let { kpl -> (activeVehicle?.estimatedRemainingFuelLiters ?: 0.0) * kpl }
+    val dispRange: Double? = estRangeKm?.let { UnitConverter.convertDistanceKm(it, unitPrefs).first }
     val (dispRemFuel, volSym) = UnitConverter.convertVolume(activeVehicle?.estimatedRemainingFuelLiters ?: 0.0, unitPrefs, fuelType)
     val (dispCapFuel, _) = UnitConverter.convertVolume(activeVehicle?.tankCapacityLiters ?: 45.0, unitPrefs, fuelType)
 
@@ -173,7 +174,7 @@ fun HomeMenuScreen(
                     Text("LIVE DRIVING DISPLAY", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.8.sp, color = Color(0xBF020810))
                     Text("Open HUD Canvas", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF020810))
                     Text(
-                        "${pages.size} Page(s) · Grid Snap ${if (settings.gridSnapEnabled) "On" else "Off"} · Hold tap to edit",
+                        "${pages.size} Page(s) · Grid ${if (settings.gridSnapEnabled) "${settings.hudGridScale.cols}×${settings.hudGridScale.rows}" else "Free"} · Landscape HUD",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = Color(0xCC020810)
@@ -312,7 +313,7 @@ fun HomeMenuScreen(
             ) {
                 StatCell("All time avg", if (allTimeAvgKpl > 0.1) "%.1f %s".format(dispAvg, avgSym) else "— $avgSym", TorqueEvoColors.ElectricBlue, Modifier.weight(1f))
                 StatCell("Odometer", "${dispOdo.roundToInt()} $distSym", TorqueEvoColors.TextPrimary, Modifier.weight(1f))
-                StatCell("Est. Range", "${dispRange.roundToInt()} $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(1f))
+                StatCell("Est. Range", dispRange?.let { "${it.roundToInt()} $distSym" } ?: "— $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(1f))
                 StatCell("Best 0–100", activeVehicle?.best0100Sec?.let { "%.2f s".format(it) } ?: "—", TorqueEvoColors.TextPrimary, Modifier.weight(0.9f))
             }
         }
@@ -438,6 +439,7 @@ fun HomeMenuScreen(
             onSaveVehicle = { existing, n, d, w, ft, cap, rem, odo, red ->
                 viewModel.saveVehicleProfile(existing, n, d, w, ft, cap, rem, odo, red)
             },
+            onDeleteVehicle = { viewModel.deleteVehicleProfile(it) },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.REFUEL -> RefuelLogSheet(
@@ -509,6 +511,7 @@ fun HomeMenuScreen(
             settings = settings,
             onSaveConnection = { h, p, sim, dual -> viewModel.updateConnectionSettings(h, p, sim, dual) },
             onSelectPolling = { viewModel.setPollingProfile(it) },
+            onSelectGridScale = { viewModel.setHudGridScale(it) },
             onSelectMapProvider = { viewModel.setMapProvider(it) },
             onUpdateUnits = { viewModel.updateUnits(it) },
             onUpdateCurrency = { viewModel.setCurrencyCode(it) },

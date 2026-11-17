@@ -1,5 +1,6 @@
 package com.apexobd.core.transport
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -108,6 +109,9 @@ class WifiTcpTransport(
             }
             @Suppress("UNREACHABLE_CODE")
             sb.toString()
+        } catch (e: CancellationException) {
+            disconnect()
+            throw e
         } catch (e: TransportError) {
             if (e is TransportError.Disconnected) disconnect()
             throw e

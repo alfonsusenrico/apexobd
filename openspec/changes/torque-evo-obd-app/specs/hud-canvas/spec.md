@@ -12,12 +12,12 @@ The application SHALL separate Page 1 (`Home Menu` showing only static summary d
 - **WHEN** the user opens the HUD Canvas for the first time and long-presses anywhere on the screen
 - **THEN** no default widgets or visible buttons clutter the screen, and the hidden context menu opens with `+ Add New Component`, `Move / Edit Components`, `Toggle Grid Snap`, `+ Add New Page`, persisted `Pause Fuel Avg`, and `← Back to Home Menu`
 
-### Requirement: Proportional Grid-Snap & Freeform XY Component Layout
-The HUD Canvas SHALL lay out components proportionally across `8×4` (Landscape) / `4×8` (Portrait) snap cells when Grid Snap is active, and SHALL support freeform XY pixel positioning when Grid Snap is toggled off, using horizontal baseline `value + inline unit` automotive typography across Radial Dial, Semi-Arc, Digital Tile, Line Bar, Area Chart, and Special Widgets (Available PIDs & Derived Sensors only).
+### Requirement: Sensor-Landscape Lock & Proportional Multi-Scale Grid Layout
+The HUD Canvas SHALL automatically lock orientation to `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` while active (restoring natural orientation on return to Home), SHALL lay out components proportionally across user-selectable grid scale presets (`6×3`, `8×4`, `10×5`, `12×6`) when Grid Snap is active or support freeform XY pixel positioning when Grid Snap is toggled off, and SHALL support deleting non-sole `VehicleProfile` entries in Home management.
 
-#### Scenario: Filtering picker to supported vehicle telemetry
-- **WHEN** connected to an ECU whose bitmask supports 16 Mode `01` PIDs
-- **THEN** the component picker offers only those 16 Mode `01` PIDs plus derivable calculated sensors and phone GPS/IMU sensors
+#### Scenario: Filtering and previewing telemetry in the fullscreen Component Studio
+- **WHEN** the user opens `+ Add New Component` from the HUD Canvas context menu
+- **THEN** a fullscreen non-dismiss-outside Landscape Component Studio opens displaying an A–Z scrollable sensor list on the left (available sensors enabled with realtime value and unit; ECU-unsupported sensors disabled, dimmed, and marked `Unavailable`; no PID hex codes or short label clutter) above Visual Style and Grid Scale-adapted Size selectors, alongside a live proportionally scaled widget preview and `+ Add to Canvas` action on the right
 
 ### Requirement: Dual Optional Maps, External Navigation, and HUD Mirror Mode
 The HUD Mini-Map and Home Last Run card SHALL support configurable map backends (`MapLibre Offline Vector` with an interactive Google-Maps-style pan/zoom selection frame for `z5–z14` regions plus local `.pmtiles` archive import/URL loading, optional `Google Maps Online` using `MAPS_API_KEY`, or `OLED Track Only`), a one-tap external `Navigate ↗` intent, and horizontal `HUD Mirror Mode`.

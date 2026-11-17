@@ -32,3 +32,17 @@
    - **Offline Vector Maps Frame Picker (`OfflineMapDownloaderDialog`):** Removed `Wide (z13)` / `Streets (z14)` / `High (z15)` zoom chips (`z5–z14` fixed); verified panning & zooming out (`Zoom 10.5` → `Zoom 8.5` across Surabaya/Bangkalan/Mojokerto) dynamically updated `Frame Size` from `86 tiles (~1.4 MB)` to `903 tiles (~14.6 MB)`; verified `Whole-Island (.pmtiles)` tab layout.
    - **Refuel Checkpoint Log & Vehicle Profile:** Verified `#00A8FF` chips across all modals, aligned single-row `Currency` chips (`IDR`..`GBP`), aligned 2-column `Volume`/`Price` and `RON`/`Odometer` inputs plus full-width `Fuel Name (Optional)`, and verified checkpoint creation in Room.
    - **Home Portrait & Landscape + HUD Canvas Portrait & Landscape:** Verified zero clipping across all 4 Home modules (`Refuel Log`, `Fault Codes`, `Run Logs & Maps`, `ECU PIDs`) and Settings in Landscape (`16`→`v2-10`); verified HUD Pages 1–3 (`AnalogDialWidget` label clearance, `SemiDigitalArcWidget`, `1×1` stacked `BarGaugeWidget`, `PerfTimerWidget` `ARMED`, `DataLoggerWidget` `Ready` + `Start Run`), Context Menu (`Clear Page Widgets`), and tap-to-select floating Bottom Edit Bar (`◀`, `▶`, `Style`, `Size`, `×`, `Done ✓`).
+
+5. **Phase 5 Enhancements, ANR Cancellation Fix, & Cross-Vehicle Flush Fix**
+   - **Unit Tests & Debug APK Build:** `JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home gradle -Porg.gradle.java.installations.paths=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home :obd-core:test :app:testDebugUnitTest :app:assembleDebug --rerun-tasks` → `BUILD SUCCESSFUL in 23s`, `28/28` unit tests passed (`0` failed, `0` skipped):
+     - `FormulaEvaluatorTest`: 3 passed
+     - `DtcDecoderTest`: 4 passed
+     - `ObdPidRegistryTest`: 5 passed
+     - `TelemetryCalculatorTest`: 7 passed (including Dual-Window EWMA DTE and blank-before-measured `estimatedRangeKm = null`)
+     - `EngineAndPerformanceTest`: 6 passed (including `ObdPollingEngine stop cancels SimulatedObdTransport polling loop promptly without hanging`)
+     - `TripExporterTest`: 3 passed
+   - **Live Device Verification (`RMX1921`, `adb install -r` in-place preserving `7 Offline` map regions):**
+     - **DB Migration (`MIGRATION_2_3`):** Upgraded v2→v3 cleanly without wiping vehicle/map data (`recentDteKpl REAL`, `supportedPidsCsv TEXT`).
+     - **Landscape HUD Lock & Grid Scale:** HUD Canvas locks automatically to `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` even with system auto-rotation off (`accelerometer_rotation = 1` restored); Context Menu & Settings switch `6×3` / `8×4` / `10×5` / `12×6` cleanly.
+     - **Fullscreen Component Studio:** Split-pane Landscape overlay renders unclipped across display cutouts (`Close ×` & `cell(s)` aligned), alphabetical sensor list shows live values + units while unsupported PIDs are dimmed/disabled (`Unavailable`), and live right-pane widget preview updates dynamically across styles and sizes.
+     - **Vehicle Profile Delete & Stale-Metrics Isolation:** Deleting secondary profiles with confirmation (`vehicles.size > 1` guard) cleans sessions/refuels cleanly; toggling Grid Scale or Settings after leaving HUD Canvas no longer flushes stale `_fuelMetrics` into the active vehicle (`Tank 45.0/45 L`, `— km/L`, `0 km`, `EST. RANGE — km` preserved cleanly; zero ANRs or `AndroidRuntime:E` exceptions).

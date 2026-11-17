@@ -14,6 +14,7 @@ import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.db.WidgetDisplayType
 import com.apexobd.app.data.prefs.AppPreferences
+import com.apexobd.app.data.prefs.HudGridScale
 import com.apexobd.app.data.prefs.MapProvider
 import com.apexobd.app.data.prefs.UserSettings
 import com.apexobd.app.platform.AccelSensorTracker
@@ -42,6 +43,7 @@ import com.apexobd.core.scheduler.Timer0100State
 import com.apexobd.core.scheduler.Timer0100Tracker
 import com.apexobd.core.transport.SimulatedObdTransport
 import com.apexobd.core.transport.WifiTcpTransport
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -90,6 +92,11 @@ data class GroupedSensorCatalogItem(
     val item: SensorCatalogItem
 )
 
+data class PickerSensorOption(
+    val item: SensorCatalogItem,
+    val available: Boolean
+)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class HudViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -106,6 +113,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val offlineMapManager = OfflineMapManager(application)
 
     private var engine: ObdPollingEngine? = null
+    private var activeEngineVehicleId: Long? = null
     private var engineCollectorsJob: Job? = null
     private var loggingJob: Job? = null
     private val timer0100Tracker = Timer0100Tracker()
@@ -220,8 +228,14 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         // Sync VehicleProfile into polling engine
         viewModelScope.launch {
             activeVehicle.collect { v ->
+                val currentEngine = engine ?: return@collect
                 if (v != null) {
-                    engine?.setVehicleProfile(v.toCoreModel())
+                    val switched = activeEngineVehicleId != null && activeEngineVehicleId != v.id
+                    activeEngineVehicleId = v.id
+                    if (switched) {
+                        _fuelMetrics.value = null
+                    }
+                    currentEngine.setVehicleProfile(v.toCoreModel(), resetFuelSession = switched)
                 }
             }
         }
@@ -264,12 +278,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     accelTracker.stop()
                     locationTracker.stopUpdates()
-                    flushActiveVehicleStats()
                     transportMutex.withLock {
-                        engine?.stop()
-                        engine = null
-                        engineCollectorsJob?.cancel()
+                        if (engine != null) {
+                            flushActiveVehicleStats()
+                            engine?.stop()
+                            engine = null
+                            engineCollectorsJob?.cancel()
+                            engineCollectorsJob = null
+                        }
+                        activeEngineVehicleId = null
                     }
+                    _fuelMetrics.value = null
                     _connectionState.value = ConnectionState.Disconnected
                     _pollingHz.value = 0
                 }
@@ -334,6 +353,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 _explorerStatus.value = null
                 val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
                 engine?.setActiveSensors(explorerKeys)
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
                 _explorerStatus.value = "ECU explorer offline: ${t.message ?: "not connected"}"
             }
@@ -372,6 +393,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 try {
                     transport.connect()
                     EcuDiscoveryDumper.runFullReadOnlyScan(transport)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (t: Throwable) {
                     "DEEP ECU SCAN ERROR: ${t.message}\n${t.stackTraceToString()}"
                 } finally {
@@ -389,8 +412,14 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun reconnectTransport(s: UserSettings) = transportMutex.withLock {
-        engineCollectorsJob?.cancel()
-        engine?.stop()
+        if (engine != null) {
+            flushActiveVehicleStats()
+            engineCollectorsJob?.cancel()
+            engineCollectorsJob = null
+            engine?.stop()
+            engine = null
+        }
+        _fuelMetrics.value = null
 
         val transport = if (s.useSimulator) {
             SimulatedObdTransport()
@@ -401,10 +430,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 socketFactoryProvider = { wifiBinder.socketFactory() }
             )
         }
+        val currentVehicle = activeVehicle.value
+        activeEngineVehicleId = currentVehicle?.id
         val newEngine = ObdPollingEngine(transport, viewModelScope)
         newEngine.setPollingProfile(s.pollingProfile)
         newEngine.setFuelCalculationPaused(s.pauseFuelCalculation)
-        activeVehicle.value?.let { newEngine.setVehicleProfile(it.toCoreModel(), resetFuelSession = false) }
+        currentVehicle?.let { newEngine.setVehicleProfile(it.toCoreModel(), resetFuelSession = true) }
         newEngine.setCustomPids(
             customPids.value.map {
                 CustomPidDefinition(it.key, it.name, it.shortName, it.modeAndPidHex, it.formula, it.minValue, it.maxValue, it.unit, it.headerHex)
@@ -417,7 +448,19 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
         engineCollectorsJob = viewModelScope.launch {
             launch { newEngine.connectionState.collect { _connectionState.value = it } }
-            launch { newEngine.supportedPids.collect { _supportedPids.value = it } }
+            launch {
+                newEngine.supportedPids.collect { pids ->
+                    _supportedPids.value = pids
+                    if (!s.useSimulator && pids.isNotEmpty()) {
+                        val csv = pids.sorted().joinToString(",")
+                        val targetId = activeEngineVehicleId
+                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        if (cur != null && cur.supportedPidsCsv != csv) {
+                            vehicleDao.updateVehicle(cur.copy(supportedPidsCsv = csv))
+                        }
+                    }
+                }
+            }
             launch { newEngine.availableSensorKeys.collect { _availableSensorKeys.value = it } }
             launch { newEngine.pollingHz.collect { _pollingHz.value = it } }
             launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
@@ -461,24 +504,28 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun persistFuelMetricsToProfile(fm: FuelMetricsSnapshot) {
-        val current = activeVehicle.value ?: return
+        val targetId = activeEngineVehicleId ?: return
+        val current = vehicleDao.getById(targetId) ?: return
         vehicleDao.updateVehicle(
             current.copy(
                 allTimeOdometerKm = fm.allTimeOdometerKm,
                 allTimeRoadDistanceKm = fm.allTimeRoadDistanceKm,
                 allTimeRoadFuelLiters = fm.allTimeRoadFuelLiters,
-                estimatedRemainingFuelLiters = fm.estimatedRemainingFuelLiters
+                estimatedRemainingFuelLiters = fm.estimatedRemainingFuelLiters,
+                recentDteKpl = fm.dteEconomyKpl ?: current.recentDteKpl
             )
         )
     }
 
     private suspend fun flushActiveVehicleStats() {
+        if (engine == null || activeEngineVehicleId == null) return
         _fuelMetrics.value?.let { persistFuelMetricsToProfile(it) }
     }
 
     private fun updateBest0100IfBetter(candidate: Double?) {
         if (candidate == null) return
-        val cur = activeVehicle.value ?: return
+        val targetId = activeEngineVehicleId ?: return
+        val cur = vehicles.value.firstOrNull { it.id == targetId } ?: return
         val existingBest = cur.best0100Sec
         if (existingBest == null || candidate < existingBest) {
             viewModelScope.launch(Dispatchers.IO) {
@@ -530,6 +577,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 if (result.confirmed.isEmpty() && result.pending.isEmpty() && result.permanent.isEmpty() && result.readiness == null) {
                     _diagnosticError.value = "ECU did not respond to diagnostic query. Ensure ignition is ON."
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
                 _diagnosticError.value = "Diagnostic scan failed: ${t.message ?: "adapter disconnected"}"
             } finally {
@@ -563,6 +612,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     _diagnosticError.value = "Mode 04 clear command was rejected or timed out."
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (t: Throwable) {
                 _diagnosticError.value = "Clear DTCs failed: ${t.message ?: "adapter disconnected"}"
             }
@@ -695,6 +746,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     // --- Vehicle Profiles & Odometer / Tank Management ---
     fun selectVehicle(vehicleId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
+            if (engine != null && activeEngineVehicleId != null && activeEngineVehicleId != vehicleId) {
+                flushActiveVehicleStats()
+                _fuelMetrics.value = null
+            }
             vehicleDao.setActiveVehicle(vehicleId)
         }
     }
@@ -734,6 +789,24 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 vehicleDao.updateVehicle(entity)
                 engine?.fuelTracker?.syncManualProfileCounters(entity.toCoreModel())
                 engine?.setVehicleProfile(entity.toCoreModel())
+            }
+        }
+    }
+
+    fun deleteVehicleProfile(vehicleId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val all = vehicleDao.getVehiclesOnce()
+            if (all.size <= 1) return@launch
+            val remaining = all.filter { it.id != vehicleId }
+            if (remaining.isEmpty()) return@launch
+            if (activeEngineVehicleId == vehicleId) {
+                activeEngineVehicleId = null
+                _fuelMetrics.value = null
+            }
+            tripDao.deleteSessionsForVehicle(vehicleId)
+            vehicleDao.deleteVehicle(vehicleId)
+            if (all.firstOrNull { it.isActive }?.id == vehicleId) {
+                vehicleDao.setActiveVehicle(remaining.first().id)
             }
         }
     }
@@ -850,8 +923,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { hudDao.updateWidget(widget.copy(displayType = next.name)) }
     }
 
+    fun sizeOptionsForGrid(gridScale: HudGridScale): List<Pair<Int, Int>> = when (gridScale) {
+        HudGridScale.LARGE_6X3 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 3 to 3, 4 to 1, 6 to 2)
+        HudGridScale.STANDARD_8X4 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 4 to 2, 4 to 1)
+        HudGridScale.BALANCED_10X5 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 4 to 2, 5 to 3, 4 to 1)
+        HudGridScale.DYNAMIC_12X6 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 3 to 3, 4 to 2, 4 to 3, 6 to 2, 4 to 1)
+    }
+
     fun cycleWidgetSize(widget: HudWidgetEntity) {
-        val order = listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 4 to 1)
+        val order = sizeOptionsForGrid(settings.value.hudGridScale)
         val idx = order.indexOf(widget.spanCols to widget.spanRows)
         val next = order[(idx + 1) % order.size]
         viewModelScope.launch {
@@ -889,6 +969,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     // --- Settings Actions ---
     fun toggleGridSnap() {
         viewModelScope.launch { prefs.setGridSnapEnabled(!settings.value.gridSnapEnabled) }
+    }
+
+    fun setHudGridScale(scale: HudGridScale) {
+        viewModelScope.launch { prefs.setHudGridScale(scale) }
     }
 
     fun togglePauseFuelCalculation() {
@@ -970,6 +1054,64 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     CustomPidEntity(key, name.trim(), name.trim().take(10), clean, formula.trim(), 0.0, 200.0, unit.trim())
                 )
             )
+        }
+    }
+
+    fun pickerSensorsAlphabetical(): List<PickerSensorOption> {
+        val effectiveSupported = _supportedPids.value.ifEmpty { activeVehicle.value?.savedSupportedPids().orEmpty() }
+        val list = mutableListOf<PickerSensorOption>()
+
+        ObdPidRegistry.standardPids.forEach { pid ->
+            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported
+            list += PickerSensorOption(
+                item = SensorCatalogItem(pid.key, pid.name, pid.shortName, "01${pid.pidHex}", pid.unit, pid.quantity, pid.minValue, pid.maxValue),
+                available = avail
+            )
+        }
+
+        DerivedSensorCatalog.all
+            .filter { it.key !in setOf("gps_speed", "accel_g") }
+            .forEach { spec ->
+                val avail = DerivedSensorCatalog.isAvailable(spec, effectiveSupported)
+                list += PickerSensorOption(
+                    item = SensorCatalogItem(spec.key, spec.name, spec.shortName, spec.sourceLabel, spec.defaultUnit, spec.quantity, spec.minValue, spec.maxValue),
+                    available = avail
+                )
+            }
+
+        listOf(
+            SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
+            SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
+            SensorCatalogItem("minimap", "Run & Nav Mini-Map", "Mini-Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("fuel_ctrl", "All Time KPL + Idle Pause", "KPL Ctrl", "FUEL", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
+            SensorCatalogItem("dtc_checker", "DTC Checker & Clear", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("timer_0100", "0–100 km/h Sprint Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
+            SensorCatalogItem("data_logger", "Run Telemetry Logger", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        ).forEach { item ->
+            list += PickerSensorOption(item = item, available = true)
+        }
+
+        customPids.value.forEach { cp ->
+            list += PickerSensorOption(
+                item = SensorCatalogItem(cp.key, cp.name, cp.shortName, cp.modeAndPidHex, cp.unit, SensorQuantity.RAW, cp.minValue, cp.maxValue),
+                available = true
+            )
+        }
+
+        return list.sortedBy { it.item.label.lowercase() }
+    }
+
+    fun setPickerLivePreview(active: Boolean) {
+        if (active) {
+            val allKeys = buildSet {
+                ObdPidRegistry.standardPids.forEach { add(it.key) }
+                DerivedSensorCatalog.all.forEach { add(it.key) }
+                customPids.value.forEach { add(it.key) }
+                addAll(listOf("gps_speed", "accel_g"))
+            }
+            engine?.setActiveSensors(allKeys)
+        } else {
+            restoreVisibleCanvasPolling()
         }
     }
 

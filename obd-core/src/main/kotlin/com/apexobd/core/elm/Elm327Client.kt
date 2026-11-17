@@ -2,6 +2,7 @@ package com.apexobd.core.elm
 
 import com.apexobd.core.transport.ObdTransport
 import com.apexobd.core.transport.TransportError
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -48,7 +49,12 @@ class Elm327Client(
 
         // Trigger auto-protocol search on the vehicle bus before reading ATDP/ATDPN,
         // because ELM327 reports "AUTO" (A0) until the first OBD frame is exchanged.
-        runCatching { transport.sendCommand("0100", timeoutMs = 3000L) }
+        try {
+            transport.sendCommand("0100", timeoutMs = 3000L)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+        }
 
         val protoName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1500L), "ATDP")
             .firstOrNull() ?: "Auto"
@@ -70,6 +76,8 @@ class Elm327Client(
     suspend fun execute(command: String, timeoutMs: Long = 2000L): ObdCommandResult = commandMutex.withLock {
         val raw = try {
             transport.sendCommand(command, timeoutMs)
+        } catch (e: CancellationException) {
+            throw e
         } catch (t: TransportError) {
             return@withLock ObdCommandResult.Error(t.message ?: "Adapter not connected")
         } catch (t: Throwable) {

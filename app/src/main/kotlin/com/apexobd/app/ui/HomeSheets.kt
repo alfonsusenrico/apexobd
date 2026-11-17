@@ -15,13 +15,16 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -60,6 +63,7 @@ import com.apexobd.app.BuildConfig
 import com.apexobd.app.data.db.RefuelLogEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
+import com.apexobd.app.data.prefs.HudGridScale
 import com.apexobd.app.data.prefs.MapProvider
 import com.apexobd.app.data.prefs.UserSettings
 import com.apexobd.app.platform.GpsSnapshot
@@ -146,9 +150,11 @@ fun VehicleProfileSheet(
         odoDisplay: Double,
         redline: Int
     ) -> Unit,
+    onDeleteVehicle: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
     var editingExisting by remember(activeVehicle?.id) { mutableStateOf(activeVehicle) }
+    var confirmDelete by remember { mutableStateOf(false) }
     var name by remember(editingExisting?.id) { mutableStateOf(editingExisting?.name ?: "My Vehicle") }
     var disp by remember(editingExisting?.id) { mutableStateOf("%.1f".format(editingExisting?.displacementLiters ?: 1.5)) }
     var weight by remember(editingExisting?.id) { mutableStateOf("${(editingExisting?.weightKg ?: 1200.0).toInt()}") }
@@ -170,6 +176,28 @@ fun VehicleProfileSheet(
     var remFuel by remember(editingExisting?.id, fuelType, unitPrefs.volume) { mutableStateOf("%.1f".format(remDispInit)) }
     var odometer by remember(editingExisting?.id, unitPrefs.speed) { mutableStateOf("%.1f".format(odoDispInit)) }
 
+    if (confirmDelete && editingExisting != null) {
+        val target = editingExisting!!
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            containerColor = TorqueEvoColors.ElevatedDark,
+            title = { Text("Delete Vehicle Profile", color = TorqueEvoColors.TextPrimary) },
+            text = { Text("Delete \"${target.name}\" along with its saved refuel checkpoints and run logs?", color = TorqueEvoColors.TextSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmDelete = false
+                        onDeleteVehicle(target.id)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.CriticalRed, contentColor = Color.White)
+                ) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -185,18 +213,25 @@ fun VehicleProfileSheet(
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("Vehicle Profile", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                TextButton(onClick = {
-                    editingExisting = null
-                    name = "New Car"
-                    disp = "1.5"
-                    weight = "1250"
-                    fuelType = FuelType.GASOLINE
-                    tankCap = "45.0"
-                    remFuel = "45.0"
-                    odometer = "0.0"
-                    redline = "6800"
-                }) {
-                    Text("+ New Car", color = TorqueEvoColors.ElectricBlue)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (editingExisting != null && vehicles.size > 1) {
+                        TextButton(onClick = { confirmDelete = true }) {
+                            Text("Delete", color = TorqueEvoColors.CriticalRed)
+                        }
+                    }
+                    TextButton(onClick = {
+                        editingExisting = null
+                        name = "New Car"
+                        disp = "1.5"
+                        weight = "1250"
+                        fuelType = FuelType.GASOLINE
+                        tankCap = "45.0"
+                        remFuel = "45.0"
+                        odometer = "0.0"
+                        redline = "6800"
+                    }) {
+                        Text("+ New Car", color = TorqueEvoColors.ElectricBlue)
+                    }
                 }
             }
 
@@ -745,11 +780,15 @@ fun OfflineMapDownloaderDialog(
 
     Dialog(
         onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .padding(10.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(TorqueEvoColors.ElevatedDark)
@@ -1112,6 +1151,7 @@ fun SettingsSheet(
     settings: UserSettings,
     onSaveConnection: (host: String, port: Int, useSim: Boolean, dualCell: Boolean) -> Unit,
     onSelectPolling: (PollingProfile) -> Unit,
+    onSelectGridScale: (HudGridScale) -> Unit,
     onSelectMapProvider: (MapProvider) -> Unit,
     onUpdateUnits: (UnitPreferences) -> Unit,
     onUpdateCurrency: (String) -> Unit,
@@ -1185,6 +1225,18 @@ fun SettingsSheet(
                         selected = settings.pollingProfile == p,
                         onClick = { onSelectPolling(p) },
                         label = p.label,
+                        compact = true
+                    )
+                }
+            }
+
+            Text("HUD Canvas Grid Scale", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                HudGridScale.entries.forEach { scale ->
+                    ApexFilterChip(
+                        selected = settings.hudGridScale == scale,
+                        onClick = { onSelectGridScale(scale) },
+                        label = scale.label,
                         compact = true
                     )
                 }

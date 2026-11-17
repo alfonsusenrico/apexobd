@@ -51,6 +51,8 @@ data class VehicleProfileEntity(
     val allTimeOdometerKm: Double = 0.0,
     val allTimeRoadDistanceKm: Double = 0.0,
     val allTimeRoadFuelLiters: Double = 0.0,
+    val recentDteKpl: Double? = null,
+    val supportedPidsCsv: String = "",
     val best0100Sec: Double? = null,
     val isActive: Boolean = false
 ) {
@@ -70,11 +72,15 @@ data class VehicleProfileEntity(
         allTimeOdometerKm = allTimeOdometerKm,
         allTimeRoadDistanceKm = allTimeRoadDistanceKm,
         allTimeRoadFuelLiters = allTimeRoadFuelLiters,
+        recentDteKpl = recentDteKpl,
         best0To100Sec = best0100Sec
     )
 
     fun allTimeAvgKpl(): Double =
         if (allTimeRoadFuelLiters > 0.005) (allTimeRoadDistanceKm / allTimeRoadFuelLiters).coerceIn(0.0, 99.9) else 0.0
+
+    fun savedSupportedPids(): Set<String> =
+        supportedPidsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
 }
 
 @Entity(
@@ -292,6 +298,9 @@ interface TripDao {
 
     @Query("SELECT * FROM telemetry_samples WHERE sessionId = :sessionId ORDER BY timestampMs ASC")
     suspend fun getSamplesForSession(sessionId: Long): List<TelemetrySampleEntity>
+
+    @Query("DELETE FROM trip_sessions WHERE vehicleId = :vehicleId")
+    suspend fun deleteSessionsForVehicle(vehicleId: Long)
 }
 
 @Database(
@@ -304,7 +313,7 @@ interface TripDao {
         TripSessionEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -380,6 +389,13 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN recentDteKpl REAL")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN supportedPidsCsv TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -389,7 +405,7 @@ abstract class ApexDatabase : RoomDatabase() {
         private fun buildDatabase(context: Context): ApexDatabase {
             lateinit var db: ApexDatabase
             db = Room.databaseBuilder(context, ApexDatabase::class.java, "apex_obd.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
                         super.onCreate(sqliteDb)

@@ -81,13 +81,16 @@ class TelemetryCalculatorTest {
         val gasTracker = FuelEconomyTracker()
         val gas = VehicleProfile(name = "Avanza", tankCapacityLiters = 45.0, estimatedRemainingFuelLiters = 20.0)
         val noTrim = gasTracker.update(gas, speedKmh = 60.0, rpm = 2000.0, mafGramsPerSec = 10.0, mapKpa = 55.0, iatCelsius = 35.0, lambda = null, throttlePct = 20.0, stftPct = 0.0, ltftPct = 0.0, nowMs = 10_000L)
+        // Before any distance/consumption history exists, DTE must be empty (null), never fabricated
+        org.junit.Assert.assertNull(noTrim.estimatedRangeKm)
+
         val plusTrim = gasTracker.update(gas, speedKmh = 60.0, rpm = 2000.0, mafGramsPerSec = 10.0, mapKpa = 55.0, iatCelsius = 35.0, lambda = null, throttlePct = 20.0, stftPct = 5.0, ltftPct = 5.0, nowMs = 11_000L)
         assertTrue(plusTrim.fuelFlowLitersPerHour > noTrim.fuelFlowLitersPerHour * 1.08)
 
         gasTracker.applyRefuelAdded(addedVolumeLiters = 15.0, tankCapacityLiters = 45.0)
         val afterFill = gasTracker.update(gas, speedKmh = 60.0, rpm = 2000.0, mafGramsPerSec = 10.0, mapKpa = 55.0, iatCelsius = 35.0, lambda = null, throttlePct = 20.0, nowMs = 12_000L)
         assertTrue(afterFill.estimatedRemainingFuelLiters > 34.0)
-        assertTrue(afterFill.estimatedRangeKm > 300.0)
+        assertTrue((afterFill.estimatedRangeKm ?: 0.0) > 300.0)
     }
 
     @Test
@@ -151,5 +154,38 @@ class TelemetryCalculatorTest {
         val metric = UnitPreferences()
         assertEquals("kWh", UnitConverter.convert(40.0, SensorQuantity.VOLUME_L, metric, FuelType.ELECTRIC).second)
         assertEquals("km/kWh", UnitConverter.convert(6.5, SensorQuantity.FUEL_ECONOMY_KPL, metric, FuelType.ELECTRIC).second)
+    }
+
+    @Test
+    fun `Dual-window EWMA DTE stays empty before fuel avg data and blends recent highway vs traffic consumption`() {
+        val tracker = FuelEconomyTracker()
+        val avanza = VehicleProfile(
+            id = 11L,
+            name = "Avanza 1.3L",
+            tankCapacityLiters = 45.0,
+            estimatedRemainingFuelLiters = 20.0
+        )
+
+        // Fresh idle / zero consumption history -> DTE must remain null
+        val idleOnly = tracker.update(avanza, speedKmh = 0.0, rpm = 780.0, mafGramsPerSec = 1.6, mapKpa = 30.0, iatCelsius = 40.0, lambda = 1.0, throttlePct = 10.0, nowMs = 1_000L)
+        org.junit.Assert.assertNull(idleOnly.estimatedRangeKm)
+
+        // Efficient highway cruise steps -> produces real EWMA DTE estimate
+        var t = 1_000L
+        var lastSnap = idleOnly
+        repeat(10) {
+            t += 20_000L
+            lastSnap = tracker.update(avanza, speedKmh = 80.0, rpm = 2400.0, mafGramsPerSec = 7.5, mapKpa = 45.0, iatCelsius = 35.0, lambda = 1.0, throttlePct = 18.0, nowMs = t)
+        }
+        val highwayRange = lastSnap.estimatedRangeKm!!
+        assertTrue(highwayRange > 250.0)
+        assertTrue((lastSnap.dteEconomyKpl ?: 0.0) > 13.0)
+
+        // Heavy city load drops recent EWMA and reduces DTE smoothly without violent spikes
+        repeat(15) {
+            t += 20_000L
+            lastSnap = tracker.update(avanza, speedKmh = 25.0, rpm = 2200.0, mafGramsPerSec = 11.0, mapKpa = 75.0, iatCelsius = 45.0, lambda = 1.0, throttlePct = 35.0, nowMs = t)
+        }
+        assertTrue(lastSnap.estimatedRangeKm!! < highwayRange)
     }
 }

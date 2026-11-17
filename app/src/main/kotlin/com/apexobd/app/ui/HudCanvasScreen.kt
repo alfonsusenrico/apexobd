@@ -16,28 +16,32 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -47,6 +51,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -60,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -67,6 +73,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.apexobd.app.data.db.HudWidgetEntity
 import com.apexobd.app.data.db.WidgetDisplayType
+import com.apexobd.app.data.prefs.HudGridScale
 import com.apexobd.app.ui.components.AnalogDialWidget
 import com.apexobd.app.ui.components.BarGaugeWidget
 import com.apexobd.app.ui.components.DataLoggerWidget
@@ -84,13 +91,13 @@ import kotlin.math.roundToInt
 @Composable
 fun ApexAppRoot(
     viewModel: HudViewModel,
-    onSystemChromeVisibility: (showSystemBars: Boolean) -> Unit
+    onHudModeChanged: (inHud: Boolean) -> Unit
 ) {
     var onHudPage by remember { mutableStateOf(false) }
 
     LaunchedEffect(onHudPage) {
         viewModel.setOnHudScreen(onHudPage)
-        onSystemChromeVisibility(!onHudPage)
+        onHudModeChanged(onHudPage)
     }
 
     if (!onHudPage) {
@@ -177,6 +184,7 @@ fun HudCanvasScreen(
                     editMode = editMode,
                     selectedWidgetId = selectedWidgetId,
                     gridSnap = settings.gridSnapEnabled,
+                    gridScale = settings.hudGridScale,
                     pageIndex = pageIdx,
                     viewModel = viewModel,
                     liveValues = liveValues,
@@ -269,20 +277,52 @@ fun HudCanvasScreen(
                 }
             }
         }
+
+        // FULLSCREEN LANDSCAPE COMPONENT STUDIO WITH LIVE PREVIEW
+        if (showComponentPicker) {
+            val currentPage = pages.getOrNull(pagerState.currentPage)
+            if (currentPage != null) {
+                FullscreenComponentPickerDialog(
+                    viewModel = viewModel,
+                    gridScale = settings.hudGridScale,
+                    liveValues = liveValues,
+                    historyBuffers = historyBuffers,
+                    gps = gps,
+                    diagReport = diagReport,
+                    timer0100 = timer0100,
+                    mapProvider = settings.mapProvider,
+                    fuelPaused = settings.pauseFuelCalculation,
+                    isRecording = isRecording,
+                    sampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
+                    onToggleRecord = { viewModel.toggleRecording() },
+                    onNavigateExternal = { viewModel.openExternalNavigation(context) },
+                    onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
+                    onScanDtc = { viewModel.scanDiagnostics() },
+                    onReset0100 = { viewModel.reset0100Best() },
+                    onAddComponent = { key, type, cols, rows ->
+                        viewModel.addWidget(currentPage.page.id, key, type, cols, rows)
+                        showComponentPicker = false
+                    },
+                    onDismiss = { showComponentPicker = false }
+                )
+            }
+        }
     }
 
-    // HIDDEN HOLD-TAP CONTEXT MENU
+    // HIDDEN HOLD-TAP CONTEXT MENU (Landscape-friendly scrollable sheet)
     if (showContextMenu) {
         val currentPage = pages.getOrNull(pagerState.currentPage)
         Dialog(onDismissRequest = { showContextMenu = false }) {
             Column(
                 modifier = Modifier
-                    .width(280.dp)
+                    .width(340.dp)
+                    .heightIn(max = 360.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(Color(0xFF0E1116))
                     .border(1.dp, Color(0x2EFFFFFF), RoundedCornerShape(14.dp))
+                    .verticalScroll(rememberScrollState())
                     .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text(
                     "HUD CANVAS MENU",
@@ -290,7 +330,7 @@ fun HudCanvasScreen(
                     fontWeight = FontWeight.Bold,
                     letterSpacing = 0.9.sp,
                     color = TorqueEvoColors.TextSecondary,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                 )
                 ContextMenuButton("+ Add New Component") {
                     showContextMenu = false
@@ -300,9 +340,29 @@ fun HudCanvasScreen(
                     editMode = !editMode
                     showContextMenu = false
                 }
-                ContextMenuButton("Grid Snap (8×4 / 4×8): ${if (settings.gridSnapEnabled) "On" else "Off"}") {
+                ContextMenuButton(
+                    "Grid Snap (${settings.hudGridScale.cols}×${settings.hudGridScale.rows}): ${if (settings.gridSnapEnabled) "On" else "Freeform"}"
+                ) {
                     viewModel.toggleGridSnap()
                     showContextMenu = false
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Grid Scale:", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
+                    HudGridScale.entries.forEach { scale ->
+                        ApexFilterChip(
+                            selected = settings.hudGridScale == scale,
+                            onClick = { viewModel.setHudGridScale(scale) },
+                            label = "${scale.cols}×${scale.rows}",
+                            compact = true
+                        )
+                    }
                 }
                 ContextMenuButton("+ Add New Blank Page") {
                     viewModel.addBlankPage("Page ${pages.size + 1}") { newIdx ->
@@ -335,22 +395,6 @@ fun HudCanvasScreen(
                     onBackToHome()
                 }
             }
-        }
-    }
-
-    // AVAILABLE-ONLY COMPONENT PICKER
-    if (showComponentPicker) {
-        val currentPage = pages.getOrNull(pagerState.currentPage)
-        if (currentPage != null) {
-            AvailableComponentPickerSheet(
-                groupedCatalog = viewModel.availableGroupedCatalog(),
-                supportedPidCount = supportedPids.size,
-                onAddComponent = { key, type, cols, rows ->
-                    viewModel.addWidget(currentPage.page.id, key, type, cols, rows)
-                    showComponentPicker = false
-                },
-                onDismiss = { showComponentPicker = false }
-            )
         }
     }
 }
@@ -413,6 +457,7 @@ private fun ProportionalHudPageCanvas(
     editMode: Boolean,
     selectedWidgetId: Long?,
     gridSnap: Boolean,
+    gridScale: HudGridScale,
     pageIndex: Int,
     viewModel: HudViewModel,
     liveValues: Map<String, Double>,
@@ -438,10 +483,9 @@ private fun ProportionalHudPageCanvas(
                 detectTapGestures(onLongPress = { onLongPress() })
             }
     ) {
-        val isLandscape = maxWidth > maxHeight
-        val cols = if (isLandscape) 8 else 4
-        val rows = if (isLandscape) 4 else 8
-        val gap = 8.dp
+        val cols = gridScale.cols
+        val rows = gridScale.rows
+        val gap = if (cols >= 12) 5.dp else 8.dp
 
         val availW = maxWidth
         val availH = maxHeight
@@ -757,132 +801,331 @@ private fun ContextMenuButton(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-private fun AvailableComponentPickerSheet(
-    groupedCatalog: List<GroupedSensorCatalogItem>,
-    supportedPidCount: Int,
+private fun FullscreenComponentPickerDialog(
+    viewModel: HudViewModel,
+    gridScale: HudGridScale,
+    liveValues: Map<String, Double>,
+    historyBuffers: Map<String, List<Double>>,
+    gps: com.apexobd.app.platform.GpsSnapshot,
+    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
+    timer0100: com.apexobd.core.scheduler.Timer0100State,
+    mapProvider: com.apexobd.app.data.prefs.MapProvider,
+    fuelPaused: Boolean,
+    isRecording: Boolean,
+    sampleCount: Int,
+    onToggleRecord: () -> Unit,
+    onNavigateExternal: () -> Unit,
+    onToggleFuelPause: () -> Unit,
+    onScanDtc: () -> Unit,
+    onReset0100: () -> Unit,
     onAddComponent: (sensorKey: String, displayType: WidgetDisplayType, spanCols: Int, spanRows: Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    var selectedGroup by remember { mutableStateOf(SensorCatalogGroup.ECU_MODE01) }
-    val filteredItems = groupedCatalog.filter { it.group == selectedGroup }
-    var selectedItem by remember(selectedGroup, filteredItems.size) {
-        mutableStateOf(filteredItems.firstOrNull()?.item ?: groupedCatalog.first().item)
+    DisposableEffect(Unit) {
+        viewModel.setPickerLivePreview(true)
+        onDispose { viewModel.setPickerLivePreview(false) }
     }
-    var selectedType by remember { mutableStateOf(WidgetDisplayType.DIGITAL) }
-    var selectedSize by remember { mutableStateOf(2 to 1) }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        containerColor = TorqueEvoColors.ElevatedDark
+    val supportedPidsState by viewModel.supportedPids.collectAsStateWithLifecycle()
+    val activeVehicleState by viewModel.activeVehicle.collectAsStateWithLifecycle()
+    val sensorOptions = remember(supportedPidsState, activeVehicleState?.supportedPidsCsv) {
+        viewModel.pickerSensorsAlphabetical()
+    }
+    val initialItem = remember(sensorOptions) {
+        sensorOptions.firstOrNull { it.available }?.item ?: sensorOptions.first().item
+    }
+    var selectedItem by remember { mutableStateOf(initialItem) }
+    var selectedType by remember { mutableStateOf(WidgetDisplayType.DIGITAL) }
+    val sizeChoices = remember(gridScale) { viewModel.sizeOptionsForGrid(gridScale) }
+    var selectedSize by remember(gridScale) {
+        mutableStateOf(
+            if (2 to 1 in sizeChoices) 2 to 1 else sizeChoices.first()
+        )
+    }
+
+    val resolvedPreviewType = when (selectedItem.key) {
+        "minimap" -> WidgetDisplayType.MINI_MAP
+        "dtc_checker" -> WidgetDisplayType.DTC_CHECKER
+        "timer_0100" -> WidgetDisplayType.PERF_TIMER
+        "data_logger" -> WidgetDisplayType.DATA_LOGGER
+        else -> selectedType
+    }
+
+    val previewWidget = remember(selectedItem.key, resolvedPreviewType, selectedSize) {
+        HudWidgetEntity(
+            id = -1L,
+            pageId = -1L,
+            sensorKey = selectedItem.key,
+            displayType = resolvedPreviewType.name,
+            spanCols = selectedSize.first,
+            spanRows = selectedSize.second,
+            sortOrder = 0
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TorqueEvoColors.PureBlack)
+            .pointerInput(Unit) { detectTapGestures { /* block background touch/hold */ } }
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(8.dp)
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 26.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .fillMaxSize()
+                .clip(RoundedCornerShape(14.dp))
+                .background(TorqueEvoColors.ElevatedDark)
+                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(14.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Add Component", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-            Text(
-                if (supportedPidCount > 0) "Showing only $supportedPidCount ECU Mode 01 PIDs & derived metrics supported by this vehicle"
-                else "Showing standard PIDs & phone sensors (connect to car to filter by vehicle ECU)",
-                fontSize = 11.sp,
-                color = TorqueEvoColors.TextSecondary
-            )
-
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.ECU_MODE01, onClick = { selectedGroup = SensorCatalogGroup.ECU_MODE01 }, label = "ECU Mode 01", compact = true)
-                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.CALCULATED, onClick = { selectedGroup = SensorCatalogGroup.CALCULATED }, label = "Calculated", compact = true)
-                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.PHONE_AND_WIDGETS, onClick = { selectedGroup = SensorCatalogGroup.PHONE_AND_WIDGETS }, label = "Phone & Widgets", compact = true)
-                if (groupedCatalog.any { it.group == SensorCatalogGroup.CUSTOM_PIDS }) {
-                    ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.CUSTOM_PIDS, onClick = { selectedGroup = SensorCatalogGroup.CUSTOM_PIDS }, label = "Custom 21/22", compact = true)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Add Component", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                    Text(
+                        "Grid ${gridScale.cols}×${gridScale.rows}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(TorqueEvoColors.DimBlue)
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
                 }
+                Text(
+                    "Close ×",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TorqueEvoColors.CardSurface)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                        .clickable { onDismiss() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 200.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+            HorizontalDivider(color = TorqueEvoColors.SubtleBorder)
+
+            Row(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                filteredItems.forEach { entry ->
-                    val item = entry.item
-                    val active = item.key == selectedItem.key
-                    Row(
+                // LEFT PANE (~56%): 1) Alphabetical Sensors, 2) Visual Style, 3) Grid Size
+                Column(
+                    modifier = Modifier.weight(0.56f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "1. Sensor (A–Z · Realtime Value)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.TextSecondary
+                    )
+                    LazyColumn(
                         modifier = Modifier
+                            .weight(1f)
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (active) Color(0x2600A8FF) else TorqueEvoColors.CardSurface)
-                            .border(1.dp, if (active) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
-                            .clickable {
-                                selectedItem = item
-                                if (item.isSpecialWidget) {
-                                    selectedSize = if (item.key == "minimap") 2 to 3 else if (item.key == "dtc_checker") 4 to 1 else 2 to 1
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TorqueEvoColors.PureBlack)
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                            .padding(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(sensorOptions, key = { it.item.key }) { opt ->
+                            val item = opt.item
+                            val isSelected = item.key == selectedItem.key
+                            val enabled = opt.available
+                            val rawLive = liveValues[item.key]
+                            val (dispVal, dispUnit) = viewModel.convertForDisplay(rawLive, item.quantity, item.unit)
+
+                            val valueStr = when {
+                                !enabled -> "Unavailable"
+                                item.isSpecialWidget -> "Widget"
+                                dispVal != null -> {
+                                    val numTxt = when {
+                                        item.maxValue - item.minValue <= 5.0 -> "%.2f".format(dispVal)
+                                        item.maxValue >= 200.0 && item.unit == "RPM" -> "%.0f".format(dispVal)
+                                        else -> "%.1f".format(dispVal)
+                                    }
+                                    if (dispUnit.isNotBlank()) "$numTxt $dispUnit" else numTxt
+                                }
+                                dispUnit.isNotBlank() -> "— $dispUnit"
+                                else -> "Ready"
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .alpha(if (enabled) 1f else 0.36f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) Color(0x2600A8FF) else TorqueEvoColors.CardSurface)
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .then(
+                                        if (enabled) {
+                                            Modifier.clickable {
+                                                selectedItem = item
+                                                if (item.isSpecialWidget) {
+                                                    selectedSize = when (item.key) {
+                                                        "minimap" -> sizeChoices.firstOrNull { it.first >= 2 && it.second >= 2 } ?: (2 to 2)
+                                                        "dtc_checker" -> sizeChoices.firstOrNull { it.first >= 4 && it.second == 1 } ?: (4 to 1)
+                                                        else -> sizeChoices.firstOrNull { it == (2 to 1) } ?: sizeChoices.first()
+                                                    }
+                                                }
+                                            }
+                                        } else Modifier
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = item.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = TorqueEvoColors.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                )
+                                Text(
+                                    text = valueStr,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (enabled) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextSecondary,
+                                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+
+                    if (!selectedItem.isSpecialWidget) {
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text("2. Component Visual", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    WidgetDisplayType.ANALOG_DIAL to "Radial",
+                                    WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
+                                    WidgetDisplayType.DIGITAL to "Digital",
+                                    WidgetDisplayType.BAR to "Bar",
+                                    WidgetDisplayType.CHART to "Chart"
+                                ).forEach { (dt, lbl) ->
+                                    ApexFilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = lbl, compact = true)
                                 }
                             }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        }
+                    } else {
+                        Text(
+                            "2. Visual Style: Built-in Special Widget Layout",
+                            fontSize = 11.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("3. Size (${gridScale.cols}×${gridScale.rows} Grid)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            sizeChoices.forEach { sz ->
+                                ApexFilterChip(
+                                    selected = selectedSize == sz,
+                                    onClick = { selectedSize = sz },
+                                    label = "${sz.first}×${sz.second}",
+                                    compact = true
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // RIGHT PANE (~44%): Live Interactive Scaled Preview + Confirm Add
+                Column(
+                    modifier = Modifier.weight(0.44f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(item.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
-                            Text("${item.pidLabel} · Label: ${item.shortLabel}", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
+                        Text("Live Preview", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                        Text(
+                            "${selectedSize.first}×${selectedSize.second} cell(s)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.ElectricBlue
+                        )
+                    }
+
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(TorqueEvoColors.PureBlack)
+                            .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val gridCellRatio = (16f / gridScale.cols.toFloat()) / (9f / gridScale.rows.toFloat())
+                        val targetAspect = ((selectedSize.first.toFloat() / selectedSize.second.toFloat()) * gridCellRatio).coerceIn(0.6f, 4.2f)
+                        val availW = maxWidth
+                        val availH = maxHeight
+                        val (boxW, boxH) = if (availW / availH > targetAspect) {
+                            (availH * targetAspect) to availH
+                        } else {
+                            availW to (availW / targetAspect)
                         }
-                        if (item.unit.isNotBlank()) {
-                            Text(item.unit, fontSize = 11.sp, color = TorqueEvoColors.ElectricBlue, fontWeight = FontWeight.Bold)
+                        Box(modifier = Modifier.size(width = boxW, height = boxH)) {
+                            RenderWidgetContent(
+                                widget = previewWidget,
+                                viewModel = viewModel,
+                                liveValues = liveValues,
+                                historyBuffers = historyBuffers,
+                                gps = gps,
+                                diagReport = diagReport,
+                                timer0100 = timer0100,
+                                mapProvider = mapProvider,
+                                fuelPaused = fuelPaused,
+                                isRecording = isRecording,
+                                sampleCount = sampleCount,
+                                onToggleRecord = onToggleRecord,
+                                onNavigateExternal = onNavigateExternal,
+                                onToggleFuelPause = onToggleFuelPause,
+                                onScanDtc = onScanDtc,
+                                onReset0100 = onReset0100
+                            )
                         }
                     }
-                }
-            }
 
-            if (!selectedItem.isSpecialWidget) {
-                Text("Component Visual Style", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(
-                        WidgetDisplayType.ANALOG_DIAL to "Precision Radial",
-                        WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
-                        WidgetDisplayType.DIGITAL to "Digital Tile",
-                        WidgetDisplayType.BAR to "Line Bar",
-                        WidgetDisplayType.CHART to "Area Chart"
-                    ).forEach { (dt, lbl) ->
-                        ApexFilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = lbl, compact = true)
+                    Button(
+                        onClick = {
+                            onAddComponent(selectedItem.key, resolvedPreviewType, selectedSize.first, selectedSize.second)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
+                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                    ) {
+                        Text("+ Add to Canvas", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
                     }
                 }
-            }
-
-            Text("Grid Size (8×4 Land / 4×8 Port)", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                listOf(
-                    (1 to 1) to "Small (1×1)",
-                    (2 to 1) to "Wide (2×1)",
-                    (2 to 2) to "Medium (2×2)",
-                    (3 to 2) to "Large (3×2)",
-                    (4 to 1) to "Banner (4×1)"
-                ).forEach { (sz, lbl) ->
-                    ApexFilterChip(selected = selectedSize == sz, onClick = { selectedSize = sz }, label = lbl, compact = true)
-                }
-            }
-
-            Button(
-                onClick = {
-                    val resolvedType = when (selectedItem.key) {
-                        "minimap" -> WidgetDisplayType.MINI_MAP
-                        "dtc_checker" -> WidgetDisplayType.DTC_CHECKER
-                        "timer_0100" -> WidgetDisplayType.PERF_TIMER
-                        "data_logger" -> WidgetDisplayType.DATA_LOGGER
-                        else -> selectedType
-                    }
-                    onAddComponent(selectedItem.key, resolvedType, selectedSize.first, selectedSize.second)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Add to Canvas", fontWeight = FontWeight.Bold)
             }
         }
     }
