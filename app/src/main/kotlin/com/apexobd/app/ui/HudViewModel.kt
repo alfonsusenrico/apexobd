@@ -46,6 +46,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -182,6 +183,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _diagnosticReport = MutableStateFlow<DiagnosticReport?>(null)
     val diagnosticReport: StateFlow<DiagnosticReport?> = _diagnosticReport.asStateFlow()
 
+    private val _diagnosticError = MutableStateFlow<String?>(null)
+    val diagnosticError: StateFlow<String?> = _diagnosticError.asStateFlow()
+
+    private val _diagnosticScanning = MutableStateFlow(false)
+    val diagnosticScanning: StateFlow<Boolean> = _diagnosticScanning.asStateFlow()
+
+    private val _explorerStatus = MutableStateFlow<String?>(null)
+    val explorerStatus: StateFlow<String?> = _explorerStatus.asStateFlow()
+
     private val _vin = MutableStateFlow<String?>(null)
     val vin: StateFlow<String?> = _vin.asStateFlow()
 
@@ -304,19 +314,47 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun forceConnectAndDiscoverForExplorer() {
-        viewModelScope.launch {
-            val st = settings.value
-            if (engine == null) {
-                reconnectTransport(st)
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _explorerStatus.value = "Checking OBD connection..."
+                val st = settings.value
+                if (engine == null) {
+                    reconnectTransport(st)
+                    var waited = 0
+                    while (_connectionState.value !is ConnectionState.Connected && waited < 20) {
+                        if (_connectionState.value is ConnectionState.Reconnecting) break
+                        delay(100L)
+                        waited++
+                    }
+                }
+                if (_connectionState.value !is ConnectionState.Connected) {
+                    _explorerStatus.value = "Adapter offline (${st.wifiHost}:${st.wifiPort}) · Showing standard PIDs"
+                    return@launch
+                }
+                _explorerStatus.value = null
+                val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
+                engine?.setActiveSensors(explorerKeys)
+            } catch (t: Throwable) {
+                _explorerStatus.value = "ECU explorer offline: ${t.message ?: "not connected"}"
             }
-            val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
-            engine?.setActiveSensors(explorerKeys)
         }
     }
 
     fun restoreVisibleCanvasPolling() {
-        val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
-        engine?.setActiveSensors(visible.map { it.sensorKey }.toSet())
+        if (!_onHudScreen.value && !_isRecording.value) {
+            viewModelScope.launch {
+                transportMutex.withLock {
+                    engineCollectorsJob?.cancel()
+                    engine?.stop()
+                    engine = null
+                }
+                _connectionState.value = ConnectionState.Disconnected
+                _pollingHz.value = 0
+            }
+        } else {
+            val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+            engine?.setActiveSensors(visible.map { it.sensorKey }.toSet())
+        }
     }
 
     fun runDeepEcuDump(host: String = settings.value.wifiHost, port: Int = settings.value.wifiPort) {
@@ -466,25 +504,67 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun scanDiagnostics(onDone: (() -> Unit)? = null) {
-        viewModelScope.launch {
-            if (engine == null) {
-                reconnectTransport(settings.value)
-                delay(700L)
-            }
-            val client = engine?.client
-            if (client != null) {
-                _diagnosticReport.value = DtcDecoder.scanAll(client)
+        viewModelScope.launch(Dispatchers.IO) {
+            _diagnosticScanning.value = true
+            _diagnosticError.value = null
+            try {
+                val st = settings.value
+                if (engine == null || _connectionState.value is ConnectionState.Disconnected || _connectionState.value is ConnectionState.Reconnecting) {
+                    reconnectTransport(st)
+                }
+                var waited = 0
+                while (_connectionState.value !is ConnectionState.Connected && waited < 22) {
+                    if (_connectionState.value is ConnectionState.Reconnecting) break
+                    delay(100L)
+                    waited++
+                }
+                val client = engine?.client
+                if (client == null || _connectionState.value !is ConnectionState.Connected) {
+                    _diagnosticError.value =
+                        "Not connected to OBD adapter (${st.wifiHost}:${st.wifiPort}). Connect to adapter Wi-Fi or turn on Demo Simulator in Settings."
+                    return@launch
+                }
+                val result = DtcDecoder.scanAll(client)
+                _diagnosticReport.value = result
                 if (_vin.value == null) _vin.value = DtcDecoder.readVin(client)
+                if (result.confirmed.isEmpty() && result.pending.isEmpty() && result.permanent.isEmpty() && result.readiness == null) {
+                    _diagnosticError.value = "ECU did not respond to diagnostic query. Ensure ignition is ON."
+                }
+            } catch (t: Throwable) {
+                _diagnosticError.value = "Diagnostic scan failed: ${t.message ?: "adapter disconnected"}"
+            } finally {
+                _diagnosticScanning.value = false
+                if (!_onHudScreen.value && !_isRecording.value && _connectionState.value !is ConnectionState.Connected) {
+                    transportMutex.withLock {
+                        engineCollectorsJob?.cancel()
+                        engine?.stop()
+                        engine = null
+                    }
+                    _connectionState.value = ConnectionState.Disconnected
+                }
+                withContext(Dispatchers.Main) {
+                    onDone?.invoke()
+                }
             }
-            onDone?.invoke()
         }
     }
 
     fun clearDtcs() {
-        val client = engine?.client ?: return
-        viewModelScope.launch {
-            if (DtcDecoder.clearDtcs(client)) {
-                _diagnosticReport.value = DtcDecoder.scanAll(client)
+        val client = engine?.client
+        if (client == null || _connectionState.value !is ConnectionState.Connected) {
+            _diagnosticError.value = "Cannot clear DTCs while adapter is offline."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _diagnosticError.value = null
+                if (DtcDecoder.clearDtcs(client)) {
+                    _diagnosticReport.value = DtcDecoder.scanAll(client)
+                } else {
+                    _diagnosticError.value = "Mode 04 clear command was rejected or timed out."
+                }
+            } catch (t: Throwable) {
+                _diagnosticError.value = "Clear DTCs failed: ${t.message ?: "adapter disconnected"}"
             }
         }
     }
@@ -725,6 +805,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     fun deletePage(pageId: Long) {
         viewModelScope.launch {
             if (pagesWithWidgets.value.size > 1) hudDao.deletePage(pageId)
+        }
+    }
+
+    fun clearPageWidgets(pageId: Long) {
+        viewModelScope.launch {
+            hudDao.deleteWidgetsForPage(pageId)
         }
     }
 

@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -33,7 +34,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -126,6 +126,7 @@ fun HudCanvasScreen(
     val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
 
     var editMode by remember { mutableStateOf(false) }
+    var selectedWidgetId by remember { mutableStateOf<Long?>(null) }
     var showContextMenu by remember { mutableStateOf(false) }
     var showComponentPicker by remember { mutableStateOf(false) }
 
@@ -142,6 +143,14 @@ fun HudCanvasScreen(
     LaunchedEffect(pagerState.currentPage, pages.size) {
         if (pages.isNotEmpty()) {
             viewModel.setVisiblePageIndex(pagerState.currentPage.coerceAtMost(pages.lastIndex))
+        }
+    }
+
+    LaunchedEffect(editMode, pagerState.currentPage) {
+        selectedWidgetId = if (editMode) {
+            pages.getOrNull(pagerState.currentPage)?.widgets?.firstOrNull()?.id
+        } else {
+            null
         }
     }
 
@@ -166,21 +175,19 @@ fun HudCanvasScreen(
                 ProportionalHudPageCanvas(
                     widgets = pageBundle.widgets,
                     editMode = editMode,
+                    selectedWidgetId = selectedWidgetId,
                     gridSnap = settings.gridSnapEnabled,
                     pageIndex = pageIdx,
                     viewModel = viewModel,
                     liveValues = liveValues,
                     historyBuffers = historyBuffers,
                     onLongPress = { showContextMenu = true },
+                    onSelectWidget = { w -> selectedWidgetId = w.id },
                     onToggleRecord = { viewModel.toggleRecording() },
                     onNavigateExternal = { viewModel.openExternalNavigation(context) },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
                     onReset0100 = { viewModel.reset0100Best() },
-                    onMoveWidgetDelta = { wId, delta -> viewModel.moveWidget(pageBundle.page.id, wId, delta) },
-                    onCycleDisplay = { viewModel.cycleWidgetDisplayType(it) },
-                    onCycleSize = { viewModel.cycleWidgetSize(it) },
-                    onDeleteWidget = { viewModel.deleteWidget(it.id) },
                     onUpdateFreeformPos = { w, xf, yf -> viewModel.updateWidgetFreeformPosition(w, xf, yf) },
                     renderContextExtras = Triple(gps, diagReport, timer0100),
                     extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0))
@@ -214,21 +221,53 @@ fun HudCanvasScreen(
         }
 
         if (editMode) {
-            Text(
-                text = "EDITING · LONG-PRESS TO FINISH",
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.8.sp,
-                color = TorqueEvoColors.ElectricBlue,
+            val currentPage = pages.getOrNull(pagerState.currentPage)
+            val selectedWidget = currentPage?.widgets?.firstOrNull { it.id == selectedWidgetId }
+                ?: currentPage?.widgets?.firstOrNull()
+            val canStyle = selectedWidget != null &&
+                selectedWidget.sensorKey !in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")
+
+            Row(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 6.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xCC0D1016))
-                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                    .clickable { editMode = false }
-                    .padding(horizontal = 10.dp, vertical = 4.dp)
-            )
+                    .align(Alignment.BottomCenter)
+                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xF00D1016))
+                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = selectedWidget?.let {
+                        val meta = viewModel.catalogItemFor(it.sensorKey)
+                        "${meta.shortLabel} (${it.spanCols}×${it.spanRows})"
+                    } ?: "Tap a tile",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.ElectricBlue,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+                if (selectedWidget != null && currentPage != null) {
+                    if (settings.gridSnapEnabled) {
+                        EditActionPill("◀", Color.White) { viewModel.moveWidget(currentPage.page.id, selectedWidget.id, -1) }
+                        EditActionPill("▶", Color.White) { viewModel.moveWidget(currentPage.page.id, selectedWidget.id, +1) }
+                    }
+                    if (canStyle) {
+                        EditActionPill("◐ Style", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetDisplayType(selectedWidget) }
+                    }
+                    EditActionPill("⤢ Size", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetSize(selectedWidget) }
+                    EditActionPill("×", TorqueEvoColors.CriticalRed) {
+                        val remaining = currentPage.widgets.filter { it.id != selectedWidget.id }
+                        viewModel.deleteWidget(selectedWidget.id)
+                        selectedWidgetId = remaining.firstOrNull()?.id
+                    }
+                }
+                EditActionPill("Done ✓", Color(0xFF020810), bg = TorqueEvoColors.ElectricBlue) {
+                    editMode = false
+                }
+            }
         }
     }
 
@@ -270,6 +309,13 @@ fun HudCanvasScreen(
                         scope.launch { pagerState.animateScrollToPage(newIdx) }
                     }
                     showContextMenu = false
+                }
+                if (currentPage != null && currentPage.widgets.isNotEmpty()) {
+                    ContextMenuButton("Clear Page Widgets", color = TorqueEvoColors.WarnAmber) {
+                        viewModel.clearPageWidgets(currentPage.page.id)
+                        selectedWidgetId = null
+                        showContextMenu = false
+                    }
                 }
                 if (pages.size > 1 && currentPage != null) {
                     ContextMenuButton("Delete Current Page (${currentPage.page.title})", color = TorqueEvoColors.CriticalRed) {
@@ -365,21 +411,19 @@ private fun packWidgetsIntoGrid(
 private fun ProportionalHudPageCanvas(
     widgets: List<HudWidgetEntity>,
     editMode: Boolean,
+    selectedWidgetId: Long?,
     gridSnap: Boolean,
     pageIndex: Int,
     viewModel: HudViewModel,
     liveValues: Map<String, Double>,
     historyBuffers: Map<String, List<Double>>,
     onLongPress: () -> Unit,
+    onSelectWidget: (HudWidgetEntity) -> Unit,
     onToggleRecord: () -> Unit,
     onNavigateExternal: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
-    onMoveWidgetDelta: (Long, Int) -> Unit,
-    onCycleDisplay: (HudWidgetEntity) -> Unit,
-    onCycleSize: (HudWidgetEntity) -> Unit,
-    onDeleteWidget: (HudWidgetEntity) -> Unit,
     onUpdateFreeformPos: (HudWidgetEntity, Float, Float) -> Unit,
     renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
     extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>
@@ -468,14 +512,9 @@ private fun ProportionalHudPageCanvas(
                         .size(width = boxW, height = boxH)
                 ) {
                     HudWidgetSlotWrapper(
-                        widget = w,
                         editMode = editMode,
-                        showFreeformArrows = true,
-                        onSwapPrev = { onMoveWidgetDelta(w.id, -1) },
-                        onSwapNext = { onMoveWidgetDelta(w.id, +1) },
-                        onCycleDisplay = { onCycleDisplay(w) },
-                        onCycleSize = { onCycleSize(w) },
-                        onDelete = { onDeleteWidget(w) }
+                        isSelected = w.id == selectedWidgetId,
+                        onSelect = { onSelectWidget(w) }
                     ) {
                         RenderWidgetContent(
                             widget = w,
@@ -536,14 +575,9 @@ private fun ProportionalHudPageCanvas(
                         )
                 ) {
                     HudWidgetSlotWrapper(
-                        widget = w,
                         editMode = editMode,
-                        showFreeformArrows = false,
-                        onSwapPrev = {},
-                        onSwapNext = {},
-                        onCycleDisplay = { onCycleDisplay(w) },
-                        onCycleSize = { onCycleSize(w) },
-                        onDelete = { onDeleteWidget(w) }
+                        isSelected = w.id == selectedWidgetId,
+                        onSelect = { onSelectWidget(w) }
                     ) {
                         RenderWidgetContent(
                             widget = w,
@@ -572,16 +606,15 @@ private fun ProportionalHudPageCanvas(
 
 @Composable
 private fun HudWidgetSlotWrapper(
-    widget: HudWidgetEntity,
     editMode: Boolean,
-    showFreeformArrows: Boolean,
-    onSwapPrev: () -> Unit,
-    onSwapNext: () -> Unit,
-    onCycleDisplay: () -> Unit,
-    onCycleSize: () -> Unit,
-    onDelete: () -> Unit,
+    isSelected: Boolean,
+    onSelect: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    val borderColor = when {
+        isSelected -> TorqueEvoColors.ElectricBlue
+        else -> TorqueEvoColors.ElectricBlue.copy(alpha = 0.35f)
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -589,30 +622,18 @@ private fun HudWidgetSlotWrapper(
                 if (editMode) {
                     Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0x0D00A8FF))
-                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                        .background(if (isSelected) Color(0x1600A8FF) else Color(0x0600A8FF))
+                        .border(if (isSelected) 2.dp else 1.dp, borderColor, RoundedCornerShape(12.dp))
                 } else Modifier
             )
     ) {
         content()
-
         if (editMode) {
-            Row(
+            Box(
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(3.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                if (showFreeformArrows) {
-                    EditPill("◀", Color.White, onSwapPrev)
-                    EditPill("▶", Color.White, onSwapNext)
-                }
-                if (widget.sensorKey !in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")) {
-                    EditPill("◐", TorqueEvoColors.SkyBlue, onCycleDisplay)
-                }
-                EditPill("⤢", TorqueEvoColors.SkyBlue, onCycleSize)
-                EditPill("×", TorqueEvoColors.CriticalRed, onDelete)
-            }
+                    .fillMaxSize()
+                    .clickable { onSelect() }
+            )
         }
     }
 }
@@ -698,17 +719,22 @@ private fun RenderWidgetContent(
 }
 
 @Composable
-private fun EditPill(symbol: String, tint: Color, onClick: () -> Unit) {
+private fun EditActionPill(
+    label: String,
+    tint: Color,
+    bg: Color = Color(0xFF151922),
+    onClick: () -> Unit
+) {
     Box(
         modifier = Modifier
-            .size(21.dp)
-            .clip(RoundedCornerShape(5.dp))
-            .background(Color(0xEB080A0E))
-            .border(1.dp, Color(0x3DFFFFFF), RoundedCornerShape(5.dp))
-            .clickable { onClick() },
+            .clip(RoundedCornerShape(7.dp))
+            .background(bg)
+            .border(1.dp, if (bg == TorqueEvoColors.ElectricBlue) TorqueEvoColors.ElectricBlue else Color(0x3DFFFFFF), RoundedCornerShape(7.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 9.dp, vertical = 5.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(symbol, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = tint)
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = tint, maxLines = 1)
     }
 }
 
@@ -769,11 +795,11 @@ private fun AvailableComponentPickerSheet(
             )
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = selectedGroup == SensorCatalogGroup.ECU_MODE01, onClick = { selectedGroup = SensorCatalogGroup.ECU_MODE01 }, label = { Text("ECU Mode 01") })
-                FilterChip(selected = selectedGroup == SensorCatalogGroup.CALCULATED, onClick = { selectedGroup = SensorCatalogGroup.CALCULATED }, label = { Text("Calculated") })
-                FilterChip(selected = selectedGroup == SensorCatalogGroup.PHONE_AND_WIDGETS, onClick = { selectedGroup = SensorCatalogGroup.PHONE_AND_WIDGETS }, label = { Text("Phone & Widgets") })
+                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.ECU_MODE01, onClick = { selectedGroup = SensorCatalogGroup.ECU_MODE01 }, label = "ECU Mode 01", compact = true)
+                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.CALCULATED, onClick = { selectedGroup = SensorCatalogGroup.CALCULATED }, label = "Calculated", compact = true)
+                ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.PHONE_AND_WIDGETS, onClick = { selectedGroup = SensorCatalogGroup.PHONE_AND_WIDGETS }, label = "Phone & Widgets", compact = true)
                 if (groupedCatalog.any { it.group == SensorCatalogGroup.CUSTOM_PIDS }) {
-                    FilterChip(selected = selectedGroup == SensorCatalogGroup.CUSTOM_PIDS, onClick = { selectedGroup = SensorCatalogGroup.CUSTOM_PIDS }, label = { Text("Custom 21/22") })
+                    ApexFilterChip(selected = selectedGroup == SensorCatalogGroup.CUSTOM_PIDS, onClick = { selectedGroup = SensorCatalogGroup.CUSTOM_PIDS }, label = "Custom 21/22", compact = true)
                 }
             }
 
@@ -824,7 +850,7 @@ private fun AvailableComponentPickerSheet(
                         WidgetDisplayType.BAR to "Line Bar",
                         WidgetDisplayType.CHART to "Area Chart"
                     ).forEach { (dt, lbl) ->
-                        FilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = { Text(lbl, fontSize = 11.sp) })
+                        ApexFilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = lbl, compact = true)
                     }
                 }
             }
@@ -838,7 +864,7 @@ private fun AvailableComponentPickerSheet(
                     (3 to 2) to "Large (3×2)",
                     (4 to 1) to "Banner (4×1)"
                 ).forEach { (sz, lbl) ->
-                    FilterChip(selected = selectedSize == sz, onClick = { selectedSize = sz }, label = { Text(lbl, fontSize = 11.sp) })
+                    ApexFilterChip(selected = selectedSize == sz, onClick = { selectedSize = sz }, label = lbl, compact = true)
                 }
             }
 

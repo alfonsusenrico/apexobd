@@ -59,7 +59,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class ActiveHomeSheet { NONE, VEHICLE, REFUEL, FAULTS, RUNS_AND_MAPS, ECU_PIDS, SETTINGS }
+private enum class ActiveHomeSheet { NONE, VEHICLE, REFUEL, FAULTS, RUNS_AND_MAPS, OFFLINE_MAPS, ECU_PIDS, SETTINGS }
 
 @Composable
 fun HomeMenuScreen(
@@ -75,6 +75,9 @@ fun HomeMenuScreen(
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
     val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
     val report by viewModel.diagnosticReport.collectAsStateWithLifecycle()
+    val diagnosticError by viewModel.diagnosticError.collectAsStateWithLifecycle()
+    val diagnosticScanning by viewModel.diagnosticScanning.collectAsStateWithLifecycle()
+    val explorerStatus by viewModel.explorerStatus.collectAsStateWithLifecycle()
     val vin by viewModel.vin.collectAsStateWithLifecycle()
     val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
     val liveValues by viewModel.ecuExplorerValues.collectAsStateWithLifecycle()
@@ -398,9 +401,10 @@ fun HomeMenuScreen(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1.1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(modifier = Modifier.weight(1.05f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         launchHudButton()
                         lastRunMapCard(Modifier.weight(1f).fillMaxWidth())
+                        settingsCard()
                     }
                     Column(
                         modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
@@ -411,7 +415,6 @@ fun HomeMenuScreen(
                         modulesGrid()
                     }
                 }
-                settingsCard()
             }
         } else {
             Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(9.dp)) {
@@ -451,21 +454,26 @@ fun HomeMenuScreen(
         ActiveHomeSheet.FAULTS -> FaultCodesSheet(
             report = report,
             vin = vin,
+            isScanning = diagnosticScanning,
+            diagnosticError = diagnosticError,
             onScan = { viewModel.scanDiagnostics() },
             onClearDtcs = { viewModel.clearDtcs() },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.RUNS_AND_MAPS -> RunLogsAndMapsSheet(
             sessions = sessions,
-            mapProvider = settings.mapProvider,
+            unitPrefs = unitPrefs,
+            fuelType = fuelType,
+            onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
+            onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.OFFLINE_MAPS },
+            onDismiss = { activeSheet = ActiveHomeSheet.NONE }
+        )
+        ActiveHomeSheet.OFFLINE_MAPS -> OfflineMapDownloaderDialog(
             activePmtilesPath = settings.activePmtilesPath,
             gps = gps,
             offlineRegions = offlineRegions,
             pmtilesPacks = pmtilesPacks,
             offlineStatusMsg = offlineMsg,
-            unitPrefs = unitPrefs,
-            fuelType = fuelType,
-            onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
             onDownloadBounds = { n, box, mZ ->
                 viewModel.offlineMapManager.downloadBoundsRegion(n, box.north, box.east, box.south, box.west, minZoom = 5.0, maxZoom = mZ)
             },
@@ -483,11 +491,13 @@ fun HomeMenuScreen(
             onSelectPmtilesPack = { path -> viewModel.setActivePmtilesPath(path) },
             onDeletePmtilesPack = { path -> viewModel.offlineMapManager.deletePmtilesPack(path) },
             onRefreshRegions = { viewModel.offlineMapManager.refreshAll() },
+            onBackToRuns = { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.ECU_PIDS -> EcuPidsSheet(
             supportedPids = supportedPids,
             liveValues = liveValues,
+            explorerStatus = explorerStatus,
             onDiscoverExplorer = { viewModel.forceConnectAndDiscoverForExplorer() },
             onStopExplorer = { viewModel.restoreVisibleCanvasPolling() },
             onAddCustomPid = { n, hex, form, u -> viewModel.addManualCustomPid(n, hex, form, u) },
@@ -503,7 +513,7 @@ fun HomeMenuScreen(
             onUpdateUnits = { viewModel.updateUnits(it) },
             onUpdateCurrency = { viewModel.setCurrencyCode(it) },
             onToggleHudMirror = { viewModel.toggleHudMirror() },
-            onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS },
+            onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.OFFLINE_MAPS },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.NONE -> Unit

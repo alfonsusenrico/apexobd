@@ -9,6 +9,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -35,6 +36,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apexobd.app.data.prefs.MapProvider
@@ -172,7 +174,8 @@ fun AnalogDialWidget(
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 1.sp,
                 color = TorqueEvoColors.TextSecondary,
-                modifier = Modifier.padding(top = 12.dp)
+                maxLines = 1,
+                modifier = Modifier.padding(top = 26.dp)
             )
             Row(
                 verticalAlignment = Alignment.Bottom,
@@ -220,20 +223,21 @@ fun SemiDigitalArcWidget(
     )
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct)
 
-    Box(modifier = modifier.fillMaxSize().padding(6.dp)) {
+    Box(modifier = modifier.fillMaxSize().padding(horizontal = 8.dp, vertical = 6.dp)) {
         Text(
             text = shortLabel.uppercase(),
             fontSize = 9.sp,
             fontWeight = FontWeight.Bold,
             letterSpacing = 0.9.sp,
             color = TorqueEvoColors.TextSecondary,
+            maxLines = 1,
             modifier = Modifier.align(Alignment.TopCenter)
         )
-        Canvas(modifier = Modifier.fillMaxSize().padding(top = 14.dp, bottom = 14.dp)) {
-            val d = minOf(size.width * 0.86f, size.height * 1.15f)
+        Canvas(modifier = Modifier.fillMaxSize().padding(top = 12.dp, bottom = 10.dp)) {
+            val d = minOf(size.width * 0.88f, size.height * 1.25f)
             val r = d / 2f
             val cx = size.width / 2f
-            val cy = size.height * 0.78f
+            val cy = size.height * 0.72f
             val topLeft = Offset(cx - r, cy - r)
             val arcSize = Size(r * 2f, r * 2f)
 
@@ -244,7 +248,7 @@ fun SemiDigitalArcWidget(
                 useCenter = false,
                 topLeft = topLeft,
                 size = arcSize,
-                style = Stroke(width = 10f, cap = StrokeCap.Round)
+                style = Stroke(width = 9f, cap = StrokeCap.Round)
             )
             if (pct > 0f) {
                 drawArc(
@@ -254,34 +258,36 @@ fun SemiDigitalArcWidget(
                     useCenter = false,
                     topLeft = topLeft,
                     size = arcSize,
-                    style = Stroke(width = 10f, cap = StrokeCap.Round)
+                    style = Stroke(width = 9f, cap = StrokeCap.Round)
                 )
             }
         }
         Row(
             verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            modifier = Modifier.align(Alignment.Center).padding(top = 10.dp)
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
         ) {
             Text(
                 text = formatTelemetryValue(value, min, max),
-                fontSize = 25.sp,
+                fontSize = 23.sp,
                 fontWeight = FontWeight.Bold,
                 color = TorqueEvoColors.TextPrimary,
-                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                maxLines = 1
             )
             if (unit.isNotBlank()) {
                 Text(
                     text = unit,
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = TorqueEvoColors.TextSecondary,
-                    modifier = Modifier.padding(bottom = 3.dp)
+                    modifier = Modifier.padding(bottom = 3.dp),
+                    maxLines = 1
                 )
             }
         }
         Row(
-            modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 8.dp),
+            modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text("${min.roundToInt()}", fontSize = 8.sp, color = Color(0xFF5B6474))
@@ -393,60 +399,93 @@ fun BarGaugeWidget(
     val pct by animateFloatAsState(targetValue = rawPct, label = "barPct")
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct)
 
-    Row(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .clip(RoundedCornerShape(6.dp))
             .background(Color(0x09FFFFFF))
     ) {
-        Box(modifier = Modifier.fillMaxHeight().size(width = 2.5.dp, height = 100.dp).background(accent))
-        Column(
-            modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 7.dp),
-            verticalArrangement = Arrangement.Center
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
+        val compact = maxWidth < 145.dp
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.fillMaxHeight().size(width = 2.5.dp, height = 100.dp).background(accent))
+            Column(
+                modifier = Modifier.fillMaxSize().padding(horizontal = if (compact) 8.dp else 10.dp, vertical = 6.dp),
+                verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Center
             ) {
-                Text(
-                    text = shortLabel.uppercase(),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 0.6.sp,
-                    color = TorqueEvoColors.TextSecondary
-                )
-                Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                if (compact) {
                     Text(
-                        text = formatTelemetryValue(value, min, max),
-                        fontSize = 18.sp,
+                        text = shortLabel.uppercase(),
+                        fontSize = 8.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = TorqueEvoColors.TextPrimary,
-                        style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                        letterSpacing = 0.5.sp,
+                        color = TorqueEvoColors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    if (unit.isNotBlank()) {
-                        Text(unit, fontSize = 10.sp, color = TorqueEvoColors.TextSecondary, modifier = Modifier.padding(bottom = 2.dp))
+                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = formatTelemetryValue(value, min, max),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.TextPrimary,
+                            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                            maxLines = 1
+                        )
+                        if (unit.isNotBlank()) {
+                            Text(unit, fontSize = 9.sp, color = TorqueEvoColors.TextSecondary, modifier = Modifier.padding(bottom = 2.dp), maxLines = 1)
+                        }
                     }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        Text(
+                            text = shortLabel.uppercase(),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.6.sp,
+                            color = TorqueEvoColors.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(end = 6.dp)
+                        )
+                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = formatTelemetryValue(value, min, max),
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.TextPrimary,
+                                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                                maxLines = 1
+                            )
+                            if (unit.isNotBlank()) {
+                                Text(unit, fontSize = 10.sp, color = TorqueEvoColors.TextSecondary, modifier = Modifier.padding(bottom = 2.dp), maxLines = 1)
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
                 }
-            }
-            Spacer(Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color(0x18FFFFFF))
-            ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(pct)
-                        .fillMaxHeight()
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(accent.copy(alpha = 0.7f), accent)
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Color(0x18FFFFFF))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(pct)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(accent.copy(alpha = 0.7f), accent)
+                                )
                             )
-                        )
-                )
+                    )
+                }
             }
         }
     }
@@ -686,18 +725,22 @@ fun DtcCheckerWidget(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(
                 text = "FAULT CHECK (03/07)",
                 fontSize = 9.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = 0.5.sp,
-                color = TorqueEvoColors.TextSecondary
+                color = TorqueEvoColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = if (report == null) "Tap Scan" else if (count == 0) "0 Faults · ECU Ready" else "$count Fault(s) Found",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 color = when {
                     report == null -> TorqueEvoColors.TextPrimary
                     count == 0 -> TorqueEvoColors.NominalGreen
@@ -710,6 +753,8 @@ fun DtcCheckerWidget(
             fontSize = 10.sp,
             fontWeight = FontWeight.SemiBold,
             color = TorqueEvoColors.TextPrimary,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
                 .border(1.dp, Color(0x28FFFFFF), RoundedCornerShape(6.dp))
@@ -725,6 +770,7 @@ fun PerfTimerWidget(
     onReset: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val showSecondsSuffix = timer.running || timer.bestRunSec != null
     Row(
         modifier = modifier
             .fillMaxSize()
@@ -735,23 +781,35 @@ fun PerfTimerWidget(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
-            Text("0–100 KM/H SPRINT", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextSecondary)
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(
+                text = "0–100 KM/H SPRINT",
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                color = TorqueEvoColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     text = if (timer.running) "%.2f".format(timer.currentSec) else timer.bestRunSec?.let { "%.2f".format(it) } ?: "ARMED",
-                    fontSize = 20.sp,
+                    fontSize = if (showSecondsSuffix) 20.sp else 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (timer.running) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextPrimary,
-                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                    maxLines = 1
                 )
-                Text("s", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary, modifier = Modifier.padding(bottom = 2.dp))
+                if (showSecondsSuffix) {
+                    Text("s", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary, modifier = Modifier.padding(bottom = 2.dp))
+                }
             }
         }
         Text(
             text = "Reset",
             fontSize = 10.sp,
             color = TorqueEvoColors.TextSecondary,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
                 .border(1.dp, Color(0x28FFFFFF), RoundedCornerShape(6.dp))
@@ -778,13 +836,22 @@ fun DataLoggerWidget(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
-            Text("RUN TELEMETRY LOGGER", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextSecondary)
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(
-                text = if (isRecording) "Recording ($latestSampleCount pts)" else "Ready to record",
-                fontSize = 13.sp,
+                text = "RUN LOGGER",
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                color = TorqueEvoColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = if (isRecording) "REC ($latestSampleCount pts)" else "Ready",
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (isRecording) TorqueEvoColors.NominalGreen else TorqueEvoColors.TextPrimary
+                color = if (isRecording) TorqueEvoColors.NominalGreen else TorqueEvoColors.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
         Text(
@@ -792,6 +859,8 @@ fun DataLoggerWidget(
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
             color = Color.White,
+            maxLines = 1,
+            softWrap = false,
             modifier = Modifier
                 .clip(RoundedCornerShape(6.dp))
                 .background(if (isRecording) Color(0xFFDC2626) else Color(0xFF16A34A))

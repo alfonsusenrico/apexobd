@@ -110,4 +110,16 @@ class EngineAndPerformanceTest {
         serverJob.join()
         server.close()
     }
+
+    @Test
+    fun `Elm327Client and DtcDecoder handle disconnected transport safely without throwing`() = runTest {
+        val disconnectedTransport = WifiTcpTransport(host = "127.0.0.1", port = 35000)
+        val client = Elm327Client(disconnectedTransport)
+        val res = client.execute("03")
+        assertTrue(res is ObdCommandResult.Error)
+        val report = DtcDecoder.scanAll(client)
+        assertTrue(report.confirmed.isEmpty())
+        assertTrue(report.pending.isEmpty())
+        assertFalse(DtcDecoder.clearDtcs(client))
+    }
 }

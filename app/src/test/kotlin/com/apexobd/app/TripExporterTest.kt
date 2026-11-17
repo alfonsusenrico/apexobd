@@ -62,6 +62,11 @@ class TripExporterTest {
         assertTrue(estZ14.tileCount in 100L..2500L)
         org.junit.Assert.assertFalse(estZ14.exceedsFairUseLimit)
 
+        val zoomedOut = com.apexobd.app.platform.OfflineMapManager.insetBounds(-6.5, 113.5, -8.1, 111.9, marginRatio = 0.08)
+        val estZoomedOut = com.apexobd.app.platform.OfflineMapManager.estimateRegionSize(zoomedOut.north, zoomedOut.east, zoomedOut.south, zoomedOut.west, 5.0, 14.0)
+        assertTrue(estZoomedOut.tileCount > estZ14.tileCount)
+        assertTrue(estZoomedOut.estimatedMb > estZ14.estimatedMb)
+
         val styleJson = com.apexobd.app.platform.OfflineMapManager.buildDarkPmtilesStyleJson("/data/user/0/com.apexobd.app/files/pmtiles/java.pmtiles")
         assertTrue(styleJson.contains("pmtiles://file:///data/user/0/com.apexobd.app/files/pmtiles/java.pmtiles"))
         assertTrue(styleJson.contains("\"source-layer\": \"roads\""))

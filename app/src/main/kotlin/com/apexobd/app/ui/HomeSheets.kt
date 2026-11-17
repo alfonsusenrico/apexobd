@@ -9,15 +9,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -27,6 +31,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -35,6 +40,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -80,6 +87,46 @@ import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+@Composable
+fun ApexFilterChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String,
+    enabled: Boolean = true,
+    compact: Boolean = false
+) {
+    FilterChip(
+        selected = selected,
+        enabled = enabled,
+        onClick = onClick,
+        label = {
+            Text(
+                text = label,
+                fontSize = if (compact) 11.sp else 12.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1
+            )
+        },
+        colors = FilterChipDefaults.filterChipColors(
+            selectedContainerColor = TorqueEvoColors.DimBlue,
+            selectedLabelColor = TorqueEvoColors.ElectricBlue,
+            containerColor = TorqueEvoColors.CardSurface,
+            labelColor = TorqueEvoColors.TextSecondary,
+            disabledContainerColor = Color(0xFF0B0E14),
+            disabledLabelColor = Color(0xFF4B5563)
+        ),
+        border = FilterChipDefaults.filterChipBorder(
+            enabled = enabled,
+            selected = selected,
+            borderColor = TorqueEvoColors.SubtleBorder,
+            selectedBorderColor = TorqueEvoColors.ElectricBlue,
+            disabledBorderColor = Color(0x16FFFFFF),
+            borderWidth = 1.dp,
+            selectedBorderWidth = 1.dp
+        )
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -137,7 +184,7 @@ fun VehicleProfileSheet(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Vehicle Profiles & Odometers", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                Text("Vehicle Profile", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
                 TextButton(onClick = {
                     editingExisting = null
                     name = "New Car"
@@ -159,13 +206,13 @@ fun VehicleProfileSheet(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     vehicles.forEach { v ->
-                        FilterChip(
+                        ApexFilterChip(
                             selected = v.id == activeVehicle?.id && editingExisting?.id == v.id,
                             onClick = {
                                 onSelectVehicle(v.id)
                                 editingExisting = v
                             },
-                            label = { Text(v.name) }
+                            label = v.name
                         )
                     }
                 }
@@ -182,10 +229,10 @@ fun VehicleProfileSheet(
             Text("Fuel Type", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FuelType.entries.forEach { ft ->
-                    FilterChip(
+                    ApexFilterChip(
                         selected = fuelType == ft,
                         onClick = { fuelType = ft },
-                        label = { Text(ft.label) }
+                        label = ft.label
                     )
                 }
             }
@@ -312,7 +359,7 @@ fun RefuelLogSheet(
                 color = TorqueEvoColors.TextSecondary
             )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
                     value = volume,
                     onValueChange = { volume = it },
@@ -327,18 +374,23 @@ fun RefuelLogSheet(
                     label = { Text("Price ($currency)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     singleLine = true,
-                    modifier = Modifier.weight(1.2f)
+                    modifier = Modifier.weight(1f)
                 )
             }
 
-            Text("Currency", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Currency", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary, fontWeight = FontWeight.SemiBold)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 listOf("IDR", "USD", "EUR", "MYR", "SGD", "GBP").forEach { c ->
-                    FilterChip(selected = currency == c, onClick = { currency = c }, label = { Text(c) })
+                    ApexFilterChip(selected = currency == c, onClick = { currency = c }, label = c, compact = true)
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 if (fuelType == FuelType.GASOLINE) {
                     OutlinedTextField(
                         value = ron,
@@ -350,21 +402,22 @@ fun RefuelLogSheet(
                     )
                 }
                 OutlinedTextField(
-                    value = fuelName,
-                    onValueChange = { fuelName = it },
-                    label = { Text("Fuel Name (Optional)") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1.4f)
-                )
-                OutlinedTextField(
                     value = odometer,
                     onValueChange = { odometer = it },
-                    label = { Text("Odo ($distUnit)") },
+                    label = { Text("Odometer ($distUnit)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
-                    modifier = Modifier.weight(1.1f)
+                    modifier = Modifier.weight(1.2f)
                 )
             }
+
+            OutlinedTextField(
+                value = fuelName,
+                onValueChange = { fuelName = it },
+                label = { Text("Fuel Name (Optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             Button(
                 onClick = {
@@ -455,6 +508,8 @@ fun RefuelLogSheet(
 fun FaultCodesSheet(
     report: DiagnosticReport?,
     vin: String?,
+    isScanning: Boolean,
+    diagnosticError: String?,
     onScan: () -> Unit,
     onClearDtcs: () -> Unit,
     onDismiss: () -> Unit
@@ -462,14 +517,15 @@ fun FaultCodesSheet(
     var confirmClear by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        if (report == null) onScan()
+        if (report == null && !isScanning) onScan()
     }
 
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            title = { Text("Confirm Mode 04 Clear DTCs") },
-            text = { Text("Clears ECU trouble codes, turns off CEL/MIL, and resets readiness monitors. Keep Ignition ON and Engine OFF.") },
+            containerColor = TorqueEvoColors.ElevatedDark,
+            title = { Text("Confirm Mode 04 Clear DTCs", color = TorqueEvoColors.TextPrimary) },
+            text = { Text("Clears ECU trouble codes, turns off CEL/MIL, and resets readiness monitors. Keep Ignition ON and Engine OFF.", color = TorqueEvoColors.TextSecondary) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -499,34 +555,69 @@ fun FaultCodesSheet(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("Fault Codes & Readiness (03/07/0A)", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                OutlinedButton(onClick = onScan) { Text("Rescan") }
+                Text("Fault Codes & Readiness (03/07/0A)", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary, modifier = Modifier.weight(1f))
+                OutlinedButton(onClick = onScan, enabled = !isScanning) {
+                    Text(if (isScanning) "Scanning..." else "Rescan", fontSize = 12.sp)
+                }
             }
-            Text("VIN (Mode 09): ${vin ?: "Not reported / Run scan"}", fontSize = 12.sp, color = TorqueEvoColors.TextSecondary)
+            Text("VIN (Mode 09): ${vin ?: "Not reported"}", fontSize = 12.sp, color = TorqueEvoColors.TextSecondary)
 
             val allCodes = (report?.confirmed.orEmpty() + report?.pending.orEmpty() + report?.permanent.orEmpty())
-            if (report == null) {
-                Text("Scanning ECU trouble codes...", color = TorqueEvoColors.ElectricBlue)
-            } else if (allCodes.isEmpty()) {
-                Text("0 Trouble Codes Detected · MIL: ${if (report.readiness?.milOn == true) "ON" else "OFF"}", color = TorqueEvoColors.NominalGreen, fontWeight = FontWeight.SemiBold)
-            } else {
-                allCodes.forEach { dtc ->
+            when {
+                isScanning -> {
+                    Text("Scanning ECU trouble codes...", color = TorqueEvoColors.ElectricBlue, fontSize = 13.sp)
+                }
+                diagnosticError != null -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(TorqueEvoColors.CardSurface)
-                            .padding(10.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x1AF59E0B))
+                            .border(1.dp, TorqueEvoColors.WarnAmber.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Text("${dtc.code} (${dtc.category.name})", fontWeight = FontWeight.Bold, color = TorqueEvoColors.WarnAmber)
-                        Text(dtc.description, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        Text("Adapter Offline / No ECU Response", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TorqueEvoColors.WarnAmber)
+                        Text(diagnosticError, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                    }
+                }
+                report == null -> {
+                    Text("Tap Rescan to query ECU trouble codes (Modes 03 / 07 / 0A).", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
+                }
+                allCodes.isEmpty() -> {
+                    Text(
+                        "0 Trouble Codes Detected · MIL: ${if (report.readiness?.milOn == true) "ON" else "OFF"}",
+                        color = TorqueEvoColors.NominalGreen,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                }
+                else -> {
+                    allCodes.forEach { dtc ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(TorqueEvoColors.CardSurface)
+                                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text("${dtc.code} (${dtc.category.name})", fontWeight = FontWeight.Bold, color = TorqueEvoColors.WarnAmber)
+                            Text(dtc.description, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        }
                     }
                 }
             }
 
             Button(
                 onClick = { confirmClear = true },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D), contentColor = Color.White),
+                enabled = report != null && !isScanning && diagnosticError == null,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF7F1D1D),
+                    contentColor = Color.White,
+                    disabledContainerColor = Color(0xFF231517),
+                    disabledContentColor = Color(0xFF6B7280)
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text("Clear Fault Codes (Mode 04)")
@@ -535,62 +626,17 @@ fun FaultCodesSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RunLogsAndMapsSheet(
     sessions: List<TripSessionEntity>,
-    mapProvider: MapProvider,
-    activePmtilesPath: String?,
-    gps: GpsSnapshot,
-    offlineRegions: List<OfflineRegionSummary>,
-    pmtilesPacks: List<PmtilesPackSummary>,
-    offlineStatusMsg: String?,
     unitPrefs: UnitPreferences,
     fuelType: FuelType,
     onExport: (TripSessionEntity, Boolean) -> Unit,
-    onDownloadBounds: (name: String, bounds: OfflineMapManager.BoundsBox, maxZoom: Double) -> Unit,
-    onDeleteRegion: (Long) -> Unit,
-    onImportPmtilesUri: (Uri) -> Unit,
-    onDownloadPmtilesUrl: (name: String, url: String) -> Unit,
-    onSelectPmtilesPack: (String?) -> Unit,
-    onDeletePmtilesPack: (String) -> Unit,
-    onRefreshRegions: () -> Unit,
+    onOpenOfflineMaps: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var tab by remember { mutableStateOf(0) } // 0 = Run History, 1 = Offline Maps Downloader
-    var regionName by remember { mutableStateOf("Local Area") }
-    var maxZoom by remember { mutableStateOf(14.0) }
-    var frameBounds by remember(gps.latitude, gps.longitude) {
-        mutableStateOf(
-            OfflineMapManager.BoundsBox(
-                north = gps.latitude + 0.25,
-                east = gps.longitude + 0.25,
-                south = gps.latitude - 0.25,
-                west = gps.longitude - 0.25
-            )
-        )
-    }
-    var pmtilesName by remember { mutableStateOf("Java_Island") }
-    var pmtilesUrl by remember { mutableStateOf("") }
-
-    val pmtilesPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) onImportPmtilesUri(uri)
-    }
-
     val fmt = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
-
-    val estimate = remember(frameBounds, maxZoom) {
-        OfflineMapManager.estimateRegionSize(
-            north = frameBounds.north,
-            east = frameBounds.east,
-            south = frameBounds.south,
-            west = frameBounds.west,
-            minZoom = 5.0,
-            maxZoom = maxZoom
-        )
-    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -606,211 +652,350 @@ fun RunLogsAndMapsSheet(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = tab == 0, onClick = { tab = 0 }, label = { Text("Saved Runs (${sessions.size})") })
-                FilterChip(
-                    selected = tab == 1,
-                    onClick = {
-                        tab = 1
-                        onRefreshRegions()
-                    },
-                    label = { Text("Offline Maps (Free)") }
-                )
+                ApexFilterChip(selected = true, onClick = {}, label = "Saved Runs (${sessions.size})")
+                ApexFilterChip(selected = false, onClick = onOpenOfflineMaps, label = "Offline Maps (Free)")
             }
 
-            if (tab == 0) {
-                if (sessions.isEmpty()) {
-                    Text("No saved runs yet. Start a run from the HUD Mini-Map or Run Logger.", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
-                } else {
-                    sessions.forEach { s ->
-                        val (dVal, dSym) = UnitConverter.convertDistanceKm(s.distanceKm, unitPrefs)
-                        val (kVal, kSym) = UnitConverter.convertFuelEconomy(s.avgKpl, unitPrefs, fuelType)
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(TorqueEvoColors.CardSurface)
-                                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
-                                .padding(10.dp)
+            if (sessions.isEmpty()) {
+                Text("No saved runs yet. Start a run from the HUD Mini-Map or Run Logger.", color = TorqueEvoColors.TextSecondary, fontSize = 12.sp)
+            } else {
+                sessions.forEach { s ->
+                    val (dVal, dSym) = UnitConverter.convertDistanceKm(s.distanceKm, unitPrefs)
+                    val (kVal, kSym) = UnitConverter.convertFuelEconomy(s.avgKpl, unitPrefs, fuelType)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                            .padding(10.dp)
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(fmt.format(Date(s.startedAtMs)), fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                            Text("%.1f %s · %.1f %s".format(dVal, dSym, kVal, kSym), color = TorqueEvoColors.ElectricBlue, fontSize = 12.sp)
+                        }
+                        Text(
+                            "Max %.0f km/h · Peak %.0f RPM · %d pts".format(s.maxSpeedKmh, s.peakRpm, s.sampleCount),
+                            fontSize = 11.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                            OutlinedButton(onClick = { onExport(s, false) }) { Text("CSV", fontSize = 11.sp) }
+                            OutlinedButton(onClick = { onExport(s, true) }) { Text("JSON", fontSize = 11.sp) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun OfflineMapDownloaderDialog(
+    activePmtilesPath: String?,
+    gps: GpsSnapshot,
+    offlineRegions: List<OfflineRegionSummary>,
+    pmtilesPacks: List<PmtilesPackSummary>,
+    offlineStatusMsg: String?,
+    onDownloadBounds: (name: String, bounds: OfflineMapManager.BoundsBox, maxZoom: Double) -> Unit,
+    onDeleteRegion: (Long) -> Unit,
+    onImportPmtilesUri: (Uri) -> Unit,
+    onDownloadPmtilesUrl: (name: String, url: String) -> Unit,
+    onSelectPmtilesPack: (String?) -> Unit,
+    onDeletePmtilesPack: (String) -> Unit,
+    onRefreshRegions: () -> Unit,
+    onBackToRuns: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val fixedMaxZoom = 14.0
+    val initialCenter = remember { gps.latitude to gps.longitude }
+    var subTab by remember { mutableStateOf(0) } // 0 = Area Frame Picker, 1 = Whole-Island .pmtiles
+    var regionName by remember { mutableStateOf("Local Area") }
+    var frameBounds by remember {
+        mutableStateOf(
+            OfflineMapManager.BoundsBox(
+                north = initialCenter.first + 0.16,
+                east = initialCenter.second + 0.16,
+                south = initialCenter.first - 0.16,
+                west = initialCenter.second - 0.16
+            )
+        )
+    }
+    var pmtilesName by remember { mutableStateOf("Java_Island") }
+    var pmtilesUrl by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) { onRefreshRegions() }
+
+    val pmtilesPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onImportPmtilesUri(uri)
+    }
+
+    val estimate = remember(frameBounds) {
+        OfflineMapManager.estimateRegionSize(
+            north = frameBounds.north,
+            east = frameBounds.east,
+            south = frameBounds.south,
+            west = frameBounds.west,
+            minZoom = 5.0,
+            maxZoom = fixedMaxZoom
+        )
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(10.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(TorqueEvoColors.ElevatedDark)
+                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(16.dp))
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Offline Vector Maps", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Saved Runs",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier.clickable { onBackToRuns() }
+                    )
+                    Text(
+                        "Close",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.TextSecondary,
+                        modifier = Modifier.clickable { onDismiss() }
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ApexFilterChip(selected = subTab == 0, onClick = { subTab = 0 }, label = "Area Frame (Map)", compact = true)
+                ApexFilterChip(selected = subTab == 1, onClick = { subTab = 1 }, label = "Whole-Island (.pmtiles)", compact = true)
+            }
+
+            if (subTab == 0) {
+                val estColor = if (estimate.exceedsFairUseLimit) TorqueEvoColors.CriticalRed else TorqueEvoColors.NominalGreen
+                val estLabel = "Frame Size: %,d tiles (~%.1f MB) · %s".format(
+                    estimate.tileCount,
+                    estimate.estimatedMb,
+                    if (estimate.exceedsFairUseLimit) "Zoom in slightly (limit 3,000 tiles)" else "Ready offline (z5–z14)"
+                )
+
+                val controlsPanel: @Composable (Modifier) -> Unit = { panelMod ->
+                    Column(
+                        modifier = panelMod.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            estLabel,
+                            fontSize = 12.sp,
+                            color = estColor,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        OutlinedTextField(
+                            value = regionName,
+                            onValueChange = { regionName = it },
+                            label = { Text("Frame Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        offlineStatusMsg?.let { Text(it, fontSize = 11.sp, color = TorqueEvoColors.SkyBlue) }
+                        Button(
+                            onClick = { onDownloadBounds(regionName.ifBlank { "Local Area" }, frameBounds, fixedMaxZoom) },
+                            enabled = !estimate.exceedsFairUseLimit && regionName.isNotBlank(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = TorqueEvoColors.ElectricBlue,
+                                contentColor = Color.Black,
+                                disabledContainerColor = Color(0xFF1A222D),
+                                disabledContentColor = Color(0xFF6B7280)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(fmt.format(Date(s.startedAtMs)), fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                                Text("%.1f %s · %.1f %s".format(dVal, dSym, kVal, kSym), color = TorqueEvoColors.ElectricBlue, fontSize = 12.sp)
+                            Text("Download Selected Frame", fontWeight = FontWeight.Bold)
+                        }
+
+                        if (offlineRegions.isNotEmpty()) {
+                            Text("Downloaded Frames (${offlineRegions.size})", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                        }
+                        offlineRegions.forEach { reg ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(TorqueEvoColors.CardSurface)
+                                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(reg.name, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
+                                    val mbStr = "%.1f".format(reg.completedBytes / (1024.0 * 1024.0))
+                                    val statusTxt = if (reg.isComplete) "Ready Offline" else "${reg.completedResources}/${reg.requiredResources}"
+                                    Text(
+                                        "z${reg.minZoom.toInt()}–z${reg.maxZoom.toInt()} · $mbStr MB · $statusTxt",
+                                        fontSize = 11.sp,
+                                        color = TorqueEvoColors.TextSecondary
+                                    )
+                                }
+                                Text(
+                                    "Delete",
+                                    color = TorqueEvoColors.CriticalRed,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.clickable { onDeleteRegion(reg.id) }
+                                )
                             }
+                        }
+                    }
+                }
+
+                BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    val isLandDialog = maxWidth > maxHeight
+                    if (isLandDialog) {
+                        Row(modifier = Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1.15f)
+                                    .fillMaxHeight()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                            ) {
+                                OfflineFramePickerMap(
+                                    initialLat = initialCenter.first,
+                                    initialLon = initialCenter.second,
+                                    activePmtilesPath = activePmtilesPath,
+                                    onFrameBoundsChanged = { frameBounds = it },
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            controlsPanel(Modifier.weight(1f).fillMaxHeight())
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                "Max %.0f km/h · Peak %.0f RPM · %d pts".format(s.maxSpeedKmh, s.peakRpm, s.sampleCount),
+                                "Pinch, pan, or tap +/− to resize the offline frame (like Google Maps).",
                                 fontSize = 11.sp,
                                 color = TorqueEvoColors.TextSecondary
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                                OutlinedButton(onClick = { onExport(s, false) }) { Text("CSV", fontSize = 11.sp) }
-                                OutlinedButton(onClick = { onExport(s, true) }) { Text("JSON", fontSize = 11.sp) }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(290.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                            ) {
+                                OfflineFramePickerMap(
+                                    initialLat = initialCenter.first,
+                                    initialLon = initialCenter.second,
+                                    activePmtilesPath = activePmtilesPath,
+                                    onFrameBoundsChanged = { frameBounds = it },
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
+                            controlsPanel(Modifier.weight(1f).fillMaxWidth())
                         }
                     }
                 }
             } else {
-                Text("Select Area Inside Frame (Pinch / Pan Map)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                Text(
-                    "Zoom out to cover up to ~100×100 km per frame at Streets (z14) and MapLibre over-zooms sharply to house level.",
-                    fontSize = 11.sp,
-                    color = TorqueEvoColors.TextSecondary
-                )
-
-                Box(
+                Column(
                     modifier = Modifier
+                        .weight(1f)
                         .fillMaxWidth()
-                        .height(235.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    OfflineFramePickerMap(
-                        initialLat = gps.latitude,
-                        initialLon = gps.longitude,
-                        activePmtilesPath = activePmtilesPath,
-                        onFrameBoundsChanged = { frameBounds = it },
-                        modifier = Modifier.fillMaxWidth().height(235.dp)
+                    Text("Whole-Island .pmtiles Pack (Java / Full Regions)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                    Text(
+                        "For entire Java Island (~200–350 MB in one file), extract .pmtiles from extract.bbbike.org or Protomaps and import locally or fetch via URL.",
+                        fontSize = 11.sp,
+                        color = TorqueEvoColors.TextSecondary
                     )
-                }
 
-                val estColor = if (estimate.exceedsFairUseLimit) TorqueEvoColors.CriticalRed else TorqueEvoColors.NominalGreen
-                Text(
-                    "Frame Size: ${estimate.tileCount} tiles (~%.1f MB) · ${if (estimate.exceedsFairUseLimit) "Zoom in slightly (<= 3,000 tiles)" else "Ready to download (z5–z${maxZoom.toInt()})"}".format(estimate.estimatedMb),
-                    fontSize = 12.sp,
-                    color = estColor,
-                    fontWeight = FontWeight.SemiBold
-                )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { pmtilesPickerLauncher.launch(arrayOf("*/*")) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Import .pmtiles File", fontSize = 11.sp) }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = regionName,
-                        onValueChange = { regionName = it },
-                        label = { Text("Frame Name") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(13.0 to "Wide (z13)", 14.0 to "Streets (z14)", 15.0 to "High (z15)").forEach { (z, lbl) ->
-                        FilterChip(selected = maxZoom == z, onClick = { maxZoom = z }, label = { Text(lbl, fontSize = 11.sp) })
-                    }
-                }
-
-                offlineStatusMsg?.let { Text(it, fontSize = 11.sp, color = TorqueEvoColors.SkyBlue) }
-
-                Button(
-                    onClick = { onDownloadBounds(regionName, frameBounds, maxZoom) },
-                    enabled = !estimate.exceedsFairUseLimit,
-                    colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Download Selected Frame", fontWeight = FontWeight.Bold)
-                }
-
-                offlineRegions.forEach { reg ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(TorqueEvoColors.CardSurface)
-                            .padding(10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(reg.name, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
-                            Text(
-                                "z${reg.minZoom.toInt()}-${reg.maxZoom.toInt()} · %.1f MB · ${if (reg.isComplete) "Ready Offline" else "${reg.completedResources}/${reg.requiredResources}"}".format(reg.completedBytes / (1024.0 * 1024.0)),
-                                fontSize = 11.sp,
-                                color = TorqueEvoColors.TextSecondary
-                            )
+                        if (activePmtilesPath != null) {
+                            OutlinedButton(
+                                onClick = { onSelectPmtilesPack(null) },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Use Frame Cache", fontSize = 11.sp) }
                         }
-                        Text(
-                            "Delete",
-                            color = TorqueEvoColors.CriticalRed,
-                            fontSize = 11.sp,
-                            modifier = Modifier.clickable { onDeleteRegion(reg.id) }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = pmtilesName,
+                            onValueChange = { pmtilesName = it },
+                            label = { Text("Pack Name") },
+                            singleLine = true,
+                            modifier = Modifier.weight(0.85f)
+                        )
+                        OutlinedTextField(
+                            value = pmtilesUrl,
+                            onValueChange = { pmtilesUrl = it },
+                            label = { Text("Direct .pmtiles URL") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1.35f)
                         )
                     }
-                }
-
-                HorizontalDivider(color = TorqueEvoColors.SubtleBorder, modifier = Modifier.padding(vertical = 4.dp))
-                Text("Whole-Island .pmtiles Pack (Java / Full Regions)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                Text(
-                    "For entire Java Island (~200–350 MB in one file), extract .pmtiles from extract.bbbike.org or Protomaps and import or fetch via URL below.",
-                    fontSize = 11.sp,
-                    color = TorqueEvoColors.TextSecondary
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
-                        onClick = { pmtilesPickerLauncher.launch(arrayOf("*/*")) },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Import .pmtiles File", fontSize = 11.sp) }
+                        onClick = { if (pmtilesUrl.isNotBlank()) onDownloadPmtilesUrl(pmtilesName, pmtilesUrl) },
+                        enabled = pmtilesUrl.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Download .pmtiles URL") }
 
-                    if (activePmtilesPath != null) {
-                        OutlinedButton(
-                            onClick = { onSelectPmtilesPack(null) },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Use Frame Cache Instead", fontSize = 11.sp) }
-                    }
-                }
+                    offlineStatusMsg?.let { Text(it, fontSize = 11.sp, color = TorqueEvoColors.SkyBlue) }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = pmtilesName,
-                        onValueChange = { pmtilesName = it },
-                        label = { Text("Pack Name") },
-                        singleLine = true,
-                        modifier = Modifier.weight(0.8f)
-                    )
-                    OutlinedTextField(
-                        value = pmtilesUrl,
-                        onValueChange = { pmtilesUrl = it },
-                        label = { Text("Direct .pmtiles URL") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1.4f)
-                    )
-                }
-                OutlinedButton(
-                    onClick = { if (pmtilesUrl.isNotBlank()) onDownloadPmtilesUrl(pmtilesName, pmtilesUrl) },
-                    enabled = pmtilesUrl.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text("Download .pmtiles URL") }
-
-                pmtilesPacks.forEach { pack ->
-                    val isActive = activePmtilesPath == pack.filePath
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (isActive) Color(0x2200A8FF) else TorqueEvoColors.CardSurface)
-                            .border(1.dp, if (isActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
-                            .padding(10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("${pack.name}.pmtiles", fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
-                            Text("%.1f MB · ${if (isActive) "Active Offline Source" else "Tap Use to activate"}".format(pack.sizeBytes / (1024.0 * 1024.0)), fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Text(
-                                text = if (isActive) "Active" else "Use",
-                                color = if (isActive) TorqueEvoColors.NominalGreen else TorqueEvoColors.ElectricBlue,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { onSelectPmtilesPack(if (isActive) null else pack.filePath) }
-                            )
-                            Text(
-                                "Delete",
-                                color = TorqueEvoColors.CriticalRed,
-                                fontSize = 11.sp,
-                                modifier = Modifier.clickable {
-                                    if (isActive) onSelectPmtilesPack(null)
-                                    onDeletePmtilesPack(pack.filePath)
-                                }
-                            )
+                    pmtilesPacks.forEach { pack ->
+                        val isActive = activePmtilesPath == pack.filePath
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isActive) Color(0x2200A8FF) else TorqueEvoColors.CardSurface)
+                                .border(1.dp, if (isActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("${pack.name}.pmtiles", fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
+                                Text("%.1f MB · ${if (isActive) "Active Offline Source" else "Tap Use to activate"}".format(pack.sizeBytes / (1024.0 * 1024.0)), fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = if (isActive) "Active" else "Use",
+                                    color = if (isActive) TorqueEvoColors.NominalGreen else TorqueEvoColors.ElectricBlue,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.clickable { onSelectPmtilesPack(if (isActive) null else pack.filePath) }
+                                )
+                                Text(
+                                    "Delete",
+                                    color = TorqueEvoColors.CriticalRed,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.clickable {
+                                        if (isActive) onSelectPmtilesPack(null)
+                                        onDeletePmtilesPack(pack.filePath)
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -824,6 +1009,7 @@ fun RunLogsAndMapsSheet(
 fun EcuPidsSheet(
     supportedPids: Set<String>,
     liveValues: Map<String, Double>,
+    explorerStatus: String?,
     onDiscoverExplorer: () -> Unit,
     onStopExplorer: () -> Unit,
     onAddCustomPid: (name: String, hex: String, formula: String, unit: String) -> Unit,
@@ -859,6 +1045,9 @@ fun EcuPidsSheet(
                 Text("ECU Supported PIDs (${supportedPids.size})", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
                 OutlinedButton(onClick = onRunDeepDump) { Text("Deep Scan", fontSize = 11.sp) }
             }
+            explorerStatus?.let {
+                Text(it, fontSize = 11.sp, color = TorqueEvoColors.SkyBlue)
+            }
 
             ObdPidRegistry.standardPids
                 .filter { supportedPids.isEmpty() || it.pidHex in supportedPids }
@@ -874,7 +1063,7 @@ fun EcuPidsSheet(
                         Text("01${pid.pidHex} · ${pid.name}", fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
                         val v = liveValues[pid.key]
                         Text(
-                            if (v != null) "%.1f ${pid.unit}".format(v) else "—",
+                            if (v != null) "%.1f %s".format(v, pid.unit) else "—",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = TorqueEvoColors.ElectricBlue
@@ -976,13 +1165,12 @@ fun SettingsSheet(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 MapProvider.entries.forEach { mp ->
                     val enabled = mp != MapProvider.GOOGLE_MAPS || BuildConfig.MAPS_API_KEY.isNotBlank()
-                    FilterChip(
+                    ApexFilterChip(
                         selected = settings.mapProvider == mp,
                         enabled = enabled,
                         onClick = { onSelectMapProvider(mp) },
-                        label = {
-                            Text(if (mp == MapProvider.GOOGLE_MAPS && !enabled) "Google Maps (No Key)" else mp.label, fontSize = 11.sp)
-                        }
+                        label = if (mp == MapProvider.GOOGLE_MAPS && !enabled) "Google Maps (No Key)" else mp.label,
+                        compact = true
                     )
                 }
             }
@@ -993,10 +1181,11 @@ fun SettingsSheet(
             Text("Polling Efficiency Profile", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 PollingProfile.entries.forEach { p ->
-                    FilterChip(
+                    ApexFilterChip(
                         selected = settings.pollingProfile == p,
                         onClick = { onSelectPolling(p) },
-                        label = { Text(p.label, fontSize = 11.sp) }
+                        label = p.label,
+                        compact = true
                     )
                 }
             }
@@ -1056,7 +1245,7 @@ private fun <T> UnitChipRow(
         Text(title, fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items.forEach { item ->
-                FilterChip(selected = item == selected, onClick = { onSelect(item) }, label = { Text(label(item), fontSize = 11.sp) })
+                ApexFilterChip(selected = item == selected, onClick = { onSelect(item) }, label = label(item), compact = true)
             }
         }
     }

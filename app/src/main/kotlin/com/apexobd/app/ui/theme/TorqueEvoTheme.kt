@@ -31,12 +31,20 @@ object TorqueEvoColors {
 
 private val TorqueEvoColorScheme = darkColorScheme(
     primary = TorqueEvoColors.ElectricBlue,
-    secondary = TorqueEvoColors.SkyBlue,
-    background = TorqueEvoColors.PureBlack,
-    surface = TorqueEvoColors.ElevatedDark,
     onPrimary = TorqueEvoColors.PureBlack,
+    primaryContainer = TorqueEvoColors.DimBlue,
+    onPrimaryContainer = TorqueEvoColors.ElectricBlue,
+    secondary = TorqueEvoColors.SkyBlue,
+    onSecondary = TorqueEvoColors.PureBlack,
+    secondaryContainer = TorqueEvoColors.DimBlue,
+    onSecondaryContainer = TorqueEvoColors.ElectricBlue,
+    background = TorqueEvoColors.PureBlack,
     onBackground = TorqueEvoColors.TextPrimary,
+    surface = TorqueEvoColors.ElevatedDark,
     onSurface = TorqueEvoColors.TextPrimary,
+    surfaceVariant = TorqueEvoColors.CardSurface,
+    onSurfaceVariant = TorqueEvoColors.TextSecondary,
+    outline = Color(0x2EFFFFFF),
     error = TorqueEvoColors.CriticalRed
 )
 

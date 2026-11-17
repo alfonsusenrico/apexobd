@@ -4,18 +4,28 @@ import android.annotation.SuppressLint
 import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -23,6 +33,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -221,7 +232,10 @@ fun OfflineFramePickerMap(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val latestOnBounds by rememberUpdatedState(onFrameBoundsChanged)
     var styleReady by remember { mutableStateOf(false) }
+    var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
+    var cameraZoom by remember { mutableDoubleStateOf(10.5) }
 
     val mapView = remember {
         runCatching { MapLibre.getInstance(context.applicationContext) }
@@ -229,13 +243,30 @@ fun OfflineFramePickerMap(
             onCreate(null)
             setOnTouchListener { v, event ->
                 when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_POINTER_DOWN ->
                         v.parent?.requestDisallowInterceptTouchEvent(true)
                     MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
                         v.parent?.requestDisallowInterceptTouchEvent(false)
                 }
                 false
             }
+        }
+    }
+
+    fun emitBounds(mlMap: MapLibreMap) {
+        val vb = mlMap.projection.visibleRegion.latLngBounds
+        cameraZoom = mlMap.cameraPosition.zoom
+        val dLat = kotlin.math.abs(vb.latitudeNorth - vb.latitudeSouth)
+        val dLon = kotlin.math.abs(vb.longitudeEast - vb.longitudeWest)
+        if (dLat > 0.0001 && dLon > 0.0001) {
+            val box = OfflineMapManager.insetBounds(
+                north = vb.latitudeNorth,
+                east = vb.longitudeEast,
+                south = vb.latitudeSouth,
+                west = vb.longitudeWest,
+                marginRatio = 0.08
+            )
+            latestOnBounds(box)
         }
     }
 
@@ -252,22 +283,23 @@ fun OfflineFramePickerMap(
         }
         lifecycleOwner.lifecycle.addObserver(observer)
 
-        fun emitBounds(mlMap: MapLibreMap) {
-            val vb = mlMap.projection.visibleRegion.latLngBounds
-            val box = OfflineMapManager.insetBounds(
-                north = vb.latitudeNorth,
-                east = vb.longitudeEast,
-                south = vb.latitudeSouth,
-                west = vb.longitudeWest,
-                marginRatio = 0.08
-            )
-            onFrameBoundsChanged(box)
+        mapView.addOnDidFailLoadingMapListener {
+            mapRef?.let { ml ->
+                val bgOnly = """{"version":8,"name":"ApexDark","layers":[{"id":"bg","type":"background","paint":{"background-color":"#07090D"}}]}"""
+                ml.setStyle(Style.Builder().fromJson(bgOnly)) {
+                    styleReady = true
+                    emitBounds(ml)
+                }
+            }
         }
 
         mapView.getMapAsync { mlMap ->
+            mapRef = mlMap
             mlMap.uiSettings.apply {
                 isScrollGesturesEnabled = true
                 isZoomGesturesEnabled = true
+                isDoubleTapGesturesEnabled = true
+                isQuickZoomGesturesEnabled = true
                 isRotateGesturesEnabled = false
                 isTiltGesturesEnabled = false
                 isAttributionEnabled = false
@@ -294,7 +326,7 @@ fun OfflineFramePickerMap(
                 styleReady = true
                 emitBounds(mlMap)
             }
-            emitBounds(mlMap)
+            mapView.post { emitBounds(mlMap) }
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
@@ -345,6 +377,57 @@ fun OfflineFramePickerMap(
             drawLine(cCol, Offset(mx + fw - corner, my + fh), Offset(mx + fw, my + fh), strokeW, StrokeCap.Round)
             drawLine(cCol, Offset(mx + fw, my + fh - corner), Offset(mx + fw, my + fh), strokeW, StrokeCap.Round)
         }
+
+        // Camera zoom readout badge
+        Text(
+            text = "Zoom %.1f".format(cameraZoom),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = TorqueEvoColors.TextPrimary,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(14.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xCC07090D))
+                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(6.dp))
+                .padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+
+        // Explicit + / - zoom controls alongside pinch-to-zoom
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            PickerZoomButton("+") {
+                mapRef?.let { ml ->
+                    val nextZoom = (ml.cameraPosition.zoom + 1.0).coerceAtMost(15.5)
+                    ml.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.zoomTo(nextZoom), 180)
+                }
+            }
+            PickerZoomButton("−") {
+                mapRef?.let { ml ->
+                    val nextZoom = (ml.cameraPosition.zoom - 1.0).coerceAtLeast(4.0)
+                    ml.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.zoomTo(nextZoom), 180)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PickerZoomButton(symbol: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xEB0D1016))
+            .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(symbol, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
     }
 }
 

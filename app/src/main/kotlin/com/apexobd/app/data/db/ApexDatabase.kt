@@ -256,6 +256,9 @@ interface HudDao {
 
     @Query("DELETE FROM hud_widgets WHERE id = :widgetId")
     suspend fun deleteWidget(widgetId: Long)
+
+    @Query("DELETE FROM hud_widgets WHERE pageId = :pageId")
+    suspend fun deleteWidgetsForPage(pageId: Long)
 }
 
 @Dao

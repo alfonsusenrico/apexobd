@@ -1,6 +1,7 @@
 package com.apexobd.core.elm
 
 import com.apexobd.core.transport.ObdTransport
+import com.apexobd.core.transport.TransportError
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -67,7 +68,13 @@ class Elm327Client(
     }
 
     suspend fun execute(command: String, timeoutMs: Long = 2000L): ObdCommandResult = commandMutex.withLock {
-        val raw = transport.sendCommand(command, timeoutMs)
+        val raw = try {
+            transport.sendCommand(command, timeoutMs)
+        } catch (t: TransportError) {
+            return@withLock ObdCommandResult.Error(t.message ?: "Adapter not connected")
+        } catch (t: Throwable) {
+            return@withLock ObdCommandResult.Error(t.message ?: "OBD I/O error")
+        }
         val lines = cleanLines(raw, command)
         if (lines.isEmpty()) {
             return@withLock ObdCommandResult.NoData("Empty response")

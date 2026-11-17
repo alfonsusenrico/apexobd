@@ -178,7 +178,8 @@ class OfflineMapManager(context: Context) {
         )
         val regionTitle = name.trim().ifBlank { "Offline Area" }
         val metadata = regionTitle.toByteArray(Charsets.UTF_8)
-        _statusMessage.value = "Downloading '$regionTitle' (${estimate.tileCount} tiles, ~%.1f MB)...".format(estimate.estimatedMb)
+        val estMbStr = "%.1f".format(estimate.estimatedMb)
+        _statusMessage.value = "Downloading '$regionTitle' (${estimate.tileCount} tiles, ~$estMbStr MB)..."
 
         mgr.createOfflineRegion(def, metadata, object : OfflineManager.CreateOfflineRegionCallback {
             override fun onCreate(offlineRegion: OfflineRegion) {
@@ -187,7 +188,8 @@ class OfflineMapManager(context: Context) {
                     override fun onStatusChanged(status: OfflineRegionStatus) {
                         if (status.isComplete) {
                             offlineRegion.setDownloadState(OfflineRegion.STATE_INACTIVE)
-                            _statusMessage.value = "Ready offline: '$regionTitle' (%.1f MB)".format(status.completedResourceSize / (1024.0 * 1024.0))
+                            val doneMbStr = "%.1f".format(status.completedResourceSize / (1024.0 * 1024.0))
+                            _statusMessage.value = "Ready offline: '$regionTitle' ($doneMbStr MB)"
                             refreshRegions()
                         } else if (status.requiredResourceCount > 0) {
                             val pct = (status.completedResourceCount * 100 / status.requiredResourceCount).toInt()
@@ -238,7 +240,8 @@ class OfflineMapManager(context: Context) {
                 }
 
                 refreshPmtilesPacks()
-                _statusMessage.value = "Imported $displayName.pmtiles (%.1f MB)".format(dest.length() / (1024.0 * 1024.0))
+                val importedMbStr = "%.1f".format(dest.length() / (1024.0 * 1024.0))
+                _statusMessage.value = "Imported $displayName.pmtiles ($importedMbStr MB)"
                 onImported(dest.absolutePath)
             } catch (t: Throwable) {
                 _statusMessage.value = "Import failed: ${t.message}"
@@ -283,11 +286,11 @@ class OfflineMapManager(context: Context) {
                             val now = System.currentTimeMillis()
                             if (now - lastReportMs > 450L) {
                                 lastReportMs = now
-                                val mb = copied / (1024.0 * 1024.0)
+                                val mbStr = "%.1f".format(copied / (1024.0 * 1024.0))
                                 _statusMessage.value = if (total > 0) {
-                                    "Downloading $safeName.pmtiles: ${(copied * 100 / total).toInt()}%% (%.1f MB)".format(mb)
+                                    "Downloading $safeName.pmtiles: ${(copied * 100 / total).toInt()}% ($mbStr MB)"
                                 } else {
-                                    "Downloading $safeName.pmtiles: %.1f MB".format(mb)
+                                    "Downloading $safeName.pmtiles: $mbStr MB"
                                 }
                             }
                         }
@@ -301,7 +304,8 @@ class OfflineMapManager(context: Context) {
                 if (destFile.exists()) destFile.delete()
                 tempFile.renameTo(destFile)
                 refreshPmtilesPacks()
-                _statusMessage.value = "Ready offline: $safeName.pmtiles (%.1f MB)".format(destFile.length() / (1024.0 * 1024.0))
+                val readyMbStr = "%.1f".format(destFile.length() / (1024.0 * 1024.0))
+                _statusMessage.value = "Ready offline: $safeName.pmtiles ($readyMbStr MB)"
                 onDownloaded(destFile.absolutePath)
             } catch (t: Throwable) {
                 tempFile.delete()
