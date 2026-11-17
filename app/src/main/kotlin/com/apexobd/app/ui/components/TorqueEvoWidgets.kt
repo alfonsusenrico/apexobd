@@ -550,6 +550,7 @@ fun SparklineChartWidget(
 fun MiniMapWidget(
     gps: GpsSnapshot,
     mapProvider: MapProvider,
+    activePmtilesPath: String? = null,
     isRecording: Boolean,
     onToggleRecord: () -> Unit,
     onNavigateExternal: () -> Unit,
@@ -567,6 +568,7 @@ fun MiniMapWidget(
             latitude = gps.latitude,
             longitude = gps.longitude,
             trail = gps.trail,
+            activePmtilesPath = activePmtilesPath,
             modifier = Modifier.fillMaxSize()
         )
         Row(

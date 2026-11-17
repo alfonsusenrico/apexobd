@@ -204,7 +204,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         wifiBinder.register()
         viewModelScope.launch {
             ApexDatabase.seedDefaults(hudDao, vehicleDao)
-            offlineMapManager.refreshRegions()
+            offlineMapManager.refreshAll()
         }
 
         // Sync VehicleProfile into polling engine
@@ -837,6 +837,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setMapProvider(provider: MapProvider) {
         viewModelScope.launch { prefs.setMapProvider(provider) }
+    }
+
+    fun setActivePmtilesPath(path: String?) {
+        viewModelScope.launch { prefs.setActivePmtilesPath(path) }
     }
 
     fun setCurrencyCode(code: String) {

@@ -1,5 +1,7 @@
 package com.apexobd.app.ui.components
 
+import android.annotation.SuppressLint
+import android.view.MotionEvent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -52,6 +55,7 @@ import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
+import java.io.File
 
 @Composable
 fun DualMapCanvas(
@@ -60,6 +64,7 @@ fun DualMapCanvas(
     longitude: Double,
     trail: List<Pair<Double, Double>>,
     modifier: Modifier = Modifier,
+    activePmtilesPath: String? = null,
     interactive: Boolean = false
 ) {
     when {
@@ -70,8 +75,37 @@ fun DualMapCanvas(
             GoogleMapLayer(latitude, longitude, trail, interactive, modifier)
         }
         else -> {
-            MapLibreLayer(latitude, longitude, trail, interactive, modifier)
+            MapLibreLayer(latitude, longitude, trail, activePmtilesPath, interactive, modifier)
         }
+    }
+}
+
+private fun attachRouteAndPuckLayers(style: Style) {
+    if (style.getSource("apex-route-src") == null) {
+        style.addSource(GeoJsonSource("apex-route-src"))
+    }
+    if (style.getSource("apex-puck-src") == null) {
+        style.addSource(GeoJsonSource("apex-puck-src"))
+    }
+    if (style.getLayer("apex-route-layer") == null) {
+        style.addLayer(
+            LineLayer("apex-route-layer", "apex-route-src").withProperties(
+                PropertyFactory.lineColor("#00A8FF"),
+                PropertyFactory.lineWidth(3.5f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+            )
+        )
+    }
+    if (style.getLayer("apex-puck-layer") == null) {
+        style.addLayer(
+            CircleLayer("apex-puck-layer", "apex-puck-src").withProperties(
+                PropertyFactory.circleColor("#00A8FF"),
+                PropertyFactory.circleRadius(5.5f),
+                PropertyFactory.circleStrokeWidth(2f),
+                PropertyFactory.circleStrokeColor("#FFFFFF")
+            )
+        )
     }
 }
 
@@ -80,6 +114,7 @@ private fun MapLibreLayer(
     latitude: Double,
     longitude: Double,
     trail: List<Pair<Double, Double>>,
+    activePmtilesPath: String?,
     interactive: Boolean,
     modifier: Modifier
 ) {
@@ -88,6 +123,10 @@ private fun MapLibreLayer(
 
     var mapLibreMap by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleReady by remember { mutableStateOf(false) }
+
+    val validPmtiles = remember(activePmtilesPath) {
+        activePmtilesPath?.takeIf { File(it).exists() }
+    }
 
     val mapView = remember {
         runCatching { MapLibre.getInstance(context.applicationContext) }
@@ -117,32 +156,25 @@ private fun MapLibreLayer(
                 isAttributionEnabled = false
                 isLogoEnabled = false
             }
-            mlMap.setStyle(OfflineMapManager.OPENFREEMAP_DARK_STYLE) { style ->
-                style.addSource(GeoJsonSource("apex-route-src"))
-                style.addSource(GeoJsonSource("apex-puck-src"))
-                style.addLayer(
-                    LineLayer("apex-route-layer", "apex-route-src").withProperties(
-                        PropertyFactory.lineColor("#00A8FF"),
-                        PropertyFactory.lineWidth(3.5f),
-                        PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
-                        PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
-                    )
-                )
-                style.addLayer(
-                    CircleLayer("apex-puck-layer", "apex-puck-src").withProperties(
-                        PropertyFactory.circleColor("#00A8FF"),
-                        PropertyFactory.circleRadius(5.5f),
-                        PropertyFactory.circleStrokeWidth(2f),
-                        PropertyFactory.circleStrokeColor("#FFFFFF")
-                    )
-                )
-                styleReady = true
-            }
         }
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             mapView.onStop()
             mapView.onDestroy()
+        }
+    }
+
+    LaunchedEffect(mapLibreMap, validPmtiles) {
+        val mlMap = mapLibreMap ?: return@LaunchedEffect
+        styleReady = false
+        val builder = if (validPmtiles != null) {
+            Style.Builder().fromJson(OfflineMapManager.buildDarkPmtilesStyleJson(validPmtiles))
+        } else {
+            Style.Builder().fromUri(OfflineMapManager.OPENFREEMAP_DARK_STYLE)
+        }
+        mlMap.setStyle(builder) { style ->
+            attachRouteAndPuckLayers(style)
+            styleReady = true
         }
     }
 
@@ -170,6 +202,148 @@ private fun MapLibreLayer(
         AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
         if (!styleReady) {
             VectorTrackFallback(latitude, longitude, trail, Modifier.fillMaxSize())
+        }
+    }
+}
+
+/**
+ * Interactive Google-Maps-style offline region selector frame: pinch/pan to resize what's inside
+ * the #00A8FF frame box and compute live visible geographic bounds before downloading.
+ */
+@SuppressLint("ClickableViewAccessibility")
+@Composable
+fun OfflineFramePickerMap(
+    initialLat: Double,
+    initialLon: Double,
+    activePmtilesPath: String?,
+    onFrameBoundsChanged: (OfflineMapManager.BoundsBox) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var styleReady by remember { mutableStateOf(false) }
+
+    val mapView = remember {
+        runCatching { MapLibre.getInstance(context.applicationContext) }
+        MapView(context).apply {
+            onCreate(null)
+            setOnTouchListener { v, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        v.parent?.requestDisallowInterceptTouchEvent(false)
+                }
+                false
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner, mapView) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> mapView.onStart()
+                Lifecycle.Event.ON_RESUME -> mapView.onResume()
+                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
+                Lifecycle.Event.ON_STOP -> mapView.onStop()
+                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+
+        fun emitBounds(mlMap: MapLibreMap) {
+            val vb = mlMap.projection.visibleRegion.latLngBounds
+            val box = OfflineMapManager.insetBounds(
+                north = vb.latitudeNorth,
+                east = vb.longitudeEast,
+                south = vb.latitudeSouth,
+                west = vb.longitudeWest,
+                marginRatio = 0.08
+            )
+            onFrameBoundsChanged(box)
+        }
+
+        mapView.getMapAsync { mlMap ->
+            mlMap.uiSettings.apply {
+                isScrollGesturesEnabled = true
+                isZoomGesturesEnabled = true
+                isRotateGesturesEnabled = false
+                isTiltGesturesEnabled = false
+                isAttributionEnabled = false
+                isLogoEnabled = false
+            }
+            mlMap.setMinZoomPreference(4.0)
+            mlMap.setMaxZoomPreference(16.0)
+            mlMap.moveCamera(
+                org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(
+                    org.maplibre.android.geometry.LatLng(initialLat, initialLon),
+                    10.5
+                )
+            )
+            mlMap.addOnCameraMoveListener { emitBounds(mlMap) }
+            mlMap.addOnCameraIdleListener { emitBounds(mlMap) }
+
+            val validPmtiles = activePmtilesPath?.takeIf { File(it).exists() }
+            val builder = if (validPmtiles != null) {
+                Style.Builder().fromJson(OfflineMapManager.buildDarkPmtilesStyleJson(validPmtiles))
+            } else {
+                Style.Builder().fromUri(OfflineMapManager.OPENFREEMAP_DARK_STYLE)
+            }
+            mlMap.setStyle(builder) {
+                styleReady = true
+                emitBounds(mlMap)
+            }
+            emitBounds(mlMap)
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            mapView.onStop()
+            mapView.onDestroy()
+        }
+    }
+
+    Box(modifier = modifier) {
+        AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
+        if (!styleReady) {
+            VectorTrackFallback(initialLat, initialLon, emptyList(), Modifier.fillMaxSize())
+        }
+        // Corner-bracket frame overlay matching the 8% inset downloaded bounding box
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val mx = size.width * 0.08f
+            val my = size.height * 0.08f
+            val fw = size.width - mx * 2f
+            val fh = size.height - my * 2f
+            val corner = 18.dp.toPx()
+
+            // Subtle dark outer mask
+            drawRect(Color(0x55000000), Offset.Zero, Size(size.width, my))
+            drawRect(Color(0x55000000), Offset(0f, my + fh), Size(size.width, my))
+            drawRect(Color(0x55000000), Offset(0f, my), Size(mx, fh))
+            drawRect(Color(0x55000000), Offset(mx + fw, my), Size(mx, fh))
+
+            // Thin frame border
+            drawRect(
+                color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f),
+                topLeft = Offset(mx, my),
+                size = Size(fw, fh),
+                style = Stroke(width = 1.2.dp.toPx())
+            )
+            // Bright corner brackets
+            val strokeW = 2.8.dp.toPx()
+            val cCol = TorqueEvoColors.ElectricBlue
+            // Top-Left
+            drawLine(cCol, Offset(mx, my), Offset(mx + corner, my), strokeW, StrokeCap.Round)
+            drawLine(cCol, Offset(mx, my), Offset(mx, my + corner), strokeW, StrokeCap.Round)
+            // Top-Right
+            drawLine(cCol, Offset(mx + fw - corner, my), Offset(mx + fw, my), strokeW, StrokeCap.Round)
+            drawLine(cCol, Offset(mx + fw, my), Offset(mx + fw, my + corner), strokeW, StrokeCap.Round)
+            // Bottom-Left
+            drawLine(cCol, Offset(mx, my + fh - corner), Offset(mx, my + fh), strokeW, StrokeCap.Round)
+            drawLine(cCol, Offset(mx, my + fh), Offset(mx + corner, my + fh), strokeW, StrokeCap.Round)
+            // Bottom-Right
+            drawLine(cCol, Offset(mx + fw - corner, my + fh), Offset(mx + fw, my + fh), strokeW, StrokeCap.Round)
+            drawLine(cCol, Offset(mx + fw, my + fh - corner), Offset(mx + fw, my + fh), strokeW, StrokeCap.Round)
         }
     }
 }

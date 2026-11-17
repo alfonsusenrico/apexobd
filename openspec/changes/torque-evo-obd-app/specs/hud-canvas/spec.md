@@ -20,7 +20,7 @@ The HUD Canvas SHALL lay out components proportionally across `8×4` (Landscape)
 - **THEN** the component picker offers only those 16 Mode `01` PIDs plus derivable calculated sensors and phone GPS/IMU sensors
 
 ### Requirement: Dual Optional Maps, External Navigation, and HUD Mirror Mode
-The HUD Mini-Map and Home Last Run card SHALL support configurable map backends (`MapLibre Offline Vector` with local bounding-box & zoom downloader, optional `Google Maps Online` using `MAPS_API_KEY`, or `OLED Track Only`), a one-tap external `Navigate ↗` intent, and horizontal `HUD Mirror Mode`.
+The HUD Mini-Map and Home Last Run card SHALL support configurable map backends (`MapLibre Offline Vector` with an interactive Google-Maps-style pan/zoom selection frame for `z5–z14` regions plus local `.pmtiles` archive import/URL loading, optional `Google Maps Online` using `MAPS_API_KEY`, or `OLED Track Only`), a one-tap external `Navigate ↗` intent, and horizontal `HUD Mirror Mode`.
 
 #### Scenario: Dual Wi-Fi OBD and offline/online map operation
 - **WHEN** the user selects `MapLibre Offline` or `Google Maps Online` while connected to Wi-Fi ELM327

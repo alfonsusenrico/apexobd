@@ -79,6 +79,7 @@ fun HomeMenuScreen(
     val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
     val liveValues by viewModel.ecuExplorerValues.collectAsStateWithLifecycle()
     val offlineRegions by viewModel.offlineMapManager.regions.collectAsStateWithLifecycle()
+    val pmtilesPacks by viewModel.offlineMapManager.pmtilesPacks.collectAsStateWithLifecycle()
     val offlineMsg by viewModel.offlineMapManager.statusMessage.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
@@ -220,6 +221,7 @@ fun HomeMenuScreen(
                         latitude = mapCenterLat,
                         longitude = mapCenterLon,
                         trail = lastTripTrail,
+                        activePmtilesPath = settings.activePmtilesPath,
                         modifier = Modifier.fillMaxSize()
                     )
                     Text(
@@ -339,7 +341,7 @@ fun HomeMenuScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     HomeModuleTile(
                         title = "Run Logs & Maps",
-                        subtitle = "${sessions.size} Run(s) · ${offlineRegions.size} Offline",
+                        subtitle = "${sessions.size} Run(s) · ${offlineRegions.size + pmtilesPacks.size} Offline",
                         icon = Icons.Default.Route,
                         tint = TorqueEvoColors.SkyBlue,
                         bg = TorqueEvoColors.CardSurface,
@@ -456,17 +458,31 @@ fun HomeMenuScreen(
         ActiveHomeSheet.RUNS_AND_MAPS -> RunLogsAndMapsSheet(
             sessions = sessions,
             mapProvider = settings.mapProvider,
+            activePmtilesPath = settings.activePmtilesPath,
             gps = gps,
             offlineRegions = offlineRegions,
+            pmtilesPacks = pmtilesPacks,
             offlineStatusMsg = offlineMsg,
             unitPrefs = unitPrefs,
             fuelType = fuelType,
             onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
-            onDownloadRegion = { n, rKm, mZ ->
-                viewModel.offlineMapManager.downloadRadiusRegion(n, gps.latitude, gps.longitude, rKm, maxZoom = mZ)
+            onDownloadBounds = { n, box, mZ ->
+                viewModel.offlineMapManager.downloadBoundsRegion(n, box.north, box.east, box.south, box.west, minZoom = 5.0, maxZoom = mZ)
             },
             onDeleteRegion = { viewModel.offlineMapManager.deleteRegion(it) },
-            onRefreshRegions = { viewModel.offlineMapManager.refreshRegions() },
+            onImportPmtilesUri = { uri ->
+                viewModel.offlineMapManager.importPmtilesFromUri(uri) { savedPath ->
+                    viewModel.setActivePmtilesPath(savedPath)
+                }
+            },
+            onDownloadPmtilesUrl = { n, url ->
+                viewModel.offlineMapManager.downloadPmtilesFromUrl(n, url) { savedPath ->
+                    viewModel.setActivePmtilesPath(savedPath)
+                }
+            },
+            onSelectPmtilesPack = { path -> viewModel.setActivePmtilesPath(path) },
+            onDeletePmtilesPack = { path -> viewModel.offlineMapManager.deletePmtilesPack(path) },
+            onRefreshRegions = { viewModel.offlineMapManager.refreshAll() },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.ECU_PIDS -> EcuPidsSheet(

@@ -639,13 +639,17 @@ private fun RenderWidgetContent(
     val type = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
 
     when (widget.sensorKey) {
-        "minimap" -> MiniMapWidget(
-            gps = gps,
-            mapProvider = mapProvider,
-            isRecording = isRecording,
-            onToggleRecord = onToggleRecord,
-            onNavigateExternal = onNavigateExternal
-        )
+        "minimap" -> {
+            val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            MiniMapWidget(
+                gps = gps,
+                mapProvider = mapProvider,
+                activePmtilesPath = activeSettings.activePmtilesPath,
+                isRecording = isRecording,
+                onToggleRecord = onToggleRecord,
+                onNavigateExternal = onNavigateExternal
+            )
+        }
         "fuel_ctrl" -> {
             val (kplVal, kplSym) = viewModel.convertForDisplay(
                 liveValues["kpl_road_avg"],

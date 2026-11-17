@@ -1,5 +1,8 @@
 package com.apexobd.app.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,6 +27,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -54,7 +58,9 @@ import com.apexobd.app.data.prefs.UserSettings
 import com.apexobd.app.platform.GpsSnapshot
 import com.apexobd.app.platform.OfflineMapManager
 import com.apexobd.app.platform.OfflineRegionSummary
+import com.apexobd.app.platform.PmtilesPackSummary
 import com.apexobd.app.ui.components.DualMapCanvas
+import com.apexobd.app.ui.components.OfflineFramePickerMap
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.model.AirflowUnit
 import com.apexobd.core.model.FuelEconomyUnit
@@ -534,29 +540,56 @@ fun FaultCodesSheet(
 fun RunLogsAndMapsSheet(
     sessions: List<TripSessionEntity>,
     mapProvider: MapProvider,
+    activePmtilesPath: String?,
     gps: GpsSnapshot,
     offlineRegions: List<OfflineRegionSummary>,
+    pmtilesPacks: List<PmtilesPackSummary>,
     offlineStatusMsg: String?,
     unitPrefs: UnitPreferences,
     fuelType: FuelType,
     onExport: (TripSessionEntity, Boolean) -> Unit,
-    onDownloadRegion: (name: String, radiusKm: Double, maxZoom: Double) -> Unit,
+    onDownloadBounds: (name: String, bounds: OfflineMapManager.BoundsBox, maxZoom: Double) -> Unit,
     onDeleteRegion: (Long) -> Unit,
+    onImportPmtilesUri: (Uri) -> Unit,
+    onDownloadPmtilesUrl: (name: String, url: String) -> Unit,
+    onSelectPmtilesPack: (String?) -> Unit,
+    onDeletePmtilesPack: (String) -> Unit,
     onRefreshRegions: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var tab by remember { mutableStateOf(0) } // 0 = Run History, 1 = Offline Maps Downloader
     var regionName by remember { mutableStateOf("Local Area") }
-    var radiusKm by remember { mutableStateOf(10.0) }
     var maxZoom by remember { mutableStateOf(14.0) }
+    var frameBounds by remember(gps.latitude, gps.longitude) {
+        mutableStateOf(
+            OfflineMapManager.BoundsBox(
+                north = gps.latitude + 0.25,
+                east = gps.longitude + 0.25,
+                south = gps.latitude - 0.25,
+                west = gps.longitude - 0.25
+            )
+        )
+    }
+    var pmtilesName by remember { mutableStateOf("Java_Island") }
+    var pmtilesUrl by remember { mutableStateOf("") }
+
+    val pmtilesPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) onImportPmtilesUri(uri)
+    }
 
     val fmt = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
 
-    val estBounds = remember(gps.latitude, gps.longitude, radiusKm) {
-        OfflineMapManager.radiusToBounds(gps.latitude, gps.longitude, radiusKm)
-    }
-    val estimate = remember(estBounds, maxZoom) {
-        OfflineMapManager.estimateRegionSize(estBounds.north, estBounds.east, estBounds.south, estBounds.west, 9.0, maxZoom)
+    val estimate = remember(frameBounds, maxZoom) {
+        OfflineMapManager.estimateRegionSize(
+            north = frameBounds.north,
+            east = frameBounds.east,
+            south = frameBounds.south,
+            west = frameBounds.west,
+            minZoom = 5.0,
+            maxZoom = maxZoom
+        )
     }
 
     ModalBottomSheet(
@@ -616,67 +649,62 @@ fun RunLogsAndMapsSheet(
                     }
                 }
             } else {
-                Text("MapLibre Offline Region Downloader (No API Key)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                Text("Select Area Inside Frame (Pinch / Pan Map)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
                 Text(
-                    "Downloads OpenFreeMap dark vector tiles locally for offline GPS + Strava run tracking.",
+                    "Zoom out to cover up to ~100×100 km per frame at Streets (z14) and MapLibre over-zooms sharply to house level.",
                     fontSize = 11.sp,
                     color = TorqueEvoColors.TextSecondary
                 )
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(140.dp)
+                        .height(235.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
                 ) {
-                    DualMapCanvas(
-                        mapProvider = mapProvider,
-                        latitude = gps.latitude,
-                        longitude = gps.longitude,
-                        trail = emptyList(),
-                        interactive = true,
-                        modifier = Modifier.fillMaxWidth().height(140.dp)
+                    OfflineFramePickerMap(
+                        initialLat = gps.latitude,
+                        initialLon = gps.longitude,
+                        activePmtilesPath = activePmtilesPath,
+                        onFrameBoundsChanged = { frameBounds = it },
+                        modifier = Modifier.fillMaxWidth().height(235.dp)
                     )
-                }
-
-                OutlinedTextField(
-                    value = regionName,
-                    onValueChange = { regionName = it },
-                    label = { Text("Region Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text("Capture Radius Around Current GPS", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(5.0, 10.0, 20.0, 35.0).forEach { r ->
-                        FilterChip(selected = radiusKm == r, onClick = { radiusKm = r }, label = { Text("${r.toInt()} km") })
-                    }
-                }
-
-                Text("Street Detail (Max Zoom)", fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(13.0 to "City (z13)", 14.0 to "Streets (z14)", 15.0 to "High (z15)").forEach { (z, lbl) ->
-                        FilterChip(selected = maxZoom == z, onClick = { maxZoom = z }, label = { Text(lbl) })
-                    }
                 }
 
                 val estColor = if (estimate.exceedsFairUseLimit) TorqueEvoColors.CriticalRed else TorqueEvoColors.NominalGreen
                 Text(
-                    "Estimated Size: ${estimate.tileCount} tiles (~%.1f MB) · ${if (estimate.exceedsFairUseLimit) "Over 3,000 tile limit" else "Within free limit"}".format(estimate.estimatedMb),
+                    "Frame Size: ${estimate.tileCount} tiles (~%.1f MB) · ${if (estimate.exceedsFairUseLimit) "Zoom in slightly (<= 3,000 tiles)" else "Ready to download (z5–z${maxZoom.toInt()})"}".format(estimate.estimatedMb),
                     fontSize = 12.sp,
                     color = estColor,
                     fontWeight = FontWeight.SemiBold
                 )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = regionName,
+                        onValueChange = { regionName = it },
+                        label = { Text("Frame Name") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(13.0 to "Wide (z13)", 14.0 to "Streets (z14)", 15.0 to "High (z15)").forEach { (z, lbl) ->
+                        FilterChip(selected = maxZoom == z, onClick = { maxZoom = z }, label = { Text(lbl, fontSize = 11.sp) })
+                    }
+                }
+
                 offlineStatusMsg?.let { Text(it, fontSize = 11.sp, color = TorqueEvoColors.SkyBlue) }
 
                 Button(
-                    onClick = { onDownloadRegion(regionName, radiusKm, maxZoom) },
+                    onClick = { onDownloadBounds(regionName, frameBounds, maxZoom) },
                     enabled = !estimate.exceedsFairUseLimit,
                     colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Download Offline Region", fontWeight = FontWeight.Bold)
+                    Text("Download Selected Frame", fontWeight = FontWeight.Bold)
                 }
 
                 offlineRegions.forEach { reg ->
@@ -703,6 +731,87 @@ fun RunLogsAndMapsSheet(
                             fontSize = 11.sp,
                             modifier = Modifier.clickable { onDeleteRegion(reg.id) }
                         )
+                    }
+                }
+
+                HorizontalDivider(color = TorqueEvoColors.SubtleBorder, modifier = Modifier.padding(vertical = 4.dp))
+                Text("Whole-Island .pmtiles Pack (Java / Full Regions)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                Text(
+                    "For entire Java Island (~200–350 MB in one file), extract .pmtiles from extract.bbbike.org or Protomaps and import or fetch via URL below.",
+                    fontSize = 11.sp,
+                    color = TorqueEvoColors.TextSecondary
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { pmtilesPickerLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Import .pmtiles File", fontSize = 11.sp) }
+
+                    if (activePmtilesPath != null) {
+                        OutlinedButton(
+                            onClick = { onSelectPmtilesPack(null) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Use Frame Cache Instead", fontSize = 11.sp) }
+                    }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = pmtilesName,
+                        onValueChange = { pmtilesName = it },
+                        label = { Text("Pack Name") },
+                        singleLine = true,
+                        modifier = Modifier.weight(0.8f)
+                    )
+                    OutlinedTextField(
+                        value = pmtilesUrl,
+                        onValueChange = { pmtilesUrl = it },
+                        label = { Text("Direct .pmtiles URL") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1.4f)
+                    )
+                }
+                OutlinedButton(
+                    onClick = { if (pmtilesUrl.isNotBlank()) onDownloadPmtilesUrl(pmtilesName, pmtilesUrl) },
+                    enabled = pmtilesUrl.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Download .pmtiles URL") }
+
+                pmtilesPacks.forEach { pack ->
+                    val isActive = activePmtilesPath == pack.filePath
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isActive) Color(0x2200A8FF) else TorqueEvoColors.CardSurface)
+                            .border(1.dp, if (isActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${pack.name}.pmtiles", fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextPrimary)
+                            Text("%.1f MB · ${if (isActive) "Active Offline Source" else "Tap Use to activate"}".format(pack.sizeBytes / (1024.0 * 1024.0)), fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = if (isActive) "Active" else "Use",
+                                color = if (isActive) TorqueEvoColors.NominalGreen else TorqueEvoColors.ElectricBlue,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable { onSelectPmtilesPack(if (isActive) null else pack.filePath) }
+                            )
+                            Text(
+                                "Delete",
+                                color = TorqueEvoColors.CriticalRed,
+                                fontSize = 11.sp,
+                                modifier = Modifier.clickable {
+                                    if (isActive) onSelectPmtilesPack(null)
+                                    onDeletePmtilesPack(pack.filePath)
+                                }
+                            )
+                        }
                     }
                 }
             }

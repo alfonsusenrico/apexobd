@@ -37,6 +37,7 @@ data class UserSettings(
     val pauseFuelCalculation: Boolean = false,
     val dualCellularKeepalive: Boolean = true,
     val mapProvider: MapProvider = MapProvider.OFFLINE_MAPLIBRE,
+    val activePmtilesPath: String? = null,
     val currencyCode: String = "IDR",
     val pollingProfile: PollingProfile = PollingProfile.BALANCED,
     val speedUnit: SpeedUnit = SpeedUnit.KMH,
@@ -72,6 +73,7 @@ class AppPreferences(private val context: Context) {
         val PAUSE_FUEL = booleanPreferencesKey("pause_fuel_calculation")
         val DUAL_CELLULAR = booleanPreferencesKey("dual_cellular_keepalive")
         val MAP_PROVIDER = stringPreferencesKey("map_provider")
+        val ACTIVE_PMTILES_PATH = stringPreferencesKey("active_pmtiles_path")
         val CURRENCY_CODE = stringPreferencesKey("currency_code")
         val POLLING_PROFILE = stringPreferencesKey("polling_profile")
         val SPEED_UNIT = stringPreferencesKey("speed_unit")
@@ -98,6 +100,7 @@ class AppPreferences(private val context: Context) {
             pauseFuelCalculation = prefs[Keys.PAUSE_FUEL] ?: false,
             dualCellularKeepalive = prefs[Keys.DUAL_CELLULAR] ?: true,
             mapProvider = enumOrDefault(prefs[Keys.MAP_PROVIDER], MapProvider.OFFLINE_MAPLIBRE),
+            activePmtilesPath = prefs[Keys.ACTIVE_PMTILES_PATH]?.takeIf { it.isNotBlank() },
             currencyCode = prefs[Keys.CURRENCY_CODE] ?: "IDR",
             pollingProfile = enumOrDefault(prefs[Keys.POLLING_PROFILE], PollingProfile.BALANCED),
             speedUnit = enumOrDefault(prefs[Keys.SPEED_UNIT], SpeedUnit.KMH),
@@ -140,6 +143,12 @@ class AppPreferences(private val context: Context) {
 
     suspend fun setMapProvider(provider: MapProvider) {
         context.dataStore.edit { it[Keys.MAP_PROVIDER] = provider.name }
+    }
+
+    suspend fun setActivePmtilesPath(path: String?) {
+        context.dataStore.edit {
+            if (path.isNullOrBlank()) it.remove(Keys.ACTIVE_PMTILES_PATH) else it[Keys.ACTIVE_PMTILES_PATH] = path
+        }
     }
 
     suspend fun setCurrencyCode(code: String) {

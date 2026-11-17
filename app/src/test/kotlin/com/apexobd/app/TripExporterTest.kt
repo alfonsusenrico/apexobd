@@ -51,4 +51,21 @@ class TripExporterTest {
         val zeroFuel = com.apexobd.app.data.db.VehicleProfileEntity(name = "Empty", allTimeRoadDistanceKm = 100.0, allTimeRoadFuelLiters = 0.0)
         org.junit.Assert.assertEquals(0.0, zeroFuel.allTimeAvgKpl(), 0.01)
     }
+
+    @Test
+    fun `OfflineMapManager insetBounds, tile estimator z5-z14, and local PMTiles style JSON validate cleanly`() {
+        val box = com.apexobd.app.platform.OfflineMapManager.insetBounds(-7.0, 113.0, -7.6, 112.4, marginRatio = 0.08)
+        assertTrue(box.north < -7.0 && box.south > -7.6)
+        assertTrue(box.east < 113.0 && box.west > 112.4)
+
+        val estZ14 = com.apexobd.app.platform.OfflineMapManager.estimateRegionSize(box.north, box.east, box.south, box.west, 5.0, 14.0)
+        assertTrue(estZ14.tileCount in 100L..2500L)
+        org.junit.Assert.assertFalse(estZ14.exceedsFairUseLimit)
+
+        val styleJson = com.apexobd.app.platform.OfflineMapManager.buildDarkPmtilesStyleJson("/data/user/0/com.apexobd.app/files/pmtiles/java.pmtiles")
+        assertTrue(styleJson.contains("pmtiles://file:///data/user/0/com.apexobd.app/files/pmtiles/java.pmtiles"))
+        assertTrue(styleJson.contains("\"source-layer\": \"roads\""))
+        assertTrue(styleJson.contains("\"source-layer\": \"streets\""))
+        assertTrue(styleJson.contains("\"source-layer\": \"transportation\""))
+    }
 }
