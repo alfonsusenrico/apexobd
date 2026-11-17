@@ -5,6 +5,10 @@ import com.apexobd.core.elm.ElmHandshakeInfo
 import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.FormulaEvaluator
+import com.apexobd.core.model.VehicleProfile
+import com.apexobd.core.protocol.DerivedSensorCatalog
+import com.apexobd.core.protocol.FuelEconomyTracker
+import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.PidDefinition
 import com.apexobd.core.protocol.PollTier
@@ -24,9 +28,9 @@ enum class PollingProfile(
     val cycleDelayMs: Long,
     val slowPollEveryNCycles: Int
 ) {
-    MAX_PERFORMANCE("Max Speed (0ms delay)", 0L, 12),
-    BALANCED("Balanced (Low Latency + Battery)", 15L, 15),
-    ECO_BATTERY("Eco Battery (Low Radio Duty)", 120L, 15)
+    MAX_PERFORMANCE("Max Speed (0ms delay)", 0L, 18),
+    BALANCED("Balanced (Low Latency + Battery)", 8L, 20),
+    ECO_BATTERY("Eco Battery (Low Radio Duty)", 100L, 20)
 }
 
 sealed class ConnectionState {
@@ -49,7 +53,8 @@ object PerformanceCalculator {
         rpm: Double?,
         mafGramsPerSec: Double?,
         actualTorquePct: Double?,
-        refTorqueNm: Double?
+        refTorqueNm: Double?,
+        drivetrainLossPct: Double = 15.0
     ): Pair<Double?, Double?> {
         if (rpm == null || rpm < 100.0) return null to null
 
@@ -60,9 +65,11 @@ object PerformanceCalculator {
         }
 
         if (mafGramsPerSec != null) {
-            val hp = mafGramsPerSec / 0.80
-            val torqueNm = (hp * 7127.0) / rpm
-            return torqueNm to hp
+            val crankHp = mafGramsPerSec / 0.80
+            val wheelFactor = (1.0 - (drivetrainLossPct / 100.0)).coerceIn(0.5, 1.0)
+            val wheelHp = crankHp * wheelFactor
+            val torqueNm = (wheelHp * 7127.0) / rpm
+            return torqueNm to wheelHp
         }
         return null to null
     }
@@ -101,16 +108,16 @@ class Timer0100Tracker {
 }
 
 /**
- * Low-latency priority-tiered polling scheduler.
- * Maximizes adapter throughput using CAN multi-PID batching and expected-response
- * count hints (`01XX1`) with automatic single-PID fallback, while polling only
- * currently visible sensors (plus active logging sensors) to minimize battery draw.
+ * Low-latency priority-tiered polling scheduler with 2x primary sensor interleaving,
+ * incremental UI state emission, dynamic multi-car availability detection, and
+ * idle-excluding fuel economy tracking.
  */
 class ObdPollingEngine(
     private val transport: ObdTransport,
     private val scope: CoroutineScope
 ) {
     val client = Elm327Client(transport)
+    val fuelTracker = FuelEconomyTracker()
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -118,8 +125,14 @@ class ObdPollingEngine(
     private val _supportedPids = MutableStateFlow<Set<String>>(emptySet())
     val supportedPids: StateFlow<Set<String>> = _supportedPids.asStateFlow()
 
+    private val _availableSensorKeys = MutableStateFlow<Set<String>>(emptySet())
+    val availableSensorKeys: StateFlow<Set<String>> = _availableSensorKeys.asStateFlow()
+
     private val _liveValues = MutableStateFlow<Map<String, Double>>(emptyMap())
     val liveValues: StateFlow<Map<String, Double>> = _liveValues.asStateFlow()
+
+    private val _fuelMetrics = MutableStateFlow<FuelMetricsSnapshot?>(null)
+    val fuelMetrics: StateFlow<FuelMetricsSnapshot?> = _fuelMetrics.asStateFlow()
 
     private val _pollingHz = MutableStateFlow(0)
     val pollingHz: StateFlow<Int> = _pollingHz.asStateFlow()
@@ -136,6 +149,12 @@ class ObdPollingEngine(
     @Volatile
     private var pollingProfile: PollingProfile = PollingProfile.BALANCED
 
+    @Volatile
+    private var vehicleProfile: VehicleProfile = VehicleProfile()
+
+    @Volatile
+    private var externalGpsSpeedKmh: Double? = null
+
     private var pollJob: Job? = null
 
     fun setActiveSensors(keys: Set<String>) {
@@ -150,6 +169,18 @@ class ObdPollingEngine(
         pollingProfile = profile
     }
 
+    fun setVehicleProfile(profile: VehicleProfile) {
+        vehicleProfile = profile
+    }
+
+    fun setFuelCalculationPaused(paused: Boolean) {
+        fuelTracker.paused = paused
+    }
+
+    fun updateExternalGpsSpeed(speedKmh: Double?) {
+        externalGpsSpeedKmh = speedKmh
+    }
+
     fun start() {
         if (pollJob?.isActive == true) return
         pollJob = scope.launch {
@@ -162,9 +193,10 @@ class ObdPollingEngine(
                         ConnectionState.Reconnecting(attempt, "Reconnecting to ${transport.endpointLabel}")
                     }
                     transport.connect()
-                    val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
+                    val handshake = client.initialize(aggressiveTiming = pollingProfile == PollingProfile.MAX_PERFORMANCE)
                     val discovered = ObdPidRegistry.discoverSupportedPids(client)
                     _supportedPids.value = discovered
+                    _availableSensorKeys.value = computeAvailableSensorKeys(discovered)
                     _connectionState.value = ConnectionState.Connected(handshake, discovered.size)
                     attempt = 0
 
@@ -194,6 +226,22 @@ class ObdPollingEngine(
         _avgLatencyMs.value = 0
     }
 
+    private fun computeAvailableSensorKeys(discovered: Set<String>): Set<String> {
+        val out = linkedSetOf<String>()
+        for (pid in ObdPidRegistry.standardPids) {
+            if (discovered.isEmpty() || pid.pidHex in discovered) {
+                out.add(pid.key)
+            }
+        }
+        for (derived in DerivedSensorCatalog.all) {
+            if (DerivedSensorCatalog.isAvailable(derived, discovered)) {
+                out.add(derived.key)
+            }
+        }
+        out.addAll(customPids.keys)
+        return out
+    }
+
     private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
         var cycle = 0
         var samplesInSec = 0
@@ -209,22 +257,7 @@ class ObdPollingEngine(
                 setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "throttle", "maf", "timing_advance")
             }
 
-            val expandedKeys = buildSet {
-                addAll(requested)
-                if ("hp" in requested || "torque" in requested) {
-                    add("rpm")
-                    add("maf")
-                    if ("62" in discovered && "63" in discovered) {
-                        add("actual_torque_pct")
-                        add("ref_torque_nm")
-                    }
-                }
-                if ("boost_bar" in requested) {
-                    add("map")
-                    add("baro")
-                }
-            }
-
+            val expandedKeys = expandDependencies(requested, discovered)
             val standardTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
                 .distinctBy { it.pidHex }
@@ -232,11 +265,10 @@ class ObdPollingEngine(
                 .filter { it.defaultTier == PollTier.HIGH || cycle % profile.slowPollEveryNCycles == 0 }
 
             if (supportsMultiPid && standardTargets.size >= 2) {
-                // Chunk up to 5 PIDs per CAN request (fits comfortably within ISO-TP buffers)
                 for (chunk in standardTargets.chunked(5)) {
                     if (!transport.isConnected.value) break
                     if (chunk.size == 1) {
-                        val (ok, rtt) = pollSingleStandard(chunk.first(), handshake.isCanProtocol, values)
+                        val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values)
                         if (ok) samplesInSec++
                         latencyAccumMs += rtt
                         rttCount++
@@ -252,10 +284,9 @@ class ObdPollingEngine(
                         } else emptyList()
 
                         if (decodedList.isEmpty()) {
-                            // ECU doesn't support Mode 01 multi-PID batching -> fall back gracefully
                             supportsMultiPid = false
                             for (pid in chunk) {
-                                val (ok, rtt) = pollSingleStandard(pid, handshake.isCanProtocol, values)
+                                val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
                                 if (ok) samplesInSec++
                                 latencyAccumMs += rtt
                                 rttCount++
@@ -265,16 +296,34 @@ class ObdPollingEngine(
                                 values[item.key] = item.value
                                 samplesInSec++
                             }
+                            emitDerivedAndSnapshot(values)
                         }
                     }
                 }
             } else {
-                for (pid in standardTargets) {
-                    if (!transport.isConnected.value) break
-                    val (ok, rtt) = pollSingleStandard(pid, handshake.isCanProtocol, values)
+                // Interleave primary RPM / high-priority PID every 2nd step for 2x smoother gauge updates
+                val rpmPid = standardTargets.firstOrNull { it.key == "rpm" }
+                val others = standardTargets.filter { it.key != "rpm" }
+
+                if (others.isEmpty() && rpmPid != null) {
+                    val (ok, rtt) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
                     if (ok) samplesInSec++
                     latencyAccumMs += rtt
                     rttCount++
+                } else {
+                    for ((idx, pid) in others.withIndex()) {
+                        if (!transport.isConnected.value) break
+                        if (rpmPid != null && idx % 2 == 0) {
+                            val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
+                            if (okRpm) samplesInSec++
+                            latencyAccumMs += rttRpm
+                            rttCount++
+                        }
+                        val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
+                        if (ok) samplesInSec++
+                        latencyAccumMs += rtt
+                        rttCount++
+                    }
                 }
             }
 
@@ -297,23 +346,7 @@ class ObdPollingEngine(
                 }
             }
 
-            // Update derived metrics
-            val (tq, hp) = PerformanceCalculator.estimateTorqueAndHp(
-                rpm = values["rpm"],
-                mafGramsPerSec = values["maf"],
-                actualTorquePct = values["actual_torque_pct"],
-                refTorqueNm = values["ref_torque_nm"]
-            )
-            if (hp != null) values["hp"] = hp
-            if (tq != null) values["torque"] = tq
-
-            val mapKpa = values["map"]
-            if (mapKpa != null) {
-                val baroKpa = values["baro"] ?: 101.3
-                values["boost_bar"] = (mapKpa - baroKpa) / 100.0
-            }
-
-            _liveValues.value = values.toMap()
+            emitDerivedAndSnapshot(values)
 
             val now = System.currentTimeMillis()
             if (now - windowStart >= 1000L) {
@@ -331,7 +364,37 @@ class ObdPollingEngine(
         }
     }
 
-    private suspend fun pollSingleStandard(
+    private fun expandDependencies(requested: Set<String>, discovered: Set<String>): Set<String> {
+        val fuelKeys = setOf("kpl_instant", "kpl_road_avg", "kpl_trip_avg", "fuel_flow_lph", "fuel_used_l", "efficiency_score")
+        return buildSet {
+            addAll(requested)
+            if (requested.any { it in fuelKeys }) {
+                add("maf")
+                add("obd_speed")
+                add("throttle")
+                add("rpm")
+                if ("0B" in discovered) add("map")
+                if ("0F" in discovered) add("iat")
+                if ("04" in discovered) add("engine_load")
+            }
+            if ("ve_pct" in requested) {
+                add("maf"); add("map"); add("rpm"); add("iat")
+            }
+            if ("hp" in requested || "torque" in requested) {
+                add("rpm"); add("maf"); add("map")
+                if ("62" in discovered && "63" in discovered) {
+                    add("actual_torque_pct")
+                    add("ref_torque_nm")
+                }
+            }
+            if ("boost_kpa" in requested || "boost_bar" in requested) {
+                add("map")
+                if ("33" in discovered) add("baro")
+            }
+        }
+    }
+
+    private suspend fun pollSingleAndEmit(
         pid: PidDefinition,
         isCanProtocol: Boolean,
         values: MutableMap<String, Double>
@@ -346,9 +409,77 @@ class ObdPollingEngine(
                 for (decoded in decodedList) {
                     values[decoded.key] = decoded.value
                 }
+                emitDerivedAndSnapshot(values)
                 return true to rtt
             }
         }
         return false to rtt
+    }
+
+    private fun emitDerivedAndSnapshot(values: MutableMap<String, Double>) {
+        val vp = vehicleProfile
+        val speedKmh = externalGpsSpeedKmh ?: values["obd_speed"] ?: 0.0
+        val rpm = values["rpm"]
+        val mapKpa = values["map"]
+        val iat = values["iat"]
+        val maf = values["maf"] ?: FuelEconomyTracker.estimateMafSpeedDensity(
+            displacementLiters = vp.displacementLiters,
+            vePct = vp.volumetricEfficiencyPct,
+            rpm = rpm,
+            mapKpa = mapKpa,
+            iatCelsius = iat
+        )
+
+        val (tq, hp) = PerformanceCalculator.estimateTorqueAndHp(
+            rpm = rpm,
+            mafGramsPerSec = maf,
+            actualTorquePct = values["actual_torque_pct"],
+            refTorqueNm = values["ref_torque_nm"],
+            drivetrainLossPct = vp.drivetrainLossPct
+        )
+        if (hp != null) values["hp"] = hp
+        if (tq != null) values["torque"] = tq
+
+        if (mapKpa != null) {
+            val baroKpa = values["baro"] ?: 101.3
+            val boostKpa = mapKpa - baroKpa
+            values["boost_kpa"] = boostKpa
+            values["boost_bar"] = boostKpa / 100.0
+        }
+
+        FuelEconomyTracker.computeVolumetricEfficiencyPct(
+            displacementLiters = vp.displacementLiters,
+            rpm = rpm,
+            mafGramsPerSec = values["maf"],
+            mapKpa = mapKpa,
+            iatCelsius = iat
+        )?.let { values["ve_pct"] = it }
+
+        if (maf != null || values["maf"] != null) {
+            val fuel = fuelTracker.update(
+                profile = vp,
+                speedKmh = speedKmh,
+                rpm = rpm,
+                mafGramsPerSec = values["maf"],
+                mapKpa = mapKpa,
+                iatCelsius = iat,
+                lambda = values["lambda"],
+                throttlePct = values["throttle"]
+            )
+            values["fuel_flow_lph"] = fuel.fuelFlowLitersPerHour
+            values["kpl_instant"] = fuel.instantKpl
+            values["kpl_trip_avg"] = fuel.tripAvgKpl
+            values["kpl_road_avg"] = fuel.roadOnlyAvgKpl
+            values["fuel_used_l"] = fuel.totalFuelUsedLiters
+            values["efficiency_score"] = FuelEconomyTracker.computeDrivingEfficiencyScore(
+                instantKpl = fuel.instantKpl,
+                throttlePct = values["throttle"],
+                engineLoadPct = values["engine_load"],
+                speedKmh = speedKmh
+            )
+            _fuelMetrics.value = fuel
+        }
+
+        _liveValues.value = values.toMap()
     }
 }

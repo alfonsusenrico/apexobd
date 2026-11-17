@@ -61,10 +61,20 @@ class EngineAndPerformanceTest {
             rpm = 4000.0,
             mafGramsPerSec = 80.0,
             actualTorquePct = null,
-            refTorqueNm = null
+            refTorqueNm = null,
+            drivetrainLossPct = 0.0
         )
         assertEquals(100.0, hpMaf!!, 0.1)
         assertEquals(178.17, tqMaf!!, 0.1)
+
+        val (_, wheelHp) = PerformanceCalculator.estimateTorqueAndHp(
+            rpm = 4000.0,
+            mafGramsPerSec = 80.0,
+            actualTorquePct = null,
+            refTorqueNm = null,
+            drivetrainLossPct = 15.0
+        )
+        assertEquals(85.0, wheelHp!!, 0.1)
     }
 
     @Test

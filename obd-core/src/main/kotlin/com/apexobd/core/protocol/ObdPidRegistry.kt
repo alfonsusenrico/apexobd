@@ -2,6 +2,7 @@ package com.apexobd.core.protocol
 
 import com.apexobd.core.elm.Elm327Client
 import com.apexobd.core.elm.ObdCommandResult
+import com.apexobd.core.model.SensorQuantity
 
 enum class PidCategory {
     ENGINE_AIR,
@@ -28,8 +29,20 @@ data class PidDefinition(
     val maxValue: Double,
     val category: PidCategory,
     val defaultTier: PollTier = PollTier.MEDIUM,
+    val quantity: SensorQuantity = defaultQuantityForUnit(unit),
     val decoder: (List<Int>) -> Double?
-)
+) {
+    companion object {
+        fun defaultQuantityForUnit(unit: String): SensorQuantity = when (unit) {
+            "km/h" -> SensorQuantity.SPEED
+            "°C" -> SensorQuantity.TEMPERATURE
+            "kPa" -> SensorQuantity.PRESSURE_KPA
+            "g/s" -> SensorQuantity.AIRFLOW_GS
+            "Nm" -> SensorQuantity.TORQUE_NM
+            else -> SensorQuantity.RAW
+        }
+    }
+}
 
 data class DecodedReading(
     val key: String,
@@ -295,5 +308,5 @@ object ObdPidRegistry {
         cat: PidCategory,
         tier: PollTier = PollTier.MEDIUM,
         decoder: (List<Int>) -> Double?
-    ) = PidDefinition(pidHex, key, name, shortName, unit, min, max, cat, tier, decoder)
+    ) = PidDefinition(pidHex, key, name, shortName, unit, min, max, cat, tier, PidDefinition.defaultQuantityForUnit(unit), decoder)
 }
