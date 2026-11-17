@@ -44,7 +44,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,7 +65,6 @@ fun HomeMenuScreen(
     viewModel: HudViewModel,
     onOpenHudCanvas: () -> Unit
 ) {
-    val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val vehicles by viewModel.vehicles.collectAsStateWithLifecycle()
     val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
@@ -227,20 +225,6 @@ fun HomeMenuScreen(
                         trail = lastTripTrail,
                         activePmtilesPath = settings.activePmtilesPath,
                         modifier = Modifier.fillMaxSize()
-                    )
-                    Text(
-                        text = "Navigate ↗",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TorqueEvoColors.ElectricBlue,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(6.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xE007090D))
-                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(6.dp))
-                            .clickable { viewModel.openExternalNavigation(context) }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }

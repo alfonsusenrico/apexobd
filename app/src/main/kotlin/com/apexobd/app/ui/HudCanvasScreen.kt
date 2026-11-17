@@ -5,6 +5,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,9 +49,11 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,13 +66,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -118,7 +126,6 @@ fun HudCanvasScreen(
     viewModel: HudViewModel,
     onBackToHome: () -> Unit
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -130,16 +137,17 @@ fun HudCanvasScreen(
     val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
     val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
-    val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
 
     var editMode by remember { mutableStateOf(false) }
     var selectedWidgetId by remember { mutableStateOf<Long?>(null) }
+    var editingWidgetId by remember { mutableStateOf<Long?>(null) }
     var showContextMenu by remember { mutableStateOf(false) }
     var showComponentPicker by remember { mutableStateOf(false) }
 
     BackHandler {
         when {
             showComponentPicker -> showComponentPicker = false
+            editingWidgetId != null -> editingWidgetId = null
             showContextMenu -> showContextMenu = false
             editMode -> editMode = false
             else -> onBackToHome()
@@ -166,11 +174,6 @@ fun HudCanvasScreen(
             .fillMaxSize()
             .background(TorqueEvoColors.PureBlack)
             .graphicsLayer { scaleX = if (settings.hudMirror) -1f else 1f }
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onLongPress = { showContextMenu = true }
-                )
-            }
     ) {
         if (pages.isNotEmpty()) {
             HorizontalPager(
@@ -189,10 +192,13 @@ fun HudCanvasScreen(
                     viewModel = viewModel,
                     liveValues = liveValues,
                     historyBuffers = historyBuffers,
-                    onLongPress = { showContextMenu = true },
+                    onLongPressCanvas = { showContextMenu = true },
+                    onHoldWidget = { w ->
+                        selectedWidgetId = w.id
+                        editingWidgetId = w.id
+                    },
                     onSelectWidget = { w -> selectedWidgetId = w.id },
                     onToggleRecord = { viewModel.toggleRecording() },
-                    onNavigateExternal = { viewModel.openExternalNavigation(context) },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
                     onReset0100 = { viewModel.reset0100Best() },
@@ -232,8 +238,7 @@ fun HudCanvasScreen(
             val currentPage = pages.getOrNull(pagerState.currentPage)
             val selectedWidget = currentPage?.widgets?.firstOrNull { it.id == selectedWidgetId }
                 ?: currentPage?.widgets?.firstOrNull()
-            val canStyle = selectedWidget != null &&
-                selectedWidget.sensorKey !in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")
+            val canStyle = selectedWidget != null && !isFixedLayoutSpecialWidget(selectedWidget.sensorKey)
 
             Row(
                 modifier = Modifier
@@ -265,7 +270,7 @@ fun HudCanvasScreen(
                     if (canStyle) {
                         EditActionPill("◐ Style", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetDisplayType(selectedWidget) }
                     }
-                    EditActionPill("⤢ Size", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetSize(selectedWidget) }
+                    EditActionPill("⤢ Resize", TorqueEvoColors.SkyBlue) { editingWidgetId = selectedWidget.id }
                     EditActionPill("×", TorqueEvoColors.CriticalRed) {
                         val remaining = currentPage.widgets.filter { it.id != selectedWidget.id }
                         viewModel.deleteWidget(selectedWidget.id)
@@ -276,6 +281,38 @@ fun HudCanvasScreen(
                     editMode = false
                 }
             }
+        }
+
+        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Move, Remove)
+        val editingPage = pages.getOrNull(pagerState.currentPage)
+        val editingWidget = editingWidgetId?.let { targetId ->
+            editingPage?.widgets?.firstOrNull { it.id == targetId }
+        }
+        if (editingWidget != null && editingPage != null) {
+            ComponentEditDialog(
+                widget = editingWidget,
+                widgetLabel = viewModel.catalogItemFor(editingWidget.sensorKey).label,
+                gridScale = settings.hudGridScale,
+                gridSnapEnabled = settings.gridSnapEnabled,
+                onSelectDisplayType = { dt -> viewModel.updateWidgetDisplayType(editingWidget, dt) },
+                onResize = { c, r -> viewModel.updateWidgetSize(editingWidget, c, r) },
+                onMoveOrder = { delta -> viewModel.moveWidget(editingPage.page.id, editingWidget.id, delta) },
+                onEnterMoveMode = {
+                    editingWidgetId = null
+                    selectedWidgetId = editingWidget.id
+                    editMode = true
+                },
+                onOpenCanvasMenu = {
+                    editingWidgetId = null
+                    showContextMenu = true
+                },
+                onRemove = {
+                    viewModel.deleteWidget(editingWidget.id)
+                    if (selectedWidgetId == editingWidget.id) selectedWidgetId = null
+                    editingWidgetId = null
+                },
+                onDismiss = { editingWidgetId = null }
+            )
         }
 
         // FULLSCREEN LANDSCAPE COMPONENT STUDIO WITH LIVE PREVIEW
@@ -295,7 +332,6 @@ fun HudCanvasScreen(
                     isRecording = isRecording,
                     sampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
                     onToggleRecord = { viewModel.toggleRecording() },
-                    onNavigateExternal = { viewModel.openExternalNavigation(context) },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
                     onReset0100 = { viewModel.reset0100Best() },
@@ -399,6 +435,54 @@ fun HudCanvasScreen(
     }
 }
 
+private fun isFixedLayoutSpecialWidget(sensorKey: String): Boolean =
+    sensorKey in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")
+
+@Composable
+private fun rememberStationaryHoldModifier(
+    key: Any?,
+    enabled: Boolean,
+    onHold: () -> Unit
+): Modifier {
+    val latestOnHold by rememberUpdatedState(onHold)
+    if (!enabled) return Modifier
+    return Modifier.pointerInput(key, enabled) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val touchSlop = viewConfiguration.touchSlop
+            val timeoutMs = viewConfiguration.longPressTimeoutMillis
+            var triggered = false
+            while (true) {
+                val elapsed = android.os.SystemClock.uptimeMillis() - down.uptimeMillis
+                val remaining = timeoutMs - elapsed
+                if (remaining <= 0L) {
+                    latestOnHold()
+                    triggered = true
+                    break
+                }
+                val event = withTimeoutOrNull(remaining) {
+                    awaitPointerEvent(PointerEventPass.Initial)
+                }
+                if (event == null) {
+                    latestOnHold()
+                    triggered = true
+                    break
+                }
+                val pointer = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!pointer.pressed) break
+                if ((pointer.position - down.position).getDistance() > touchSlop) break
+            }
+            if (triggered) {
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Initial)
+                    ev.changes.forEach { it.consume() }
+                    if (ev.changes.none { it.pressed }) break
+                }
+            }
+        }
+    }
+}
+
 private data class GridPlacement(
     val widget: HudWidgetEntity,
     val col: Int,
@@ -412,7 +496,8 @@ private fun packWidgetsIntoGrid(
     cols: Int,
     rows: Int
 ): List<GridPlacement> {
-    val occupied = Array(rows * 2) { BooleanArray(cols) }
+    val maxNeededRows = (rows * 3).coerceAtLeast(widgets.sumOf { it.spanRows.coerceIn(1, rows) } + rows)
+    val occupied = Array(maxNeededRows) { BooleanArray(cols) }
     val out = mutableListOf<GridPlacement>()
 
     for (w in widgets) {
@@ -445,7 +530,7 @@ private fun packWidgetsIntoGrid(
             if (placed) break
         }
         if (!placed) {
-            out += GridPlacement(w, 0, rows - 1, sw, sh)
+            out += GridPlacement(w, 0, (rows - sh).coerceAtLeast(0), sw, sh)
         }
     }
     return out
@@ -462,10 +547,10 @@ private fun ProportionalHudPageCanvas(
     viewModel: HudViewModel,
     liveValues: Map<String, Double>,
     historyBuffers: Map<String, List<Double>>,
-    onLongPress: () -> Unit,
+    onLongPressCanvas: () -> Unit,
+    onHoldWidget: (HudWidgetEntity) -> Unit,
     onSelectWidget: (HudWidgetEntity) -> Unit,
     onToggleRecord: () -> Unit,
-    onNavigateExternal: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
@@ -478,11 +563,18 @@ private fun ProportionalHudPageCanvas(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.displayCutout)
             .padding(start = 10.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)
-            .pointerInput(Unit) {
-                detectTapGestures(onLongPress = { onLongPress() })
-            }
     ) {
+        // Background long-press target strictly behind placed widgets so widget holds open Component Menu
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onLongPress = { onLongPressCanvas() })
+                }
+        )
+
         val cols = gridScale.cols
         val rows = gridScale.rows
         val gap = if (cols >= 12) 5.dp else 8.dp
@@ -530,7 +622,7 @@ private fun ProportionalHudPageCanvas(
                     color = Color(0x73FFFFFF)
                 )
                 Text(
-                    "Hold tap anywhere to add components, toggle grid snap (${cols}×${rows}), pause idle fuel, or return to Home",
+                    "Hold empty canvas for menu, or hold any component to edit / resize / remove",
                     fontSize = 12.sp,
                     color = Color(0x40FFFFFF),
                     textAlign = TextAlign.Center
@@ -556,9 +648,11 @@ private fun ProportionalHudPageCanvas(
                         .size(width = boxW, height = boxH)
                 ) {
                     HudWidgetSlotWrapper(
+                        widgetId = w.id,
                         editMode = editMode,
                         isSelected = w.id == selectedWidgetId,
-                        onSelect = { onSelectWidget(w) }
+                        onSelect = { onSelectWidget(w) },
+                        onHold = { onHoldWidget(w) }
                     ) {
                         RenderWidgetContent(
                             widget = w,
@@ -573,7 +667,6 @@ private fun ProportionalHudPageCanvas(
                             isRecording = extraFlags.third.first,
                             sampleCount = extraFlags.third.second,
                             onToggleRecord = onToggleRecord,
-                            onNavigateExternal = onNavigateExternal,
                             onToggleFuelPause = onToggleFuelPause,
                             onScanDtc = onScanDtc,
                             onReset0100 = onReset0100
@@ -619,9 +712,11 @@ private fun ProportionalHudPageCanvas(
                         )
                 ) {
                     HudWidgetSlotWrapper(
+                        widgetId = w.id,
                         editMode = editMode,
                         isSelected = w.id == selectedWidgetId,
-                        onSelect = { onSelectWidget(w) }
+                        onSelect = { onSelectWidget(w) },
+                        onHold = { onHoldWidget(w) }
                     ) {
                         RenderWidgetContent(
                             widget = w,
@@ -636,7 +731,6 @@ private fun ProportionalHudPageCanvas(
                             isRecording = extraFlags.third.first,
                             sampleCount = extraFlags.third.second,
                             onToggleRecord = onToggleRecord,
-                            onNavigateExternal = onNavigateExternal,
                             onToggleFuelPause = onToggleFuelPause,
                             onScanDtc = onScanDtc,
                             onReset0100 = onReset0100
@@ -650,15 +744,18 @@ private fun ProportionalHudPageCanvas(
 
 @Composable
 private fun HudWidgetSlotWrapper(
+    widgetId: Long,
     editMode: Boolean,
     isSelected: Boolean,
     onSelect: () -> Unit,
+    onHold: () -> Unit,
     content: @Composable () -> Unit
 ) {
     val borderColor = when {
         isSelected -> TorqueEvoColors.ElectricBlue
         else -> TorqueEvoColors.ElectricBlue.copy(alpha = 0.35f)
     }
+    val holdModifier = rememberStationaryHoldModifier(widgetId, enabled = !editMode, onHold = onHold)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -668,7 +765,7 @@ private fun HudWidgetSlotWrapper(
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (isSelected) Color(0x1600A8FF) else Color(0x0600A8FF))
                         .border(if (isSelected) 2.dp else 1.dp, borderColor, RoundedCornerShape(12.dp))
-                } else Modifier
+                } else holdModifier
             )
     ) {
         content()
@@ -696,7 +793,6 @@ private fun RenderWidgetContent(
     isRecording: Boolean,
     sampleCount: Int,
     onToggleRecord: () -> Unit,
-    onNavigateExternal: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit
@@ -711,8 +807,7 @@ private fun RenderWidgetContent(
                 mapProvider = mapProvider,
                 activePmtilesPath = activeSettings.activePmtilesPath,
                 isRecording = isRecording,
-                onToggleRecord = onToggleRecord,
-                onNavigateExternal = onNavigateExternal
+                onToggleRecord = onToggleRecord
             )
         }
         "fuel_ctrl" -> {
@@ -801,6 +896,328 @@ private fun ContextMenuButton(
     )
 }
 
+private val DISPLAY_STYLE_OPTIONS = listOf(
+    WidgetDisplayType.ANALOG_DIAL to "Radial",
+    WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
+    WidgetDisplayType.DIGITAL to "Digital",
+    WidgetDisplayType.BAR to "Bar",
+    WidgetDisplayType.CHART to "Chart"
+)
+
+@Composable
+private fun VisualStyleChipsRow(
+    selectedType: WidgetDisplayType,
+    onSelect: (WidgetDisplayType) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        DISPLAY_STYLE_OPTIONS.forEach { (dt, lbl) ->
+            ApexFilterChip(
+                selected = selectedType == dt,
+                onClick = { onSelect(dt) },
+                label = lbl,
+                compact = true
+            )
+        }
+    }
+}
+
+@Composable
+private fun DynamicTileSizeSelector(
+    cols: Int,
+    rows: Int,
+    maxCols: Int,
+    maxRows: Int,
+    onSizeChange: (Int, Int) -> Unit
+) {
+    val safeCols = cols.coerceIn(1, maxCols)
+    val safeRows = rows.coerceIn(1, maxRows)
+    val latestOnChange by rememberUpdatedState(onSizeChange)
+    var matrixSize by remember { mutableStateOf(IntSize.Zero) }
+
+    fun updateFromPoint(offset: Offset) {
+        if (matrixSize.width <= 0 || matrixSize.height <= 0) return
+        val nextC = ((offset.x / matrixSize.width) * maxCols).toInt().coerceIn(0, maxCols - 1) + 1
+        val nextR = ((offset.y / matrixSize.height) * maxRows).toInt().coerceIn(0, maxRows - 1) + 1
+        latestOnChange(nextC, nextR)
+    }
+
+    val halfCols = (maxCols / 2).coerceAtLeast(1)
+    val wideRows = (maxRows / 2).coerceAtLeast(1)
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(TorqueEvoColors.PureBlack)
+            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TileAxisStepper(
+                    label = "W",
+                    value = safeCols,
+                    max = maxCols,
+                    onChange = { next -> latestOnChange(next, safeRows) }
+                )
+                TileAxisStepper(
+                    label = "H",
+                    value = safeRows,
+                    max = maxRows,
+                    onChange = { next -> latestOnChange(safeCols, next) }
+                )
+            }
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                ApexFilterChip(
+                    selected = safeCols == 1 && safeRows == 1,
+                    onClick = { latestOnChange(1, 1) },
+                    label = "1×1",
+                    compact = true
+                )
+                ApexFilterChip(
+                    selected = safeCols == halfCols && safeRows == maxRows,
+                    onClick = { latestOnChange(halfCols, maxRows) },
+                    label = "Half ($halfCols×$maxRows)",
+                    compact = true
+                )
+                ApexFilterChip(
+                    selected = safeCols == maxCols && safeRows == wideRows,
+                    onClick = { latestOnChange(maxCols, wideRows) },
+                    label = "Wide ($maxCols×$wideRows)",
+                    compact = true
+                )
+                ApexFilterChip(
+                    selected = safeCols == maxCols && safeRows == maxRows,
+                    onClick = { latestOnChange(maxCols, maxRows) },
+                    label = "Full",
+                    compact = true
+                )
+            }
+        }
+
+        // Interactive tap/drag grid matrix up to full maxCols × maxRows
+        Canvas(
+            modifier = Modifier
+                .width(116.dp)
+                .height(60.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color(0xFF0A0D13))
+                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(6.dp))
+                .onSizeChanged { matrixSize = it }
+                .pointerInput(maxCols, maxRows) {
+                    detectTapGestures { offset -> updateFromPoint(offset) }
+                }
+                .pointerInput(maxCols, maxRows) {
+                    detectDragGestures(
+                        onDragStart = { offset -> updateFromPoint(offset) },
+                        onDrag = { change, _ ->
+                            change.consume()
+                            updateFromPoint(change.position)
+                        }
+                    )
+                }
+                .padding(3.dp)
+        ) {
+            val gapPx = 2.dp.toPx()
+            val cw = (size.width - gapPx * (maxCols - 1)) / maxCols
+            val ch = (size.height - gapPx * (maxRows - 1)) / maxRows
+            val radius = CornerRadius(2.dp.toPx())
+            for (r in 0 until maxRows) {
+                for (c in 0 until maxCols) {
+                    val active = c < safeCols && r < safeRows
+                    drawRoundRect(
+                        color = if (active) TorqueEvoColors.ElectricBlue.copy(alpha = 0.85f) else Color(0xFF1A2230),
+                        topLeft = Offset(c * (cw + gapPx), r * (ch + gapPx)),
+                        size = Size(cw.coerceAtLeast(1f), ch.coerceAtLeast(1f)),
+                        cornerRadius = radius
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TileAxisStepper(
+    label: String,
+    value: Int,
+    max: Int,
+    onChange: (Int) -> Unit
+) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextSecondary)
+        StepperBadge("−", enabled = value > 1) { onChange((value - 1).coerceAtLeast(1)) }
+        Text(
+            text = "$value",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = TorqueEvoColors.ElectricBlue,
+            modifier = Modifier.width(18.dp),
+            textAlign = TextAlign.Center
+        )
+        StepperBadge("+", enabled = value < max) { onChange((value + 1).coerceAtMost(max)) }
+    }
+}
+
+@Composable
+private fun StepperBadge(symbol: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .alpha(if (enabled) 1f else 0.35f)
+            .clip(RoundedCornerShape(6.dp))
+            .background(TorqueEvoColors.CardSurface)
+            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(6.dp))
+            .then(if (enabled) Modifier.clickable { onClick() } else Modifier),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(symbol, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ComponentEditDialog(
+    widget: HudWidgetEntity,
+    widgetLabel: String,
+    gridScale: HudGridScale,
+    gridSnapEnabled: Boolean,
+    onSelectDisplayType: (WidgetDisplayType) -> Unit,
+    onResize: (Int, Int) -> Unit,
+    onMoveOrder: (Int) -> Unit,
+    onEnterMoveMode: () -> Unit,
+    onOpenCanvasMenu: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentType = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
+    val canStyle = !isFixedLayoutSpecialWidget(widget.sensorKey)
+    val safeCols = widget.spanCols.coerceIn(1, gridScale.cols)
+    val safeRows = widget.spanRows.coerceIn(1, gridScale.rows)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xA6000000))
+            .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .widthIn(max = 560.dp)
+                .fillMaxWidth()
+                .heightIn(max = 355.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF0E1116))
+                .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                .pointerInput(Unit) { detectTapGestures { /* absorb card taps */ } }
+                .verticalScroll(rememberScrollState())
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = widgetLabel,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Text(
+                        text = "${safeCols}×${safeRows}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(TorqueEvoColors.DimBlue)
+                            .padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    "Done",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.ElectricBlue,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TorqueEvoColors.CardSurface)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                        .clickable { onDismiss() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+
+            if (canStyle) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Display Type", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                    VisualStyleChipsRow(selectedType = currentType, onSelect = onSelectDisplayType)
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "Dynamic Tile Size (${gridScale.cols}×${gridScale.rows} Grid)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TorqueEvoColors.TextSecondary
+                )
+                DynamicTileSizeSelector(
+                    cols = safeCols,
+                    rows = safeRows,
+                    maxCols = gridScale.cols,
+                    maxRows = gridScale.rows,
+                    onSizeChange = onResize
+                )
+            }
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (gridSnapEnabled) {
+                    EditActionPill("◀ Earlier", Color.White) { onMoveOrder(-1) }
+                    EditActionPill("▶ Later", Color.White) { onMoveOrder(+1) }
+                }
+                EditActionPill("Drag / Move Mode", TorqueEvoColors.SkyBlue) { onEnterMoveMode() }
+                EditActionPill("Canvas Menu", TorqueEvoColors.TextSecondary) { onOpenCanvasMenu() }
+                EditActionPill("Remove Component", TorqueEvoColors.CriticalRed) { onRemove() }
+            }
+        }
+    }
+}
+
 @Composable
 private fun FullscreenComponentPickerDialog(
     viewModel: HudViewModel,
@@ -815,7 +1232,6 @@ private fun FullscreenComponentPickerDialog(
     isRecording: Boolean,
     sampleCount: Int,
     onToggleRecord: () -> Unit,
-    onNavigateExternal: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
@@ -837,12 +1253,8 @@ private fun FullscreenComponentPickerDialog(
     }
     var selectedItem by remember { mutableStateOf(initialItem) }
     var selectedType by remember { mutableStateOf(WidgetDisplayType.DIGITAL) }
-    val sizeChoices = remember(gridScale) { viewModel.sizeOptionsForGrid(gridScale) }
-    var selectedSize by remember(gridScale) {
-        mutableStateOf(
-            if (2 to 1 in sizeChoices) 2 to 1 else sizeChoices.first()
-        )
-    }
+    var selectedCols by remember(gridScale) { mutableIntStateOf(2.coerceIn(1, gridScale.cols)) }
+    var selectedRows by remember(gridScale) { mutableIntStateOf(1.coerceIn(1, gridScale.rows)) }
 
     val resolvedPreviewType = when (selectedItem.key) {
         "minimap" -> WidgetDisplayType.MINI_MAP
@@ -852,17 +1264,19 @@ private fun FullscreenComponentPickerDialog(
         else -> selectedType
     }
 
-    val previewWidget = remember(selectedItem.key, resolvedPreviewType, selectedSize) {
+    val previewWidget = remember(selectedItem.key, resolvedPreviewType, selectedCols, selectedRows) {
         HudWidgetEntity(
             id = -1L,
             pageId = -1L,
             sensorKey = selectedItem.key,
             displayType = resolvedPreviewType.name,
-            spanCols = selectedSize.first,
-            spanRows = selectedSize.second,
+            spanCols = selectedCols,
+            spanRows = selectedRows,
             sortOrder = 0
         )
     }
+
+    val areaPct = ((selectedCols * selectedRows * 100f) / (gridScale.cols * gridScale.rows).toFloat()).roundToInt()
 
     Box(
         modifier = Modifier
@@ -919,10 +1333,10 @@ private fun FullscreenComponentPickerDialog(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // LEFT PANE (~56%): 1) Alphabetical Sensors, 2) Visual Style, 3) Grid Size
+                // LEFT PANE (~56%): 1) Alphabetical Sensors, 2) Visual Style, 3) Dynamic Tile Size
                 Column(
                     modifier = Modifier.weight(0.56f).fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         "1. Sensor (A–Z · Realtime Value)",
@@ -933,6 +1347,7 @@ private fun FullscreenComponentPickerDialog(
                     LazyColumn(
                         modifier = Modifier
                             .weight(1f)
+                            .heightIn(min = 96.dp)
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .background(TorqueEvoColors.PureBlack)
@@ -978,16 +1393,25 @@ private fun FullscreenComponentPickerDialog(
                                             Modifier.clickable {
                                                 selectedItem = item
                                                 if (item.isSpecialWidget) {
-                                                    selectedSize = when (item.key) {
-                                                        "minimap" -> sizeChoices.firstOrNull { it.first >= 2 && it.second >= 2 } ?: (2 to 2)
-                                                        "dtc_checker" -> sizeChoices.firstOrNull { it.first >= 4 && it.second == 1 } ?: (4 to 1)
-                                                        else -> sizeChoices.firstOrNull { it == (2 to 1) } ?: sizeChoices.first()
+                                                    when (item.key) {
+                                                        "minimap" -> {
+                                                            selectedCols = 2.coerceIn(1, gridScale.cols)
+                                                            selectedRows = 2.coerceIn(1, gridScale.rows)
+                                                        }
+                                                        "dtc_checker" -> {
+                                                            selectedCols = 4.coerceIn(1, gridScale.cols)
+                                                            selectedRows = 1
+                                                        }
+                                                        else -> {
+                                                            selectedCols = 2.coerceIn(1, gridScale.cols)
+                                                            selectedRows = 1
+                                                        }
                                                     }
                                                 }
                                             }
                                         } else Modifier
                                     )
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -1013,22 +1437,9 @@ private fun FullscreenComponentPickerDialog(
                     }
 
                     if (!selectedItem.isSpecialWidget) {
-                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text("2. Component Visual", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                            Row(
-                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                listOf(
-                                    WidgetDisplayType.ANALOG_DIAL to "Radial",
-                                    WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
-                                    WidgetDisplayType.DIGITAL to "Digital",
-                                    WidgetDisplayType.BAR to "Bar",
-                                    WidgetDisplayType.CHART to "Chart"
-                                ).forEach { (dt, lbl) ->
-                                    ApexFilterChip(selected = selectedType == dt, onClick = { selectedType = dt }, label = lbl, compact = true)
-                                }
-                            }
+                            VisualStyleChipsRow(selectedType = selectedType, onSelect = { selectedType = it })
                         }
                     } else {
                         Text(
@@ -1038,21 +1449,23 @@ private fun FullscreenComponentPickerDialog(
                         )
                     }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("3. Size (${gridScale.cols}×${gridScale.rows} Grid)", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                        Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            sizeChoices.forEach { sz ->
-                                ApexFilterChip(
-                                    selected = selectedSize == sz,
-                                    onClick = { selectedSize = sz },
-                                    label = "${sz.first}×${sz.second}",
-                                    compact = true
-                                )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            "3. Dynamic Size (${gridScale.cols}×${gridScale.rows} Grid)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                        DynamicTileSizeSelector(
+                            cols = selectedCols,
+                            rows = selectedRows,
+                            maxCols = gridScale.cols,
+                            maxRows = gridScale.rows,
+                            onSizeChange = { c, r ->
+                                selectedCols = c
+                                selectedRows = r
                             }
-                        }
+                        )
                     }
                 }
 
@@ -1068,7 +1481,7 @@ private fun FullscreenComponentPickerDialog(
                     ) {
                         Text("Live Preview", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
                         Text(
-                            "${selectedSize.first}×${selectedSize.second} cell(s)",
+                            "${selectedCols}×${selectedRows} · $areaPct% canvas",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = TorqueEvoColors.ElectricBlue
@@ -1086,7 +1499,7 @@ private fun FullscreenComponentPickerDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         val gridCellRatio = (16f / gridScale.cols.toFloat()) / (9f / gridScale.rows.toFloat())
-                        val targetAspect = ((selectedSize.first.toFloat() / selectedSize.second.toFloat()) * gridCellRatio).coerceIn(0.6f, 4.2f)
+                        val targetAspect = ((selectedCols.toFloat() / selectedRows.toFloat()) * gridCellRatio).coerceIn(0.32f, 4.5f)
                         val availW = maxWidth
                         val availH = maxHeight
                         val (boxW, boxH) = if (availW / availH > targetAspect) {
@@ -1108,7 +1521,6 @@ private fun FullscreenComponentPickerDialog(
                                 isRecording = isRecording,
                                 sampleCount = sampleCount,
                                 onToggleRecord = onToggleRecord,
-                                onNavigateExternal = onNavigateExternal,
                                 onToggleFuelPause = onToggleFuelPause,
                                 onScanDtc = onScanDtc,
                                 onReset0100 = onReset0100
@@ -1118,10 +1530,10 @@ private fun FullscreenComponentPickerDialog(
 
                     Button(
                         onClick = {
-                            onAddComponent(selectedItem.key, resolvedPreviewType, selectedSize.first, selectedSize.second)
+                            onAddComponent(selectedItem.key, resolvedPreviewType, selectedCols, selectedRows)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
-                        modifier = Modifier.fillMaxWidth().height(46.dp)
+                        modifier = Modifier.fillMaxWidth().height(44.dp)
                     ) {
                         Text("+ Add to Canvas", fontWeight = FontWeight.ExtraBold, fontSize = 14.sp)
                     }

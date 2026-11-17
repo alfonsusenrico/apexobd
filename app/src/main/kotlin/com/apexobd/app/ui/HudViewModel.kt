@@ -1,7 +1,6 @@
 package com.apexobd.app.ui
 
 import android.app.Application
-import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.apexobd.app.data.db.ApexDatabase
@@ -479,7 +478,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch {
                 newEngine.liveValues.collect { map ->
                     val obdSpd = map["obd_speed"] ?: 0.0
-                    locationTracker.updateSimulatedStep(obdSpd)
+                    if (settings.value.useSimulator) {
+                        locationTracker.updateSimulatedStep(obdSpd)
+                    }
                     val gps = locationTracker.gps.value
                     val imuG = accelTracker.accelG.value
                     val speedGps = if (gps.hasRealFix) gps.speedKmh else obdSpd
@@ -891,6 +892,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val existing = hudDao.getWidgetsForPage(pageId)
             val idx = existing.size
+            val nextSortOrder = (existing.maxOfOrNull { it.sortOrder } ?: -1) + 1
             val xFrac = ((idx % 3) * 0.28f).coerceAtMost(0.75f)
             val yFrac = (((idx / 3) % 3) * 0.28f).coerceAtMost(0.75f)
             hudDao.insertWidget(
@@ -900,7 +902,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     displayType = displayType.name,
                     spanCols = spanCols,
                     spanRows = spanRows,
-                    sortOrder = idx,
+                    sortOrder = nextSortOrder,
                     freeformXFraction = xFrac,
                     freeformYFraction = yFrac
                 )
@@ -920,22 +922,19 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val idx = cycle.indexOf(cur)
         if (idx == -1) return
         val next = cycle[(idx + 1) % cycle.size]
-        viewModelScope.launch { hudDao.updateWidget(widget.copy(displayType = next.name)) }
+        updateWidgetDisplayType(widget, next)
     }
 
-    fun sizeOptionsForGrid(gridScale: HudGridScale): List<Pair<Int, Int>> = when (gridScale) {
-        HudGridScale.LARGE_6X3 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 3 to 3, 4 to 1, 6 to 2)
-        HudGridScale.STANDARD_8X4 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 4 to 2, 4 to 1)
-        HudGridScale.BALANCED_10X5 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 4 to 2, 5 to 3, 4 to 1)
-        HudGridScale.DYNAMIC_12X6 -> listOf(1 to 1, 2 to 1, 2 to 2, 3 to 2, 3 to 3, 4 to 2, 4 to 3, 6 to 2, 4 to 1)
+    fun updateWidgetDisplayType(widget: HudWidgetEntity, displayType: WidgetDisplayType) {
+        viewModelScope.launch { hudDao.updateWidget(widget.copy(displayType = displayType.name)) }
     }
 
-    fun cycleWidgetSize(widget: HudWidgetEntity) {
-        val order = sizeOptionsForGrid(settings.value.hudGridScale)
-        val idx = order.indexOf(widget.spanCols to widget.spanRows)
-        val next = order[(idx + 1) % order.size]
+    fun updateWidgetSize(widget: HudWidgetEntity, cols: Int, rows: Int) {
+        val scale = settings.value.hudGridScale
+        val clampedCols = cols.coerceIn(1, scale.cols)
+        val clampedRows = rows.coerceIn(1, scale.rows)
         viewModelScope.launch {
-            hudDao.updateWidget(widget.copy(spanCols = next.first, spanRows = next.second))
+            hudDao.updateWidget(widget.copy(spanCols = clampedCols, spanRows = clampedRows))
         }
     }
 
@@ -989,6 +988,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateConnectionSettings(host: String, port: Int, useSim: Boolean, dualCell: Boolean) {
         viewModelScope.launch {
+            if (settings.value.useSimulator && !useSim) {
+                locationTracker.clearTrail()
+            }
             prefs.updateWifiEndpoint(host, port)
             prefs.setUseSimulator(useSim)
             prefs.setDualCellularKeepalive(dualCell)
@@ -1082,7 +1084,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         listOf(
             SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
-            SensorCatalogItem("minimap", "Run & Nav Mini-Map", "Mini-Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("fuel_ctrl", "All Time KPL + Idle Pause", "KPL Ctrl", "FUEL", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Sprint Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
@@ -1141,7 +1143,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         listOf(
             SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
-            SensorCatalogItem("minimap", "Run & Nav Mini-Map", "Mini-Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("fuel_ctrl", "All Time KPL + Idle Pause", "KPL Ctrl", "FUEL", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
@@ -1188,11 +1190,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val cMin = UnitConverter.convert(minMetric, quantity, prefs, fuelType).first
         val cMax = UnitConverter.convert(maxMetric, quantity, prefs, fuelType).first
         return minOf(cMin, cMax) to maxOf(cMin, cMax)
-    }
-
-    fun openExternalNavigation(context: Context) {
-        val g = locationTracker.gps.value
-        LocationTracker.launchExternalNavigation(context, g.latitude, g.longitude)
     }
 
     private fun toInternalVolume(displayVal: Double, fuelType: FuelType, prefs: UnitPreferences): Double = when {

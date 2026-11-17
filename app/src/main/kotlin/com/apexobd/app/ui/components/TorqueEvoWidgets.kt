@@ -592,7 +592,6 @@ fun MiniMapWidget(
     activePmtilesPath: String? = null,
     isRecording: Boolean,
     onToggleRecord: () -> Unit,
-    onNavigateExternal: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -606,7 +605,7 @@ fun MiniMapWidget(
             mapProvider = mapProvider,
             latitude = gps.latitude,
             longitude = gps.longitude,
-            trail = gps.trail,
+            trail = if (isRecording) gps.trail else emptyList(),
             activePmtilesPath = activePmtilesPath,
             modifier = Modifier.fillMaxSize()
         )
@@ -637,19 +636,6 @@ fun MiniMapWidget(
                     .padding(horizontal = 9.dp, vertical = 3.dp)
             )
         }
-        Text(
-            text = "Navigate ↗",
-            fontSize = 10.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = TorqueEvoColors.ElectricBlue,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(8.dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Color(0xBF000000))
-                .clickable { onNavigateExternal() }
-                .padding(horizontal = 8.dp, vertical = 3.dp)
-        )
     }
 }
 

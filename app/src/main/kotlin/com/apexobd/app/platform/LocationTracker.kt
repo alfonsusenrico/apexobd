@@ -2,9 +2,7 @@ package com.apexobd.app.platform
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
 import android.location.Location
-import android.net.Uri
 import android.os.Looper
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -35,6 +33,7 @@ class LocationTracker(context: Context) {
     val gps: StateFlow<GpsSnapshot> = _gps.asStateFlow()
 
     private val trailBuffer = ArrayDeque<Pair<Double, Double>>(250)
+    private var trailWasSimulated = false
     private var simTick = 0.0
     private var updatesRunning = false
     private var currentIntervalMs = 500L
@@ -59,7 +58,7 @@ class LocationTracker(context: Context) {
                 }
             }
 
-            appendTrailIfMoved(loc.latitude, loc.longitude)
+            appendTrailPoint(loc.latitude, loc.longitude, simulated = false)
             _gps.value = GpsSnapshot(
                 latitude = loc.latitude,
                 longitude = loc.longitude,
@@ -102,7 +101,7 @@ class LocationTracker(context: Context) {
         simTick += 0.12
         val lat = -6.2088 + (simTick * 0.00018)
         val lon = 106.8456 + sin(simTick * 0.4) * 0.00025
-        appendTrailIfMoved(lat, lon)
+        appendTrailPoint(lat, lon, simulated = true)
         _gps.value = GpsSnapshot(
             latitude = lat,
             longitude = lon,
@@ -113,27 +112,37 @@ class LocationTracker(context: Context) {
         )
     }
 
-    private fun appendTrailIfMoved(lat: Double, lon: Double) {
+    fun clearTrail() {
+        trailBuffer.clear()
+        trailWasSimulated = false
+        _gps.value = _gps.value.copy(trail = emptyList())
+    }
+
+    private fun appendTrailPoint(lat: Double, lon: Double, simulated: Boolean) {
         val last = trailBuffer.lastOrNull()
-        if (last != null && abs(last.first - lat) < 0.000035 && abs(last.second - lon) < 0.000035) {
+        if (shouldResetTrail(last?.first, last?.second, lat, lon, trailWasSimulated, simulated)) {
+            trailBuffer.clear()
+        } else if (last != null && abs(last.first - lat) < 0.000035 && abs(last.second - lon) < 0.000035) {
             return
         }
+        trailWasSimulated = simulated
         if (trailBuffer.size >= 250) trailBuffer.removeFirst()
         trailBuffer.addLast(lat to lon)
     }
 
     companion object {
-        fun launchExternalNavigation(context: Context, lat: Double, lon: Double) {
-            val gmapsNav = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=$lat,$lon")).apply {
-                setPackage("com.google.android.apps.maps")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            val geoFallback = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$lat,$lon")).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            runCatching { context.startActivity(gmapsNav) }.onFailure {
-                runCatching { context.startActivity(geoFallback) }
-            }
+        /** Reset stale trails across sim/real source swaps or >~550 m GPS teleports so maps never draw straight cross-town beams. */
+        internal fun shouldResetTrail(
+            lastLat: Double?,
+            lastLon: Double?,
+            newLat: Double,
+            newLon: Double,
+            wasSimulated: Boolean,
+            nowSimulated: Boolean
+        ): Boolean {
+            if (lastLat == null || lastLon == null) return false
+            if (wasSimulated != nowSimulated) return true
+            return abs(lastLat - newLat) > 0.005 || abs(lastLon - newLon) > 0.005
         }
     }
 }

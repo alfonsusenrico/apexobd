@@ -23,7 +23,6 @@ private val Context.dataStore by preferencesDataStore(name = "apex_obd_prefs")
 
 enum class MapProvider(val label: String) {
     OFFLINE_MAPLIBRE("Offline Vector (MapLibre)"),
-    GOOGLE_MAPS("Google Maps (Online)"),
     TRACK_ONLY("Track Path Only (OLED)")
 }
 

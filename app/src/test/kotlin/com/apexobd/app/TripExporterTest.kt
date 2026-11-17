@@ -73,4 +73,20 @@ class TripExporterTest {
         assertTrue(styleJson.contains("\"source-layer\": \"streets\""))
         assertTrue(styleJson.contains("\"source-layer\": \"transportation\""))
     }
+
+    @Test
+    fun `LocationTracker resets map trail across simulated-to-real GPS switch and large teleports`() {
+        org.junit.Assert.assertFalse(
+            com.apexobd.app.platform.LocationTracker.shouldResetTrail(null, null, -6.20, 106.84, wasSimulated = false, nowSimulated = false)
+        )
+        org.junit.Assert.assertTrue(
+            com.apexobd.app.platform.LocationTracker.shouldResetTrail(-6.2088, 106.8456, -6.2085, 106.8458, wasSimulated = true, nowSimulated = false)
+        )
+        org.junit.Assert.assertTrue(
+            com.apexobd.app.platform.LocationTracker.shouldResetTrail(-6.2088, 106.8456, -6.1780, 106.6300, wasSimulated = false, nowSimulated = false)
+        )
+        org.junit.Assert.assertFalse(
+            com.apexobd.app.platform.LocationTracker.shouldResetTrail(-6.1780, 106.6300, -6.1782, 106.6303, wasSimulated = false, nowSimulated = false)
+        )
+    }
 }

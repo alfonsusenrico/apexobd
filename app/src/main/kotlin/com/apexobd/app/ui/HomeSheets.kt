@@ -59,7 +59,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.apexobd.app.BuildConfig
 import com.apexobd.app.data.db.RefuelLogEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
@@ -1191,7 +1190,7 @@ fun SettingsSheet(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Keep Mobile Data Active With Wi-Fi OBD", color = TorqueEvoColors.TextPrimary, fontSize = 13.sp)
-                    Text("Routes OBD over Wi-Fi while allowing Google Maps & apps via Cellular", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
+                    Text("Routes OBD over Wi-Fi while allowing cellular data for map tiles & other apps", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
                 }
                 Switch(checked = dualCell, onCheckedChange = { dualCell = it })
             }
@@ -1204,12 +1203,10 @@ fun SettingsSheet(
             Text("Map Provider", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 MapProvider.entries.forEach { mp ->
-                    val enabled = mp != MapProvider.GOOGLE_MAPS || BuildConfig.MAPS_API_KEY.isNotBlank()
                     ApexFilterChip(
                         selected = settings.mapProvider == mp,
-                        enabled = enabled,
                         onClick = { onSelectMapProvider(mp) },
-                        label = if (mp == MapProvider.GOOGLE_MAPS && !enabled) "Google Maps (No Key)" else mp.label,
+                        label = mp.label,
                         compact = true
                     )
                 }

@@ -40,21 +40,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.apexobd.app.BuildConfig
 import com.apexobd.app.data.prefs.MapProvider
 import com.apexobd.app.platform.OfflineMapManager
 import com.apexobd.app.ui.theme.TorqueEvoColors
-import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.CameraPosition
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.MapStyleOptions
-import com.google.maps.android.compose.GoogleMap
-import com.google.maps.android.compose.MapProperties
-import com.google.maps.android.compose.MapUiSettings
-import com.google.maps.android.compose.Polyline
-import com.google.maps.android.compose.rememberCameraPositionState
 import org.maplibre.android.MapLibre
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.maplibre.android.style.layers.CircleLayer
@@ -78,16 +69,10 @@ fun DualMapCanvas(
     activePmtilesPath: String? = null,
     interactive: Boolean = false
 ) {
-    when {
-        mapProvider == MapProvider.TRACK_ONLY -> {
-            VectorTrackFallback(latitude, longitude, trail, modifier)
-        }
-        mapProvider == MapProvider.GOOGLE_MAPS && BuildConfig.MAPS_API_KEY.isNotBlank() -> {
-            GoogleMapLayer(latitude, longitude, trail, interactive, modifier)
-        }
-        else -> {
-            MapLibreLayer(latitude, longitude, trail, activePmtilesPath, interactive, modifier)
-        }
+    if (mapProvider == MapProvider.TRACK_ONLY) {
+        VectorTrackFallback(latitude, longitude, trail, modifier)
+    } else {
+        MapLibreLayer(latitude, longitude, trail, activePmtilesPath, interactive, modifier)
     }
 }
 
@@ -139,9 +124,14 @@ private fun MapLibreLayer(
         activePmtilesPath?.takeIf { File(it).exists() }
     }
 
+    val interactiveRef = rememberUpdatedState(interactive)
     val mapView = remember {
         runCatching { MapLibre.getInstance(context.applicationContext) }
-        MapView(context).apply { onCreate(null) }
+        val options = MapLibreMapOptions.createFromAttributes(context).textureMode(true)
+        object : MapView(context, options) {
+            override fun dispatchTouchEvent(ev: MotionEvent): Boolean =
+                if (interactiveRef.value) super.dispatchTouchEvent(ev) else false
+        }.apply { onCreate(null) }
     }
 
     DisposableEffect(lifecycleOwner, mapView) {
@@ -428,61 +418,6 @@ private fun PickerZoomButton(symbol: String, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         Text(symbol, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-    }
-}
-
-@Composable
-private fun GoogleMapLayer(
-    latitude: Double,
-    longitude: Double,
-    trail: List<Pair<Double, Double>>,
-    interactive: Boolean,
-    modifier: Modifier
-) {
-    val cameraState = rememberCameraPositionState {
-        position = CameraPosition.fromLatLngZoom(LatLng(latitude, longitude), 15f)
-    }
-    LaunchedEffect(latitude, longitude) {
-        cameraState.animate(
-            CameraUpdateFactory.newLatLngZoom(LatLng(latitude, longitude), 15f),
-            durationMs = 350
-        )
-    }
-    val darkJson = remember {
-        """
-        [
-          {"elementType":"geometry","stylers":[{"color":"#080b10"}]},
-          {"elementType":"labels.text.fill","stylers":[{"color":"#5c677d"}]},
-          {"elementType":"labels.text.stroke","stylers":[{"color":"#080b10"}]},
-          {"featureType":"road","elementType":"geometry","stylers":[{"color":"#162233"}]},
-          {"featureType":"road.highway","elementType":"geometry","stylers":[{"color":"#1f3652"}]},
-          {"featureType":"water","elementType":"geometry","stylers":[{"color":"#04080f"}]}
-        ]
-        """.trimIndent()
-    }
-    GoogleMap(
-        modifier = modifier,
-        cameraPositionState = cameraState,
-        properties = MapProperties(
-            isMyLocationEnabled = false,
-            mapStyleOptions = MapStyleOptions(darkJson)
-        ),
-        uiSettings = MapUiSettings(
-            zoomControlsEnabled = false,
-            compassEnabled = false,
-            myLocationButtonEnabled = false,
-            scrollGesturesEnabled = interactive,
-            zoomGesturesEnabled = interactive,
-            mapToolbarEnabled = false
-        )
-    ) {
-        if (trail.size >= 2) {
-            Polyline(
-                points = trail.map { LatLng(it.first, it.second) },
-                color = TorqueEvoColors.ElectricBlue,
-                width = 8f
-            )
-        }
     }
 }
 
