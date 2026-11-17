@@ -14,7 +14,7 @@ The application SHALL separate Page 1 (`Home Menu` showing only static summary d
 - **THEN** that component is selected and its dedicated Edit Component menu opens directly with visual display type options (for numeric sensors), dynamic tile size (`1×1..cols×rows`), move/reorder actions, and component removal
 
 ### Requirement: Sensor-Landscape Lock & Dynamic Tile Sizing
-The HUD Canvas SHALL lock orientation to `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` while active and restore natural orientation on return to Home, SHALL allow dynamic tile resizing from `1×1` up to `cols×rows` in both Component Studio and the hold-component menu across Grid Snap scales (`6×3`, `8×4`, `10×5`, `12×6`) or Freeform XY layout, and SHALL support deleting non-sole vehicle profiles.
+The HUD Canvas SHALL lock to `SCREEN_ORIENTATION_SENSOR_LANDSCAPE` and restore natural orientation on return to Home, SHALL support dynamic tile sizing (`1×1..cols×rows`) across grid scales (`6×3`, `8×4`, `10×5`, `12×6`), SHALL support drag-and-drop onto arbitrary `(col, row)` tiles without left-to-right auto-compaction or onto freeform XY coordinates, and SHALL support vehicle profile deletion.
 
 #### Scenario: Filtering and dynamically sizing telemetry in Component Studio
 - **WHEN** the user opens `+ Add New Component` from the HUD Canvas context menu

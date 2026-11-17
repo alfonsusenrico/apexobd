@@ -64,6 +64,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -890,19 +891,24 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun addWidget(pageId: Long, sensorKey: String, displayType: WidgetDisplayType, spanCols: Int, spanRows: Int) {
         viewModelScope.launch {
+            val scale = settings.value.hudGridScale
             val existing = hudDao.getWidgetsForPage(pageId)
-            val idx = existing.size
             val nextSortOrder = (existing.maxOfOrNull { it.sortOrder } ?: -1) + 1
-            val xFrac = ((idx % 3) * 0.28f).coerceAtMost(0.75f)
-            val yFrac = (((idx / 3) % 3) * 0.28f).coerceAtMost(0.75f)
+            val sw = spanCols.coerceIn(1, scale.cols)
+            val sh = spanRows.coerceIn(1, scale.rows)
+            val (slotCol, slotRow) = findFirstFreeGridSlot(existing, scale.cols, scale.rows, sw, sh)
+            val xFrac = (slotCol.toFloat() / scale.cols.toFloat()).coerceIn(0f, 0.95f)
+            val yFrac = (slotRow.toFloat() / scale.rows.toFloat()).coerceIn(0f, 0.95f)
             hudDao.insertWidget(
                 HudWidgetEntity(
                     pageId = pageId,
                     sensorKey = sensorKey,
                     displayType = displayType.name,
-                    spanCols = spanCols,
-                    spanRows = spanRows,
+                    spanCols = sw,
+                    spanRows = sh,
                     sortOrder = nextSortOrder,
+                    gridCol = slotCol,
+                    gridRow = slotRow,
                     freeformXFraction = xFrac,
                     freeformYFraction = yFrac
                 )
@@ -933,31 +939,61 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val scale = settings.value.hudGridScale
         val clampedCols = cols.coerceIn(1, scale.cols)
         val clampedRows = rows.coerceIn(1, scale.rows)
-        viewModelScope.launch {
-            hudDao.updateWidget(widget.copy(spanCols = clampedCols, spanRows = clampedRows))
-        }
-    }
-
-    fun updateWidgetFreeformPosition(widget: HudWidgetEntity, xFrac: Float, yFrac: Float) {
+        val nextCol = if (widget.gridCol >= 0) widget.gridCol.coerceIn(0, (scale.cols - clampedCols).coerceAtLeast(0)) else widget.gridCol
+        val nextRow = if (widget.gridRow >= 0) widget.gridRow.coerceIn(0, (scale.rows - clampedRows).coerceAtLeast(0)) else widget.gridRow
         viewModelScope.launch {
             hudDao.updateWidget(
                 widget.copy(
-                    freeformXFraction = xFrac.coerceIn(0f, 0.85f),
-                    freeformYFraction = yFrac.coerceIn(0f, 0.85f)
+                    spanCols = clampedCols,
+                    spanRows = clampedRows,
+                    gridCol = nextCol,
+                    gridRow = nextRow
                 )
             )
         }
     }
 
-    fun moveWidget(pageId: Long, widgetId: Long, delta: Int) {
+    fun updateWidgetGridPosition(widget: HudWidgetEntity, col: Int, row: Int) {
+        val scale = settings.value.hudGridScale
+        val sw = widget.spanCols.coerceIn(1, scale.cols)
+        val sh = widget.spanRows.coerceIn(1, scale.rows)
+        val clampedCol = col.coerceIn(0, (scale.cols - sw).coerceAtLeast(0))
+        val clampedRow = row.coerceIn(0, (scale.rows - sh).coerceAtLeast(0))
         viewModelScope.launch {
-            val list = hudDao.getWidgetsForPage(pageId).toMutableList()
-            val idx = list.indexOfFirst { it.id == widgetId }
-            val target = idx + delta
-            if (idx == -1 || target !in list.indices) return@launch
-            val item = list.removeAt(idx)
-            list.add(target, item)
-            hudDao.updateWidgets(list.mapIndexed { i, w -> w.copy(sortOrder = i) })
+            hudDao.updateWidget(
+                widget.copy(
+                    gridCol = clampedCol,
+                    gridRow = clampedRow,
+                    freeformXFraction = (clampedCol.toFloat() / scale.cols.toFloat()).coerceIn(0f, 0.95f),
+                    freeformYFraction = (clampedRow.toFloat() / scale.rows.toFloat()).coerceIn(0f, 0.95f)
+                )
+            )
+        }
+    }
+
+    fun updateWidgetFreeformPosition(
+        widget: HudWidgetEntity,
+        xFrac: Float,
+        yFrac: Float,
+        maxXFrac: Float = 0.95f,
+        maxYFrac: Float = 0.95f
+    ) {
+        val scale = settings.value.hudGridScale
+        val sw = widget.spanCols.coerceIn(1, scale.cols)
+        val sh = widget.spanRows.coerceIn(1, scale.rows)
+        val clampedX = xFrac.coerceIn(0f, maxXFrac.coerceIn(0f, 1f))
+        val clampedY = yFrac.coerceIn(0f, maxYFrac.coerceIn(0f, 1f))
+        val nearestCol = (clampedX * scale.cols).roundToInt().coerceIn(0, (scale.cols - sw).coerceAtLeast(0))
+        val nearestRow = (clampedY * scale.rows).roundToInt().coerceIn(0, (scale.rows - sh).coerceAtLeast(0))
+        viewModelScope.launch {
+            hudDao.updateWidget(
+                widget.copy(
+                    freeformXFraction = clampedX,
+                    freeformYFraction = clampedY,
+                    gridCol = nearestCol,
+                    gridRow = nearestRow
+                )
+            )
         }
     }
 

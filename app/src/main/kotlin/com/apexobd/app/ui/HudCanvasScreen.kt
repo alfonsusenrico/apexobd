@@ -48,7 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.apexobd.app.data.db.HudWidgetEntity
 import com.apexobd.app.data.db.WidgetDisplayType
@@ -139,6 +140,7 @@ fun HudCanvasScreen(
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
 
     var editMode by remember { mutableStateOf(false) }
+    var isDraggingAny by remember { mutableStateOf(false) }
     var selectedWidgetId by remember { mutableStateOf<Long?>(null) }
     var editingWidgetId by remember { mutableStateOf<Long?>(null) }
     var showContextMenu by remember { mutableStateOf(false) }
@@ -162,6 +164,7 @@ fun HudCanvasScreen(
     }
 
     LaunchedEffect(editMode, pagerState.currentPage) {
+        if (!editMode) isDraggingAny = false
         selectedWidgetId = if (editMode) {
             pages.getOrNull(pagerState.currentPage)?.widgets?.firstOrNull()?.id
         } else {
@@ -198,11 +201,15 @@ fun HudCanvasScreen(
                         editingWidgetId = w.id
                     },
                     onSelectWidget = { w -> selectedWidgetId = w.id },
+                    onDraggingChanged = { dragging -> isDraggingAny = dragging },
+                    onCommitGridPos = { w, col, row -> viewModel.updateWidgetGridPosition(w, col, row) },
                     onToggleRecord = { viewModel.toggleRecording() },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
                     onReset0100 = { viewModel.reset0100Best() },
-                    onUpdateFreeformPos = { w, xf, yf -> viewModel.updateWidgetFreeformPosition(w, xf, yf) },
+                    onUpdateFreeformPos = { w, xf, yf, mxf, myf ->
+                        viewModel.updateWidgetFreeformPosition(w, xf, yf, mxf, myf)
+                    },
                     renderContextExtras = Triple(gps, diagReport, timer0100),
                     extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0))
                 )
@@ -243,6 +250,7 @@ fun HudCanvasScreen(
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .alpha(if (isDraggingAny) 0.25f else 1f)
                     .padding(horizontal = 12.dp, vertical = 10.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xF00D1016))
@@ -255,18 +263,18 @@ fun HudCanvasScreen(
                 Text(
                     text = selectedWidget?.let {
                         val meta = viewModel.catalogItemFor(it.sensorKey)
-                        "${meta.shortLabel} (${it.spanCols}×${it.spanRows})"
-                    } ?: "Tap a tile",
+                        "${meta.shortLabel} (${it.spanCols}×${it.spanRows}) · Drag tiles"
+                    } ?: "Drag tiles",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = TorqueEvoColors.ElectricBlue,
                     modifier = Modifier.padding(end = 4.dp)
                 )
+                EditActionPill(
+                    label = if (settings.gridSnapEnabled) "Snap: Tile" else "Snap: Free",
+                    tint = if (settings.gridSnapEnabled) TorqueEvoColors.SkyBlue else TorqueEvoColors.WarnAmber
+                ) { viewModel.toggleGridSnap() }
                 if (selectedWidget != null && currentPage != null) {
-                    if (settings.gridSnapEnabled) {
-                        EditActionPill("◀", Color.White) { viewModel.moveWidget(currentPage.page.id, selectedWidget.id, -1) }
-                        EditActionPill("▶", Color.White) { viewModel.moveWidget(currentPage.page.id, selectedWidget.id, +1) }
-                    }
                     if (canStyle) {
                         EditActionPill("◐ Style", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetDisplayType(selectedWidget) }
                     }
@@ -283,7 +291,7 @@ fun HudCanvasScreen(
             }
         }
 
-        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Move, Remove)
+        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Drag & Drop, Remove)
         val editingPage = pages.getOrNull(pagerState.currentPage)
         val editingWidget = editingWidgetId?.let { targetId ->
             editingPage?.widgets?.firstOrNull { it.id == targetId }
@@ -293,10 +301,8 @@ fun HudCanvasScreen(
                 widget = editingWidget,
                 widgetLabel = viewModel.catalogItemFor(editingWidget.sensorKey).label,
                 gridScale = settings.hudGridScale,
-                gridSnapEnabled = settings.gridSnapEnabled,
                 onSelectDisplayType = { dt -> viewModel.updateWidgetDisplayType(editingWidget, dt) },
                 onResize = { c, r -> viewModel.updateWidgetSize(editingWidget, c, r) },
-                onMoveOrder = { delta -> viewModel.moveWidget(editingPage.page.id, editingWidget.id, delta) },
                 onEnterMoveMode = {
                     editingWidgetId = null
                     selectedWidgetId = editingWidget.id
@@ -372,12 +378,12 @@ fun HudCanvasScreen(
                     showContextMenu = false
                     showComponentPicker = true
                 }
-                ContextMenuButton("Move / Edit Components: ${if (editMode) "On" else "Off"}") {
+                ContextMenuButton("Move / Drag Components: ${if (editMode) "On" else "Off"}") {
                     editMode = !editMode
                     showContextMenu = false
                 }
                 ContextMenuButton(
-                    "Grid Snap (${settings.hudGridScale.cols}×${settings.hudGridScale.rows}): ${if (settings.gridSnapEnabled) "On" else "Freeform"}"
+                    "Grid Snap (${settings.hudGridScale.cols}×${settings.hudGridScale.rows}): ${if (settings.gridSnapEnabled) "Snap to Tile" else "Freeform"}"
                 ) {
                     viewModel.toggleGridSnap()
                     showContextMenu = false
@@ -483,58 +489,13 @@ private fun rememberStationaryHoldModifier(
     }
 }
 
-private data class GridPlacement(
-    val widget: HudWidgetEntity,
+private data class SnapDragPreview(
+    val widgetId: Long,
     val col: Int,
     val row: Int,
     val spanCols: Int,
     val spanRows: Int
 )
-
-private fun packWidgetsIntoGrid(
-    widgets: List<HudWidgetEntity>,
-    cols: Int,
-    rows: Int
-): List<GridPlacement> {
-    val maxNeededRows = (rows * 3).coerceAtLeast(widgets.sumOf { it.spanRows.coerceIn(1, rows) } + rows)
-    val occupied = Array(maxNeededRows) { BooleanArray(cols) }
-    val out = mutableListOf<GridPlacement>()
-
-    for (w in widgets) {
-        val sw = w.spanCols.coerceIn(1, cols)
-        val sh = w.spanRows.coerceIn(1, rows)
-        var placed = false
-        for (r in 0 until occupied.size - sh + 1) {
-            for (c in 0..cols - sw) {
-                var fits = true
-                for (dr in 0 until sh) {
-                    for (dc in 0 until sw) {
-                        if (occupied[r + dr][c + dc]) {
-                            fits = false
-                            break
-                        }
-                    }
-                    if (!fits) break
-                }
-                if (fits) {
-                    for (dr in 0 until sh) {
-                        for (dc in 0 until sw) {
-                            occupied[r + dr][c + dc] = true
-                        }
-                    }
-                    out += GridPlacement(w, c, r, sw, sh)
-                    placed = true
-                    break
-                }
-            }
-            if (placed) break
-        }
-        if (!placed) {
-            out += GridPlacement(w, 0, (rows - sh).coerceAtLeast(0), sw, sh)
-        }
-    }
-    return out
-}
 
 @Composable
 private fun ProportionalHudPageCanvas(
@@ -550,15 +511,23 @@ private fun ProportionalHudPageCanvas(
     onLongPressCanvas: () -> Unit,
     onHoldWidget: (HudWidgetEntity) -> Unit,
     onSelectWidget: (HudWidgetEntity) -> Unit,
+    onDraggingChanged: (Boolean) -> Unit,
+    onCommitGridPos: (HudWidgetEntity, Int, Int) -> Unit,
     onToggleRecord: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
-    onUpdateFreeformPos: (HudWidgetEntity, Float, Float) -> Unit,
+    onUpdateFreeformPos: (HudWidgetEntity, Float, Float, Float, Float) -> Unit,
     renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
     extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>
 ) {
     val density = LocalDensity.current
+    var snapPreview by remember { mutableStateOf<SnapDragPreview?>(null) }
+
+    LaunchedEffect(editMode, gridSnap) {
+        if (!editMode || !gridSnap) snapPreview = null
+        if (!editMode) onDraggingChanged(false)
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -585,13 +554,13 @@ private fun ProportionalHudPageCanvas(
         val cellH = (availH - gap * (rows - 1)) / rows
         val availWPx = with(density) { availW.toPx() }
         val availHPx = with(density) { availH.toPx() }
+        val cellWPx = with(density) { cellW.toPx() }
+        val cellHPx = with(density) { cellH.toPx() }
+        val gapPx = with(density) { gap.toPx() }
 
         // Visual snap grid lines ONLY visible during Edit Mode + Grid Snap On
         if (editMode && gridSnap) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val cellWPx = cellW.toPx()
-                val cellHPx = cellH.toPx()
-                val gapPx = gap.toPx()
                 val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
@@ -605,6 +574,25 @@ private fun ProportionalHudPageCanvas(
                             style = Stroke(width = 1.dp.toPx(), pathEffect = dash)
                         )
                     }
+                }
+                snapPreview?.let { sp ->
+                    val targetX = sp.col * (cellWPx + gapPx)
+                    val targetY = sp.row * (cellHPx + gapPx)
+                    val targetW = cellWPx * sp.spanCols + gapPx * (sp.spanCols - 1)
+                    val targetH = cellHPx * sp.spanRows + gapPx * (sp.spanRows - 1)
+                    drawRoundRect(
+                        color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.16f),
+                        topLeft = Offset(targetX, targetY),
+                        size = Size(targetW, targetH),
+                        cornerRadius = CornerRadius(12.dp.toPx())
+                    )
+                    drawRoundRect(
+                        color = TorqueEvoColors.ElectricBlue,
+                        topLeft = Offset(targetX, targetY),
+                        size = Size(targetW, targetH),
+                        cornerRadius = CornerRadius(12.dp.toPx()),
+                        style = Stroke(width = 2.dp.toPx())
+                    )
                 }
             }
         }
@@ -622,7 +610,7 @@ private fun ProportionalHudPageCanvas(
                     color = Color(0x73FFFFFF)
                 )
                 Text(
-                    "Hold empty canvas for menu, or hold any component to edit / resize / remove",
+                    "Hold empty canvas for menu, or hold any component to edit / resize / move / remove",
                     fontSize = 12.sp,
                     color = Color(0x40FFFFFF),
                     textAlign = TextAlign.Center
@@ -630,93 +618,137 @@ private fun ProportionalHudPageCanvas(
             }
         }
 
-        val placements = remember(widgets, cols, rows, gridSnap) {
-            if (gridSnap) packWidgetsIntoGrid(widgets, cols, rows) else emptyList()
+        val placementMap = remember(widgets, cols, rows, gridSnap) {
+            if (gridSnap) resolveGridPlacements(widgets, cols, rows).associateBy { it.widget.id } else emptyMap()
         }
 
-        if (gridSnap) {
-            placements.forEach { slot ->
-                val w = slot.widget
-                val boxW = cellW * slot.spanCols + gap * (slot.spanCols - 1)
-                val boxH = cellH * slot.spanRows + gap * (slot.spanRows - 1)
-                val xOff = (cellW + gap) * slot.col
-                val yOff = (cellH + gap) * slot.row
+        widgets.forEach { w ->
+            key(w.id) {
+                val slot = placementMap[w.id]
+                val sw = (slot?.spanCols ?: w.spanCols).coerceIn(1, cols)
+                val sh = (slot?.spanRows ?: w.spanRows).coerceIn(1, rows)
+                val boxW = cellW * sw + gap * (sw - 1)
+                val boxH = cellH * sh + gap * (sh - 1)
+                val boxWPx = with(density) { boxW.toPx() }
+                val boxHPx = with(density) { boxH.toPx() }
+                val maxXPx = (availWPx - boxWPx).coerceAtLeast(0f)
+                val maxYPx = (availHPx - boxHPx).coerceAtLeast(0f)
+
+                val baseXPx = if (gridSnap && slot != null) {
+                    ((cellWPx + gapPx) * slot.col).coerceIn(0f, maxXPx)
+                } else {
+                    (w.freeformXFraction * availWPx).coerceIn(0f, maxXPx)
+                }
+                val baseYPx = if (gridSnap && slot != null) {
+                    ((cellHPx + gapPx) * slot.row).coerceIn(0f, maxYPx)
+                } else {
+                    (w.freeformYFraction * availHPx).coerceIn(0f, maxYPx)
+                }
+
+                var dragDelta by remember(w.id) { mutableStateOf(Offset.Zero) }
+                var isDraggingThis by remember(w.id) { mutableStateOf(false) }
+                var droppedOverride by remember(
+                    w.id,
+                    gridSnap,
+                    cols,
+                    rows,
+                    w.gridCol,
+                    w.gridRow,
+                    w.freeformXFraction,
+                    w.freeformYFraction,
+                    availWPx,
+                    availHPx
+                ) { mutableStateOf<Offset?>(null) }
+
+                val latestWidget by rememberUpdatedState(w)
+                val latestBaseX by rememberUpdatedState(droppedOverride?.x ?: baseXPx)
+                val latestBaseY by rememberUpdatedState(droppedOverride?.y ?: baseYPx)
+                val latestOnSelect by rememberUpdatedState(onSelectWidget)
+                val latestOnDragging by rememberUpdatedState(onDraggingChanged)
+                val latestOnCommitGrid by rememberUpdatedState(onCommitGridPos)
+                val latestOnUpdateFreeform by rememberUpdatedState(onUpdateFreeformPos)
+
+                val anchorX = droppedOverride?.x ?: baseXPx
+                val anchorY = droppedOverride?.y ?: baseYPx
+                val renderX = (anchorX + dragDelta.x).coerceIn(0f, maxXPx)
+                val renderY = (anchorY + dragDelta.y).coerceIn(0f, maxYPx)
 
                 Box(
                     modifier = Modifier
-                        .offset(x = xOff, y = yOff)
+                        .zIndex(if (isDraggingThis) 10f else 0f)
+                        .offset { IntOffset(renderX.roundToInt(), renderY.roundToInt()) }
                         .size(width = boxW, height = boxH)
                 ) {
                     HudWidgetSlotWrapper(
                         widgetId = w.id,
                         editMode = editMode,
                         isSelected = w.id == selectedWidgetId,
-                        onSelect = { onSelectWidget(w) },
-                        onHold = { onHoldWidget(w) }
-                    ) {
-                        RenderWidgetContent(
-                            widget = w,
-                            viewModel = viewModel,
-                            liveValues = liveValues,
-                            historyBuffers = historyBuffers,
-                            gps = renderContextExtras.first,
-                            diagReport = renderContextExtras.second,
-                            timer0100 = renderContextExtras.third,
-                            mapProvider = extraFlags.first,
-                            fuelPaused = extraFlags.second,
-                            isRecording = extraFlags.third.first,
-                            sampleCount = extraFlags.third.second,
-                            onToggleRecord = onToggleRecord,
-                            onToggleFuelPause = onToggleFuelPause,
-                            onScanDtc = onScanDtc,
-                            onReset0100 = onReset0100
-                        )
-                    }
-                }
-            }
-        } else {
-            widgets.forEach { w ->
-                val sw = w.spanCols.coerceIn(1, cols)
-                val sh = w.spanRows.coerceIn(1, rows)
-                val boxW = cellW * sw + gap * (sw - 1)
-                val boxH = cellH * sh + gap * (sh - 1)
-
-                var dragX by remember(w.id, w.freeformXFraction, availWPx) {
-                    mutableFloatStateOf(w.freeformXFraction * availWPx)
-                }
-                var dragY by remember(w.id, w.freeformYFraction, availHPx) {
-                    mutableFloatStateOf(w.freeformYFraction * availHPx)
-                }
-
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(dragX.roundToInt(), dragY.roundToInt()) }
-                        .size(width = boxW, height = boxH)
-                        .then(
-                            if (editMode) {
-                                Modifier.pointerInput(w.id, availWPx, availHPx) {
+                        isDragging = isDraggingThis,
+                        onHold = { onHoldWidget(latestWidget) },
+                        dragOverlayModifier = if (editMode) {
+                            Modifier
+                                .pointerInput(w.id) {
+                                    detectTapGestures(onTap = { latestOnSelect(latestWidget) })
+                                }
+                                .pointerInput(w.id, gridSnap, cols, rows, sw, sh, maxXPx, maxYPx, cellWPx, cellHPx, gapPx) {
+                                    val stepX = (cellWPx + gapPx).coerceAtLeast(1f)
+                                    val stepY = (cellHPx + gapPx).coerceAtLeast(1f)
                                     detectDragGestures(
+                                        onDragStart = {
+                                            latestOnSelect(latestWidget)
+                                            isDraggingThis = true
+                                            latestOnDragging(true)
+                                            if (gridSnap) {
+                                                val initCol = (latestBaseX / stepX).roundToInt().coerceIn(0, (cols - sw).coerceAtLeast(0))
+                                                val initRow = (latestBaseY / stepY).roundToInt().coerceIn(0, (rows - sh).coerceAtLeast(0))
+                                                snapPreview = SnapDragPreview(w.id, initCol, initRow, sw, sh)
+                                            }
+                                        },
                                         onDrag = { change, dragAmount ->
                                             change.consume()
-                                            dragX = (dragX + dragAmount.x).coerceIn(0f, (availWPx - 40f).coerceAtLeast(10f))
-                                            dragY = (dragY + dragAmount.y).coerceIn(0f, (availHPx - 40f).coerceAtLeast(10f))
+                                            val candidateX = (latestBaseX + dragDelta.x + dragAmount.x).coerceIn(0f, maxXPx)
+                                            val candidateY = (latestBaseY + dragDelta.y + dragAmount.y).coerceIn(0f, maxYPx)
+                                            dragDelta = Offset(candidateX - latestBaseX, candidateY - latestBaseY)
+                                            if (gridSnap) {
+                                                val targetCol = (candidateX / stepX).roundToInt().coerceIn(0, (cols - sw).coerceAtLeast(0))
+                                                val targetRow = (candidateY / stepY).roundToInt().coerceIn(0, (rows - sh).coerceAtLeast(0))
+                                                snapPreview = SnapDragPreview(w.id, targetCol, targetRow, sw, sh)
+                                            }
                                         },
                                         onDragEnd = {
-                                            if (availWPx > 1f && availHPx > 1f) {
-                                                onUpdateFreeformPos(w, dragX / availWPx, dragY / availHPx)
+                                            val finalX = (latestBaseX + dragDelta.x).coerceIn(0f, maxXPx)
+                                            val finalY = (latestBaseY + dragDelta.y).coerceIn(0f, maxYPx)
+                                            if (gridSnap) {
+                                                val targetCol = (finalX / stepX).roundToInt().coerceIn(0, (cols - sw).coerceAtLeast(0))
+                                                val targetRow = (finalY / stepY).roundToInt().coerceIn(0, (rows - sh).coerceAtLeast(0))
+                                                val snappedX = (stepX * targetCol).coerceIn(0f, maxXPx)
+                                                val snappedY = (stepY * targetRow).coerceIn(0f, maxYPx)
+                                                droppedOverride = Offset(snappedX, snappedY)
+                                                latestOnCommitGrid(latestWidget, targetCol, targetRow)
+                                            } else if (availWPx > 1f && availHPx > 1f) {
+                                                droppedOverride = Offset(finalX, finalY)
+                                                latestOnUpdateFreeform(
+                                                    latestWidget,
+                                                    finalX / availWPx,
+                                                    finalY / availHPx,
+                                                    maxXPx / availWPx,
+                                                    maxYPx / availHPx
+                                                )
                                             }
+                                            dragDelta = Offset.Zero
+                                            isDraggingThis = false
+                                            snapPreview = null
+                                            latestOnDragging(false)
+                                        },
+                                        onDragCancel = {
+                                            dragDelta = Offset.Zero
+                                            isDraggingThis = false
+                                            snapPreview = null
+                                            latestOnDragging(false)
                                         }
                                     )
                                 }
-                            } else Modifier
-                        )
-                ) {
-                    HudWidgetSlotWrapper(
-                        widgetId = w.id,
-                        editMode = editMode,
-                        isSelected = w.id == selectedWidgetId,
-                        onSelect = { onSelectWidget(w) },
-                        onHold = { onHoldWidget(w) }
+                        } else Modifier
                     ) {
                         RenderWidgetContent(
                             widget = w,
@@ -747,11 +779,13 @@ private fun HudWidgetSlotWrapper(
     widgetId: Long,
     editMode: Boolean,
     isSelected: Boolean,
-    onSelect: () -> Unit,
+    isDragging: Boolean,
+    dragOverlayModifier: Modifier,
     onHold: () -> Unit,
     content: @Composable () -> Unit
 ) {
     val borderColor = when {
+        isDragging -> TorqueEvoColors.ElectricBlue
         isSelected -> TorqueEvoColors.ElectricBlue
         else -> TorqueEvoColors.ElectricBlue.copy(alpha = 0.35f)
     }
@@ -763,8 +797,8 @@ private fun HudWidgetSlotWrapper(
                 if (editMode) {
                     Modifier
                         .clip(RoundedCornerShape(12.dp))
-                        .background(if (isSelected) Color(0x1600A8FF) else Color(0x0600A8FF))
-                        .border(if (isSelected) 2.dp else 1.dp, borderColor, RoundedCornerShape(12.dp))
+                        .background(if (isSelected || isDragging) Color(0x2200A8FF) else Color(0x0800A8FF))
+                        .border(if (isSelected || isDragging) 2.dp else 1.dp, borderColor, RoundedCornerShape(12.dp))
                 } else holdModifier
             )
     ) {
@@ -773,7 +807,7 @@ private fun HudWidgetSlotWrapper(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .clickable { onSelect() }
+                    .then(dragOverlayModifier)
             )
         }
     }
@@ -1098,10 +1132,8 @@ private fun ComponentEditDialog(
     widget: HudWidgetEntity,
     widgetLabel: String,
     gridScale: HudGridScale,
-    gridSnapEnabled: Boolean,
     onSelectDisplayType: (WidgetDisplayType) -> Unit,
     onResize: (Int, Int) -> Unit,
-    onMoveOrder: (Int) -> Unit,
     onEnterMoveMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
     onRemove: () -> Unit,
@@ -1206,11 +1238,7 @@ private fun ComponentEditDialog(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                if (gridSnapEnabled) {
-                    EditActionPill("◀ Earlier", Color.White) { onMoveOrder(-1) }
-                    EditActionPill("▶ Later", Color.White) { onMoveOrder(+1) }
-                }
-                EditActionPill("Drag / Move Mode", TorqueEvoColors.SkyBlue) { onEnterMoveMode() }
+                EditActionPill("Drag & Drop", TorqueEvoColors.SkyBlue) { onEnterMoveMode() }
                 EditActionPill("Canvas Menu", TorqueEvoColors.TextSecondary) { onOpenCanvasMenu() }
                 EditActionPill("Remove Component", TorqueEvoColors.CriticalRed) { onRemove() }
             }

@@ -136,6 +136,8 @@ data class HudWidgetEntity(
     val spanCols: Int,
     val spanRows: Int,
     val sortOrder: Int,
+    val gridCol: Int = -1,
+    val gridRow: Int = -1,
     val freeformXFraction: Float = 0.04f,
     val freeformYFraction: Float = 0.06f,
     val warnThreshold: Double? = null,
@@ -313,7 +315,7 @@ interface TripDao {
         TripSessionEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -396,6 +398,13 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE hud_widgets ADD COLUMN gridCol INTEGER NOT NULL DEFAULT -1")
+                db.execSQL("ALTER TABLE hud_widgets ADD COLUMN gridRow INTEGER NOT NULL DEFAULT -1")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -405,7 +414,7 @@ abstract class ApexDatabase : RoomDatabase() {
         private fun buildDatabase(context: Context): ApexDatabase {
             lateinit var db: ApexDatabase
             db = Room.databaseBuilder(context, ApexDatabase::class.java, "apex_obd.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
                         super.onCreate(sqliteDb)
