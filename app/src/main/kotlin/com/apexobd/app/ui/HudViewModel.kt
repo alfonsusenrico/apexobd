@@ -21,6 +21,7 @@ import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.TorqueCsvImporter
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.DtcDecoder
+import com.apexobd.core.protocol.EcuDiscoveryDumper
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.scheduler.ObdPollingEngine
@@ -40,6 +41,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -73,6 +76,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private var engine: ObdPollingEngine? = null
     private var loggingJob: Job? = null
     private val timer0100Tracker = Timer0100Tracker()
+    private val transportMutex = Mutex()
+    @Volatile
+    private var suppressAutoConnect = false
 
     val settings: StateFlow<UserSettings> = prefs.settings.stateIn(
         viewModelScope,
@@ -135,7 +141,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         locationTracker.startUpdates(highFrequency = true)
         viewModelScope.launch {
             val initial = prefs.settings.first()
-            reconnectTransport(initial)
+            if (!suppressAutoConnect) {
+                reconnectTransport(initial)
+            }
         }
         viewModelScope.launch {
             customPids.collect { list ->
@@ -193,7 +201,38 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun reconnectTransport(s: UserSettings) {
+    fun runDeepEcuDump(host: String = "192.168.0.10", port: Int = 35000) {
+        suppressAutoConnect = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val dumpText = transportMutex.withLock {
+                engine?.stop()
+                delay(200L)
+                val transport = WifiTcpTransport(
+                    host = host,
+                    port = port,
+                    socketFactoryProvider = { wifiBinder.socketFactory() }
+                )
+                try {
+                    transport.connect()
+                    EcuDiscoveryDumper.runFullReadOnlyScan(transport)
+                } catch (t: Throwable) {
+                    "DEEP ECU SCAN ERROR: ${t.message}\n${t.stackTraceToString()}"
+                } finally {
+                    runCatching { transport.disconnect() }
+                }
+            }
+            val app = getApplication<Application>()
+            java.io.File(app.filesDir, "ecu_dump.txt").writeText(dumpText)
+            android.util.Log.i("ApexECU", dumpText)
+
+            suppressAutoConnect = false
+            prefs.updateWifiEndpoint(host, port)
+            prefs.setUseSimulator(false)
+            reconnectTransport(settings.value.copy(wifiHost = host, wifiPort = port, useSimulator = false))
+        }
+    }
+
+    private suspend fun reconnectTransport(s: UserSettings) = transportMutex.withLock {
         engine?.stop()
         val transport = if (s.useSimulator) {
             SimulatedObdTransport()

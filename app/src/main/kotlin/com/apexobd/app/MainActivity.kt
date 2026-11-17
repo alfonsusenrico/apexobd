@@ -50,6 +50,13 @@ class MainActivity : ComponentActivity() {
         }.toTypedArray()
         permissionLauncher.launch(perms)
 
+        if (intent?.getBooleanExtra("run_ecu_dump", false) == true) {
+            viewModel.runDeepEcuDump(
+                host = intent.getStringExtra("wifi_host") ?: "192.168.0.10",
+                port = intent.getIntExtra("wifi_port", 35000)
+            )
+        }
+
         setContent {
             TorqueEvoTheme {
                 HudCanvasScreen(viewModel = viewModel)

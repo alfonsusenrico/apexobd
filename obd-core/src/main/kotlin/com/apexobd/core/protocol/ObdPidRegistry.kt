@@ -163,6 +163,9 @@ object ObdPidRegistry {
         pid("14", "o2_b1s1_v", "O2 Sensor 1 Voltage", "O2 B1S1", "V", 0.0, 1.275, PidCategory.EMISSIONS_O2) { b ->
             b.getOrNull(0)?.let { it / 200.0 }
         },
+        pid("14", "o2_b1s1_stft", "O2 Sensor 1 Fuel Trim", "O2 Trim", "%", -100.0, 99.2, PidCategory.EMISSIONS_O2) { b ->
+            b.getOrNull(1)?.takeIf { it != 0xFF }?.let { (it - 128.0) * 100.0 / 128.0 }
+        },
         pid("15", "o2_b1s2_v", "O2 Sensor 2 Voltage", "O2 B1S2", "V", 0.0, 1.275, PidCategory.EMISSIONS_O2) { b ->
             b.getOrNull(0)?.let { it / 200.0 }
         },
@@ -186,7 +189,7 @@ object ObdPidRegistry {
     )
 
     private val byKey: Map<String, PidDefinition> = standardPids.associateBy { it.key }
-    private val byPidHex: Map<String, PidDefinition> = standardPids.associateBy { it.pidHex }
+    private val byPidHexGroup: Map<String, List<PidDefinition>> = standardPids.groupBy { it.pidHex }
 
     private val twoBytePids = setOf("0C", "10", "1F", "21", "22", "23", "31", "3C", "3E", "42", "43", "44", "4D", "4E", "59", "5E", "63")
     private val fourBytePids = setOf("A4")
@@ -198,7 +201,7 @@ object ObdPidRegistry {
     }
 
     fun findByKey(key: String): PidDefinition? = byKey[key]
-    fun findByPidHex(pidHex: String): PidDefinition? = byPidHex[pidHex.uppercase()]
+    fun findByPidHex(pidHex: String): PidDefinition? = byPidHexGroup[pidHex.uppercase()]?.firstOrNull()
 
     /**
      * Queries `0100`, `0120`, `0140`, `0160`, `0180`, `01A0` sequentially, stopping when
@@ -242,17 +245,16 @@ object ObdPidRegistry {
         return out
     }
 
-    fun decodeMode01Response(pidHex: String, lines: List<String>): DecodedReading? {
-        val def = findByPidHex(pidHex) ?: return null
-        val pidInt = pidHex.toIntOrNull(16) ?: return null
-        val payload = Elm327Client.extractPidPayload(lines, 0x41, pidInt) ?: return null
-        val value = def.decoder(payload) ?: return null
-        return DecodedReading(
-            key = def.key,
-            pidHex = def.pidHex,
-            value = value,
-            unit = def.unit
-        )
+    fun decodeMode01Response(pidHex: String, lines: List<String>): DecodedReading? =
+        decodeAllMode01Responses(pidHex, lines).firstOrNull()
+
+    fun decodeAllMode01Responses(pidHex: String, lines: List<String>): List<DecodedReading> {
+        val defs = byPidHexGroup[pidHex.uppercase()] ?: return emptyList()
+        val pidInt = pidHex.toIntOrNull(16) ?: return emptyList()
+        val payload = Elm327Client.extractPidPayload(lines, 0x41, pidInt) ?: return emptyList()
+        return defs.mapNotNull { def ->
+            def.decoder(payload)?.let { DecodedReading(def.key, def.pidHex, it, def.unit) }
+        }
     }
 
     /**
@@ -273,9 +275,11 @@ object ObdPidRegistry {
             if (i + len > bytes.size) break
             val slice = bytes.subList(i, i + len)
             i += len
-            val def = findByPidHex(pidHex) ?: continue
-            val value = def.decoder(slice) ?: continue
-            out += DecodedReading(def.key, def.pidHex, value, def.unit)
+            val defs = byPidHexGroup[pidHex] ?: continue
+            for (def in defs) {
+                val value = def.decoder(slice) ?: continue
+                out += DecodedReading(def.key, def.pidHex, value, def.unit)
+            }
         }
         return out
     }

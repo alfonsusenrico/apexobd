@@ -63,4 +63,11 @@ class ObdPidRegistryTest {
         assertEquals(50.19, byKey["throttle"]!!.value, 0.1)
         assertEquals(28.4, byKey["maf"]!!.value, 0.01)
     }
+
+    @Test
+    fun `decodeAllMode01Responses extracts both O2 voltage and fuel trim from 0114`() {
+        val readings = ObdPidRegistry.decodeAllMode01Responses("14", listOf("41140C9B")).associateBy { it.key }
+        assertEquals(0.06, readings["o2_b1s1_v"]!!.value, 0.001)
+        assertEquals(21.09, readings["o2_b1s1_stft"]!!.value, 0.05)
+    }
 }

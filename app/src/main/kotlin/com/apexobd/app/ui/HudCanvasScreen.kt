@@ -279,6 +279,7 @@ fun HudCanvasScreen(viewModel: HudViewModel) {
             ) {
                 ComponentPickerSheetContent(
                     catalog = viewModel.fullCatalog(),
+                    supportedPids = supportedPids,
                     onAdd = { sensorKey, displayType, cols, rows ->
                         viewModel.addWidget(currentPageId, sensorKey, displayType, cols, rows)
                         showPicker = false
@@ -312,6 +313,7 @@ fun HudCanvasScreen(viewModel: HudViewModel) {
 @Composable
 private fun ComponentPickerSheetContent(
     catalog: List<SensorCatalogItem>,
+    supportedPids: Set<String>,
     onAdd: (String, WidgetDisplayType, Int, Int) -> Unit
 ) {
     var selectedSensor by remember { mutableStateOf(catalog.first()) }
@@ -349,7 +351,13 @@ private fun ComponentPickerSheetContent(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(item.label, fontSize = 13.sp, color = if (isSel) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextPrimary)
-                    Text(item.pidLabel, fontSize = 11.sp, color = TorqueEvoColors.TextSecondary)
+                    val isSupported = !item.pidLabel.startsWith("01") || item.pidLabel.removePrefix("01") in supportedPids
+                    val tagText = if (supportedPids.isNotEmpty() && isSupported) "✓ ${item.pidLabel}" else item.pidLabel
+                    Text(
+                        text = tagText,
+                        fontSize = 11.sp,
+                        color = if (supportedPids.isNotEmpty() && isSupported) TorqueEvoColors.NominalGreen else TorqueEvoColors.TextSecondary
+                    )
                 }
             }
         }

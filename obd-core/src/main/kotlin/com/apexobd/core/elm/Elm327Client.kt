@@ -1,6 +1,7 @@
 package com.apexobd.core.elm
 
 import com.apexobd.core.transport.ObdTransport
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -18,8 +19,8 @@ data class ElmHandshakeInfo(
 )
 
 /**
- * Thread-safe, low-latency ELM327 command processor.
- * Uses aggressive adaptive timing (`ATAT2`) and trimmed timeout (`ATST19` = 100ms)
+ * Thread-safe ELM327 command processor.
+ * Uses reliable adaptive timing (`ATAT1`) compatible with ELM327 v1.5 Wi-Fi adapters
  * while synchronizing every command via a [Mutex].
  */
 class Elm327Client(
@@ -27,25 +28,30 @@ class Elm327Client(
 ) {
     private val commandMutex = Mutex()
 
-    suspend fun initialize(aggressiveTiming: Boolean = true): ElmHandshakeInfo = commandMutex.withLock {
-        val resetResp = transport.sendCommand("ATZ", timeoutMs = 2500L).trim()
+    suspend fun initialize(aggressiveTiming: Boolean = false): ElmHandshakeInfo = commandMutex.withLock {
+        val resetResp = transport.sendCommand("ATZ", timeoutMs = 3500L).trim()
         val version = resetResp.lines().lastOrNull { it.isNotBlank() }?.trim() ?: "ELM327"
+        // Give ELM327 v1.5 Wi-Fi UART bridges a brief settle window after reset
+        delay(300L)
 
-        val initCommands = buildList {
-            add("ATE0")   // Echo off
-            add("ATL0")   // Linefeeds off
-            add("ATS0")   // Spaces off (reduces UART/Wi-Fi bytes by ~33%)
-            add(if (aggressiveTiming) "ATAT2" else "ATAT1")
-            add("ATST19") // 25 * 4ms = 100ms max response timeout (cuts dead-wait latency)
-            add("ATSP0")  // Auto-detect vehicle protocol
-        }
+        val initCommands = listOf(
+            "ATE0",  // Echo off
+            "ATL0",  // Linefeeds off
+            "ATS0",  // Spaces off (cuts Wi-Fi/UART payload bytes)
+            if (aggressiveTiming) "ATAT2" else "ATAT1",
+            "ATSP0"  // Auto-detect vehicle protocol
+        )
         for (at in initCommands) {
-            transport.sendCommand(at, timeoutMs = 1200L)
+            transport.sendCommand(at, timeoutMs = 2000L)
         }
 
-        val protoName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1200L))
+        // Trigger auto-protocol search on the vehicle bus before reading ATDP/ATDPN,
+        // because ELM327 reports "AUTO" (A0) until the first OBD frame is exchanged.
+        runCatching { transport.sendCommand("0100", timeoutMs = 3000L) }
+
+        val protoName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1500L), "ATDP")
             .firstOrNull() ?: "Auto"
-        val protoCode = cleanLines(transport.sendCommand("ATDPN", timeoutMs = 1200L))
+        val protoCode = cleanLines(transport.sendCommand("ATDPN", timeoutMs = 1500L), "ATDPN")
             .firstOrNull()?.uppercase() ?: "0"
 
         val isCan = protoCode.lastOrNull() in listOf('6', '7', '8', '9', 'A', 'B', 'C') ||
@@ -60,9 +66,9 @@ class Elm327Client(
         )
     }
 
-    suspend fun execute(command: String, timeoutMs: Long = 1600L): ObdCommandResult = commandMutex.withLock {
+    suspend fun execute(command: String, timeoutMs: Long = 2000L): ObdCommandResult = commandMutex.withLock {
         val raw = transport.sendCommand(command, timeoutMs)
-        val lines = cleanLines(raw)
+        val lines = cleanLines(raw, command)
         if (lines.isEmpty()) {
             return@withLock ObdCommandResult.NoData("Empty response")
         }
@@ -78,11 +84,16 @@ class Elm327Client(
     }
 
     companion object {
-        fun cleanLines(raw: String): List<String> {
+        fun cleanLines(raw: String, sentCommand: String? = null): List<String> {
+            val trimmedCmd = sentCommand?.trim()
             return raw.replace("\r", "\n")
                 .lines()
                 .map { it.trim() }
-                .filter { it.isNotBlank() && !it.equals("SEARCHING...", ignoreCase = true) }
+                .filter { line ->
+                    line.isNotBlank() &&
+                        !line.equals("SEARCHING...", ignoreCase = true) &&
+                        (trimmedCmd == null || !line.equals(trimmedCmd, ignoreCase = true))
+                }
         }
 
         fun parseHexBytes(line: String): List<Int> {
@@ -96,10 +107,6 @@ class Elm327Client(
             return out
         }
 
-        /**
-         * Reassembles ISO-TP multi-frame or single-frame Mode 01/02 byte streams.
-         * Strips frame length headers (like "00B") and sequence prefixes ("0:", "1:").
-         */
         fun flattenIsoTpBytes(lines: List<String>): List<Int> {
             val hasMultiFramePrefix = lines.any { it.contains(":") }
             if (!hasMultiFramePrefix) {

@@ -227,6 +227,7 @@ class ObdPollingEngine(
 
             val standardTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
+                .distinctBy { it.pidHex }
                 .filter { discovered.isEmpty() || it.pidHex in discovered }
                 .filter { it.defaultTier == PollTier.HIGH || cycle % profile.slowPollEveryNCycles == 0 }
 
@@ -340,9 +341,11 @@ class ObdPollingEngine(
         val res = client.execute(cmd)
         val rtt = System.currentTimeMillis() - t0
         if (res is ObdCommandResult.Success) {
-            val decoded = ObdPidRegistry.decodeMode01Response(pid.pidHex, res.lines)
-            if (decoded != null) {
-                values[decoded.key] = decoded.value
+            val decodedList = ObdPidRegistry.decodeAllMode01Responses(pid.pidHex, res.lines)
+            if (decodedList.isNotEmpty()) {
+                for (decoded in decodedList) {
+                    values[decoded.key] = decoded.value
+                }
                 return true to rtt
             }
         }
