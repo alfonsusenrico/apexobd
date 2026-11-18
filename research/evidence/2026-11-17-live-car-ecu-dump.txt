@@ -1,0 +1,87 @@
+=== APEXOBD READ-ONLY DEEP ECU DISCOVERY ===
+Endpoint: 192.168.0.10:35000
+Adapter ATZ: OBDII  v1.5
+Protocol ATDP: AUTO, ISO 15765-4 (CAN 11/500) (ATDPN=A6, isCan=true)
+ATI -> OBDII  v1.5
+AT@1 -> OBDII to RS232 Interpreter
+ATRV -> 13.0V
+
+--- ECU ADDRESS DISCOVERY (ATH1 + 0100) ---
+0100 (ATH1) -> 7E80641001E3F9001
+0120 (ATH1) -> 7E806412000042001
+0140 (ATH1) -> 7E806414048000001
+0160 (ATH1) -> 7E806416000000001
+0180 (ATH1) -> 7E806418000000001
+01A0 (ATH1) -> 7E80641A000000001
+
+--- MODE 01 SUPPORTED PIDS & LIVE VALUES ---
+Supported Mode 01 PIDs (22): 04, 05, 06, 07, 0B, 0C, 0D, 0E, 0F, 10, 11, 14, 20, 2E, 33, 40, 42, 45, 60, 80, A0, C0
+PID 0104 [Calculated Engine Load (engine_load)] (45ms) -> 410427 | decoded=15.294 %
+PID 0105 [Engine Coolant Temp (coolant)] (43ms) -> 41057C | decoded=84.000 °C
+PID 0106 [Short Term Fuel Trim B1 (stft_b1)] (44ms) -> 410685 | decoded=3.906 %
+PID 0107 [Long Term Fuel Trim B1 (ltft_b1)] (44ms) -> 41077D | decoded=-2.344 %
+PID 010B [Intake Manifold Pressure (map)] (46ms) -> 410B1D | decoded=29.000 kPa
+PID 010C [Engine RPM (rpm)] (146ms) -> 410C0C2E | decoded=779.500 RPM
+PID 010D [Vehicle Speed (OBD) (obd_speed)] (149ms) -> 410D00 | decoded=0.000 km/h
+PID 010E [Timing Advance (timing_advance)] (154ms) -> 410E8F | decoded=7.500 °
+PID 010F [Intake Air Temp (IAT) (iat)] (50ms) -> 410F6D | decoded=69.000 °C
+PID 0110 [Intake Air Flow (MAF) (maf)] (48ms) -> 4110009D | decoded=1.570 g/s
+PID 0111 [Throttle Position (throttle)] (43ms) -> 41111B | decoded=10.588 %
+PID 0114 [O2 Sensor 1 Voltage (o2_b1s1_v)] (49ms) -> 41140C9B | decoded=0.060 V
+PID 012E [Commanded Evap Purge (evap_purge)] (47ms) -> 412E00 | decoded=0.000 %
+PID 0133 [Barometric Pressure (baro)] (46ms) -> 413364 | decoded=100.000 kPa
+PID 0142 [Control Module Voltage (voltage)] (48ms) -> 41423652 | decoded=13.906 V
+PID 0145 [Relative Throttle Pos (rel_throttle)] (45ms) -> 414500 | decoded=0.000 %
+
+--- PERFORMANCE BENCHMARK ---
+Multi-PID 010C0D1011 (287ms) -> NO DATA | decodedCount=0
+Multi-PID 0104050E0F (346ms) -> NO DATA
+Single-PID 010C1 (147ms) -> 410C0C34
+
+--- MODE 02 FREEZE FRAME ---
+0200 -> NO DATA
+0202 -> NO DATA
+0204 -> NO DATA
+0205 -> NO DATA
+0206 -> NO DATA
+020C -> NO DATA
+020D -> NO DATA
+020F -> NO DATA
+0210 -> NO DATA
+0211 -> NO DATA
+
+--- MODES 03 / 07 / 0A DTCS ---
+03 Raw -> NO DATA
+07 Raw -> 4700
+0A Raw -> NO DATA
+Decoded Confirmed=[], Pending=[], Permanent=[]
+Readiness -> null
+
+--- MODE 06 ON-BOARD MONITORS ---
+0600 -> NO DATA
+
+--- MODE 09 VEHICLE INFO ---
+0900 -> NO DATA
+0902 -> NO DATA
+0904 -> NO DATA
+0906 -> NO DATA
+090A -> NO DATA
+Parsed VIN -> null
+
+--- READ-ONLY MODE 22 & MODE 21 PROBE ---
+22F190 -> 7F2211
+22F187 -> 7F2211
+22F40C -> 7F2211
+7E0 2100 -> 61001E3F9001
+7E0 2101 -> NO DATA
+7E0 2102 -> NO DATA
+7E0 2103 -> NO DATA
+7E0 2104 -> 61043F
+7E0 2110 -> 61100122
+7E0 2120 -> 61200005A001
+7E0 2130 -> 6130FF
+7E1 0100 -> NO DATA
+7E1 2101 -> NO DATA
+7E1 221E1C -> NO DATA
+
+=== SCAN COMPLETE in 33899ms ===

@@ -11,5 +11,5 @@ Android-only OBD-II HUD, diagnostics, data logging, and GPS trip tracking applic
 
 ## Rules
 - Keep `PROJECT_STATE.md` and `JOURNAL.md` local and untracked.
-- Never hardcode Google Maps API keys or secrets; read `MAPS_API_KEY` from `local.properties` / `secrets.properties` (`BuildConfig`).
-- Driving HUD pages must remain zero-navigation-chrome (`HorizontalPager` across user-built pages).
+- Default to free MapLibre offline/vector maps (`OpenFreeMap` + `.pmtiles`) and `OLED Track Only` mode with zero Google Maps API keys or external navigation dependencies.
+- Keep the 2-page architecture: Page 1 static/summary Home Menu (no live polling while idle on Home) and Page 2 zero-navigation-chrome `#000000` blank-default HUD Canvas (`HorizontalPager` with hold-tap context and component edit menus).

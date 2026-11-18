@@ -1,5 +1,6 @@
 # Gradle & Android
 .gradle/
+.kotlin/
 build/
 */build/
 local.properties
@@ -19,6 +20,7 @@ captures/
 # Local continuity & secrets
 PROJECT_STATE.md
 JOURNAL.md
+research/prototypes/ui-layout-options/
 .env
 *.keystore
 *.jks
