@@ -1,25 +1,22 @@
-# ApexOBD (Torque Evo)
+# ApexOBD
 
-Android Kotlin + Jetpack Compose OBD-II HUD, diagnostics, data logging, and GPS trip tracking app.
+Android Kotlin + Jetpack Compose OBD-II HUD, diagnostics, data logging, and GPS trip tracking application.
 
 ## Key Features
-- **Torque Evo HUD Canvas:** Pure `#000000` OLED + `#00A8FF` electric blue borderless gauges across `N` swipeable dynamic pages (`HorizontalPager`) with zero persistent navigation chrome while driving.
-- **Dynamic Component Builder:** Add any Mode `01`, GPS, calculated (`HP`, `Torque`, `Boost`), or UDS Mode `22` sensor in `Analog Dial`, `Semi-Digital`, `Digital`, `Bar`, or `Chart` style (`1x1`, `2x1`, `2x2`), reorder/resize/morph in Edit Mode, and add/delete custom pages.
-- **Google Mini-Map & HUD Mirror:** Live GPS mini-map widget (uses Google Maps Compose when `MAPS_API_KEY` is configured in `local.properties`, with an automatic dark vector GPS trail fallback otherwise) and horizontal `HUD Mirror Mode`.
-- **Wi-Fi ELM327 + Simulator:** Connects to `192.168.0.10:35000` bound directly to the Android Wi-Fi `Network` (even when cellular data is on), plus a built-in `SimulatedObdTransport` for offline testing.
-- **Full Diagnostics & Logging:** Modes `01`–`0A`, Freeze Frame (`02`), DTC scan & safe Mode `04` clear, VIN (`09`), UDS Mode `22` + Torque CSV import, `0–100 km/h` timer, and foreground session recording with CSV/JSON export.
+- **Torque Evo HUD Dashboard:** Pure `#000000` OLED + `#00A8FF` electric blue borderless cockpit gauges across swipeable custom pages (`HorizontalPager`) with zero persistent navigation chrome while driving.
+- **Dynamic Component Builder:** Add Mode `01`, GPS, calculated (`HP`, `Torque`, `Boost`, `KPL`), or UDS Mode `22` sensors rendered as `Analog Dial`, `Semi-Digital`, `Digital`, `Bar`, `Segmented Bar`, `Chart`, or `Mini-Map`, with freeform XY or grid drag-and-drop and visual theme presets.
+- **Multi-Vehicle Profiles & Refuel Calibration:** Per-vehicle engine specs, drivetrain/Cd×A settings, supported PID caching, fuel refuel checkpoints, DTE range estimation, and scoped trip logs.
+- **Offline Vector & Track Maps:** Built on MapLibre Compose (`OpenFreeMap` styles + `.pmtiles` offline archive import + region frame downloads) plus `OLED Track Only` vector trail mode with zero API keys required.
+- **Multi-Mechanism OBD2 Adapter Support:** Connects via **Wi-Fi (TCP/IP)** with dual cellular data keepalive, **Bluetooth Classic (SPP/RFCOMM)**, **Bluetooth Low Energy (BLE GATT)**, or **USB-Serial (OTG)** (`FTDI`, `CP210x`, `CH340`, `CDC-ACM`).
+- **Diagnostics, Deep Scan & Shareable Route Cards:** Modes `01`–`0A`, Freeze Frame (`02`), DTC scan & Mode `04` clear, VIN (`09`), Torque CSV PID import, read-only UDS/Mode `22` deep ECU discovery dump, and customizable route card PNG composer.
 
 ## Build & Run
 1. Ensure JDK 17 and Android SDK (Platform 35) are configured (`sdk.dir` in `local.properties`).
-2. *(Optional for live Google Map tiles)* Add your Google Maps Android SDK key to `local.properties`:
-   ```properties
-   MAPS_API_KEY=your_google_maps_android_key
-   ```
-3. Run core protocol & formula tests:
+2. Run core protocol and app JVM unit tests:
    ```bash
-   ./gradlew :obd-core:test
+   ./gradlew :obd-core:test :app:testDebugUnitTest
    ```
-4. Build debug APK:
+3. Run Android lint and build debug APK:
    ```bash
-   ./gradlew :app:assembleDebug
+   ./gradlew :app:lintDebug :app:assembleDebug
    ```

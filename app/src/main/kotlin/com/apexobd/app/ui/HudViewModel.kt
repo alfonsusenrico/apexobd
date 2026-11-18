@@ -1,6 +1,11 @@
 package com.apexobd.app.ui
 
 import android.app.Application
+import android.net.Uri
+import android.widget.Toast
+import com.apexobd.app.data.prefs.MapCursorStyle
+import com.apexobd.app.data.prefs.ShareCardMetric
+import com.apexobd.app.data.prefs.TripCardConfig
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.apexobd.app.data.db.ApexDatabase
@@ -13,51 +18,76 @@ import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.db.WidgetDisplayType
 import com.apexobd.app.data.prefs.AppPreferences
+import com.apexobd.app.data.prefs.HudCanvasBackdrop
+import com.apexobd.app.data.prefs.HudCardStyle
 import com.apexobd.app.data.prefs.HudGridScale
+import com.apexobd.app.data.prefs.HudThemePreset
+import com.apexobd.app.data.prefs.MapCameraMode
 import com.apexobd.app.data.prefs.MapProvider
+import com.apexobd.app.data.prefs.MapStylePreset
 import com.apexobd.app.data.prefs.UserSettings
 import com.apexobd.app.platform.AccelSensorTracker
+import com.apexobd.app.platform.BluetoothClassicObdTransport
+import com.apexobd.app.platform.BluetoothLeObdTransport
+import com.apexobd.app.platform.BtDeviceCandidate
 import com.apexobd.app.platform.GpsSnapshot
 import com.apexobd.app.platform.LocationTracker
 import com.apexobd.app.platform.LoggingForegroundService
 import com.apexobd.app.platform.OfflineMapManager
+import com.apexobd.app.platform.TripCardRenderer
 import com.apexobd.app.platform.TripExporter
+import com.apexobd.app.platform.TripShareStatsCalculator
+import com.apexobd.app.platform.UsbSerialCandidate
+import com.apexobd.app.platform.UsbSerialObdTransport
 import com.apexobd.app.platform.WifiNetworkBinder
 import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.TorqueCsvImporter
+import com.apexobd.core.model.FuelCoastingMode
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.SensorQuantity
+import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
 import com.apexobd.core.model.UnitPreferences
+import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.protocol.DerivedSensorCatalog
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.EcuDiscoveryDumper
 import com.apexobd.core.protocol.FuelMetricsSnapshot
+import com.apexobd.core.protocol.GaugeSmoothingMode
 import com.apexobd.core.protocol.ObdPidRegistry
+import com.apexobd.core.protocol.TelemetryDisplaySmoother
+import com.apexobd.core.protocol.TripRunCalculator
+import com.apexobd.core.protocol.TripRunMetrics
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.scheduler.ObdPollingEngine
 import com.apexobd.core.scheduler.PollingProfile
 import com.apexobd.core.scheduler.Timer0100State
 import com.apexobd.core.scheduler.Timer0100Tracker
-import com.apexobd.core.transport.SimulatedObdTransport
+import com.apexobd.core.transport.ObdConnectionType
+import com.apexobd.core.transport.ObdTransport
 import com.apexobd.core.transport.WifiTcpTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -155,7 +185,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val customPids: StateFlow<List<CustomPidEntity>> = customPidDao.observeCustomPids()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
-    val tripSessions: StateFlow<List<TripSessionEntity>> = tripDao.observeSessions()
+    val tripSessions: StateFlow<List<TripSessionEntity>> = activeVehicle
+        .map { it?.id ?: -1L }
+        .distinctUntilChanged()
+        .flatMapLatest { vid ->
+            if (vid > 0L) tripDao.observeSessionsForVehicle(vid) else flowOf(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _onHudScreen = MutableStateFlow(false)
@@ -173,8 +208,29 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _availableSensorKeys = MutableStateFlow<Set<String>>(emptySet())
     val availableSensorKeys: StateFlow<Set<String>> = _availableSensorKeys.asStateFlow()
 
-    private val _liveValues = MutableStateFlow<Map<String, Double>>(emptyMap())
+    private val _liveValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
     val liveValues: StateFlow<Map<String, Double>> = _liveValues.asStateFlow()
+
+    // Visual-only smoothed display values for smooth HUD gauge needle & numeric transitions;
+    // raw telemetry logging (`telemetry_samples`) and trip math strictly read `_liveValues`.
+    private val _displayValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
+    val displayValues: StateFlow<Map<String, Double>> = _displayValues.asStateFlow()
+
+    private val _tripRunMetrics = MutableStateFlow(TripRunMetrics())
+    val tripRunMetrics: StateFlow<TripRunMetrics> = _tripRunMetrics.asStateFlow()
+
+    private val _pendingSaveTrip = MutableStateFlow<TripSessionEntity?>(null)
+    val pendingSaveTrip: StateFlow<TripSessionEntity?> = _pendingSaveTrip.asStateFlow()
+
+    data class ShareCardDraft(
+        val session: TripSessionEntity,
+        val samples: List<TelemetrySampleEntity>,
+        val vehicle: VehicleProfileEntity?,
+        val stats: TripShareStatsCalculator.AggregatedStats
+    )
+
+    private val _shareCardDraft = MutableStateFlow<ShareCardDraft?>(null)
+    val shareCardDraft: StateFlow<ShareCardDraft?> = _shareCardDraft.asStateFlow()
 
     private val _fuelMetrics = MutableStateFlow<FuelMetricsSnapshot?>(null)
     val fuelMetrics: StateFlow<FuelMetricsSnapshot?> = _fuelMetrics.asStateFlow()
@@ -200,6 +256,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _explorerStatus = MutableStateFlow<String?>(null)
     val explorerStatus: StateFlow<String?> = _explorerStatus.asStateFlow()
 
+    private val _deepScanRunning = MutableStateFlow(false)
+    val deepScanRunning: StateFlow<Boolean> = _deepScanRunning.asStateFlow()
+
+    private val _ecuDumpReady = MutableStateFlow(java.io.File(application.filesDir, "ecu_dump.txt").exists())
+    val ecuDumpReady: StateFlow<Boolean> = _ecuDumpReady.asStateFlow()
+
+    @Volatile
+    private var explorerOpen = false
+
     private val _vin = MutableStateFlow<String?>(null)
     val vin: StateFlow<String?> = _vin.asStateFlow()
 
@@ -209,8 +274,25 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
+    private val _isRecordingPaused = MutableStateFlow(false)
+    val isRecordingPaused: StateFlow<Boolean> = _isRecordingPaused.asStateFlow()
+
+    private val smootherSession = TelemetryDisplaySmoother.AdaptiveSession()
+
     private val _ecuExplorerValues = MutableStateFlow<Map<String, Double>>(emptyMap())
     val ecuExplorerValues: StateFlow<Map<String, Double>> = _ecuExplorerValues.asStateFlow()
+
+    private val _btPairedDevices = MutableStateFlow<List<BtDeviceCandidate>>(emptyList())
+    val btPairedDevices: StateFlow<List<BtDeviceCandidate>> = _btPairedDevices.asStateFlow()
+
+    private val _bleScannedDevices = MutableStateFlow<List<BtDeviceCandidate>>(emptyList())
+    val bleScannedDevices: StateFlow<List<BtDeviceCandidate>> = _bleScannedDevices.asStateFlow()
+
+    private val _bleScanning = MutableStateFlow(false)
+    val bleScanning: StateFlow<Boolean> = _bleScanning.asStateFlow()
+
+    private val _usbDevices = MutableStateFlow<List<UsbSerialCandidate>>(emptyList())
+    val usbDevices: StateFlow<List<UsbSerialCandidate>> = _usbDevices.asStateFlow()
 
     val wifiConnected = wifiBinder.wifiConnected
     val cellularOnline = wifiBinder.cellularOnline
@@ -220,22 +302,35 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         wifiBinder.register()
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             ApexDatabase.seedDefaults(hudDao, vehicleDao)
+            tripDao.deleteDraftSessions()
             offlineMapManager.refreshAll()
         }
 
-        // Sync VehicleProfile into polling engine
+        // Sync VehicleProfile into polling engine and offline supported PID cache
         viewModelScope.launch {
+            var lastSeenVehicleId: Long? = null
             activeVehicle.collect { v ->
+                val switchedVehicle = lastSeenVehicleId != null && v != null && lastSeenVehicleId != v.id
+                lastSeenVehicleId = v?.id
+                if (v != null && _connectionState.value !is ConnectionState.Connected) {
+                    _supportedPids.value = v.savedSupportedPids()
+                }
+                if (switchedVehicle) {
+                    _diagnosticReport.value = null
+                    _diagnosticError.value = null
+                    _vin.value = null
+                    _fuelMetrics.value = null
+                }
                 val currentEngine = engine ?: return@collect
                 if (v != null) {
-                    val switched = activeEngineVehicleId != null && activeEngineVehicleId != v.id
+                    val switchedEngine = activeEngineVehicleId != null && activeEngineVehicleId != v.id
                     activeEngineVehicleId = v.id
-                    if (switched) {
+                    if (switchedEngine) {
                         _fuelMetrics.value = null
                     }
-                    currentEngine.setVehicleProfile(v.toCoreModel(), resetFuelSession = switched)
+                    currentEngine.setVehicleProfile(v.toCoreModel(), resetFuelSession = switchedEngine)
                 }
             }
         }
@@ -268,7 +363,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }.collect { (shouldPoll, _, st) ->
                 engine?.setFuelCalculationPaused(st.pauseFuelCalculation)
                 engine?.setPollingProfile(st.pollingProfile)
-                wifiBinder.setKeepCellularActive(shouldPoll && !st.useSimulator && st.dualCellularKeepalive)
+                wifiBinder.setKeepCellularActive(
+                    shouldPoll && st.connectionType == ObdConnectionType.WIFI_TCP && st.dualCellularKeepalive
+                )
 
                 if (shouldPoll) {
                     accelTracker.start()
@@ -322,6 +419,30 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 engine?.setActiveSensors(keys)
             }
         }
+
+        // UI-only 60Hz display pipeline active while HUD Canvas is visible (Raw Instant / Light Damper / Adaptive Glide)
+        viewModelScope.launch {
+            _onHudScreen.collectLatest { onHud ->
+                if (!onHud) {
+                    smootherSession.reset()
+                    _displayValues.value = _liveValues.value
+                    return@collectLatest
+                }
+                var lastFrameMs = System.currentTimeMillis()
+                while (currentCoroutineContext().isActive && _onHudScreen.value) {
+                    val nowMs = System.currentTimeMillis()
+                    val dtMs = (nowMs - lastFrameMs).coerceAtLeast(12L)
+                    lastFrameMs = nowMs
+                    _displayValues.value = smootherSession.step(
+                        rawTargets = _liveValues.value,
+                        dtMs = dtMs,
+                        nowMs = nowMs,
+                        mode = settings.value.gaugeSmoothingMode
+                    )
+                    delay(16L)
+                }
+            }
+        }
     }
 
     fun setOnHudScreen(active: Boolean) {
@@ -333,9 +454,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun forceConnectAndDiscoverForExplorer() {
+        explorerOpen = true
+        if (_deepScanRunning.value) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                _explorerStatus.value = "Checking OBD connection..."
+                if (_explorerStatus.value?.startsWith("Deep scan") != true) {
+                    _explorerStatus.value = "Checking OBD connection..."
+                }
                 val st = settings.value
                 if (engine == null) {
                     reconnectTransport(st)
@@ -347,10 +472,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 if (_connectionState.value !is ConnectionState.Connected) {
-                    _explorerStatus.value = "Adapter offline (${st.wifiHost}:${st.wifiPort}) · Showing standard PIDs"
+                    _explorerStatus.value = "Adapter offline (${st.adapterDetailedEndpoint()}) · Showing standard PIDs"
                     return@launch
                 }
-                _explorerStatus.value = null
+                if (_explorerStatus.value?.startsWith("Deep scan complete") != true) {
+                    _explorerStatus.value = null
+                }
                 val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
                 engine?.setActiveSensors(explorerKeys)
             } catch (e: CancellationException) {
@@ -362,6 +489,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun restoreVisibleCanvasPolling() {
+        explorerOpen = false
         if (!_onHudScreen.value && !_isRecording.value) {
             viewModelScope.launch {
                 transportMutex.withLock {
@@ -379,35 +507,96 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun runDeepEcuDump(host: String = settings.value.wifiHost, port: Int = settings.value.wifiPort) {
+        if (_deepScanRunning.value) return
+        _deepScanRunning.value = true
         suppressAutoConnect = true
+        _explorerStatus.value = "Deep Scan starting · pausing live poll..."
         viewModelScope.launch(Dispatchers.IO) {
+            var scanFailed = false
+            val st = settings.value
             val dumpText = transportMutex.withLock {
+                engineCollectorsJob?.cancel()
+                engineCollectorsJob = null
                 engine?.stop()
                 engine = null
                 delay(200L)
-                val transport = WifiTcpTransport(
-                    host = host,
-                    port = port,
-                    socketFactoryProvider = { wifiBinder.socketFactory() }
-                )
+                val transport = if (host != st.wifiHost || port != st.wifiPort) {
+                    WifiTcpTransport(host = host, port = port, socketFactoryProvider = { wifiBinder.socketFactory() })
+                } else {
+                    buildTransport(st)
+                }
                 try {
                     transport.connect()
-                    EcuDiscoveryDumper.runFullReadOnlyScan(transport)
+                    EcuDiscoveryDumper.runFullReadOnlyScan(transport) { progress ->
+                        _explorerStatus.value = progress
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
+                    scanFailed = true
                     "DEEP ECU SCAN ERROR: ${t.message}\n${t.stackTraceToString()}"
                 } finally {
                     runCatching { transport.disconnect() }
                 }
             }
             java.io.File(getApplication<Application>().filesDir, "ecu_dump.txt").writeText(dumpText)
+            _ecuDumpReady.value = true
+            _explorerStatus.value = if (scanFailed) {
+                "Deep scan failed: ${dumpText.lineSequence().firstOrNull().orEmpty()}"
+            } else {
+                "Deep scan complete · saved ecu_dump.txt (resuming live values)"
+            }
+            _deepScanRunning.value = false
             suppressAutoConnect = false
             prefs.updateWifiEndpoint(host, port)
-            prefs.setUseSimulator(false)
+            val nextSettings = settings.value.copy(
+                wifiHost = host,
+                wifiPort = port
+            )
             if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(settings.value.copy(wifiHost = host, wifiPort = port, useSimulator = false))
+                reconnectTransport(nextSettings)
+            } else if (explorerOpen) {
+                forceConnectAndDiscoverForExplorer()
             }
+        }
+    }
+
+    fun shareEcuDump() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val dumpFile = java.io.File(getApplication<Application>().filesDir, "ecu_dump.txt")
+            if (!dumpFile.exists()) return@launch
+            TripExporter.shareFile(
+                context = getApplication(),
+                fileName = "ecu_dump.txt",
+                mimeType = "text/plain",
+                content = dumpFile.readText()
+            )
+        }
+    }
+
+    private fun buildTransport(s: UserSettings): ObdTransport {
+        val ctx = getApplication<Application>()
+        return when (s.connectionType) {
+            ObdConnectionType.WIFI_TCP -> WifiTcpTransport(
+                host = s.wifiHost,
+                port = s.wifiPort,
+                socketFactoryProvider = { wifiBinder.socketFactory() }
+            )
+            ObdConnectionType.BLUETOOTH_CLASSIC -> BluetoothClassicObdTransport(
+                context = ctx,
+                deviceAddress = s.btDeviceAddress,
+                deviceNameHint = s.btDeviceName
+            )
+            ObdConnectionType.BLUETOOTH_LE -> BluetoothLeObdTransport(
+                context = ctx,
+                deviceAddress = s.bleDeviceAddress,
+                deviceNameHint = s.bleDeviceName
+            )
+            ObdConnectionType.USB_SERIAL -> UsbSerialObdTransport(
+                context = ctx,
+                targetDeviceId = s.usbDeviceId,
+                baudRate = s.usbBaudRate
+            )
         }
     }
 
@@ -421,19 +610,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
         _fuelMetrics.value = null
 
-        val transport = if (s.useSimulator) {
-            SimulatedObdTransport()
-        } else {
-            WifiTcpTransport(
-                host = s.wifiHost,
-                port = s.wifiPort,
-                socketFactoryProvider = { wifiBinder.socketFactory() }
-            )
-        }
+        val transport = buildTransport(s)
         val currentVehicle = activeVehicle.value
         activeEngineVehicleId = currentVehicle?.id
         val newEngine = ObdPollingEngine(transport, viewModelScope)
         newEngine.setPollingProfile(s.pollingProfile)
+        newEngine.setFuelCoastingMode(s.fuelCoastingMode)
         newEngine.setFuelCalculationPaused(s.pauseFuelCalculation)
         currentVehicle?.let { newEngine.setVehicleProfile(it.toCoreModel(), resetFuelSession = true) }
         newEngine.setCustomPids(
@@ -451,7 +633,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch {
                 newEngine.supportedPids.collect { pids ->
                     _supportedPids.value = pids
-                    if (!s.useSimulator && pids.isNotEmpty()) {
+                    if (pids.isNotEmpty()) {
                         val csv = pids.sorted().joinToString(",")
                         val targetId = activeEngineVehicleId
                         val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
@@ -479,9 +661,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch {
                 newEngine.liveValues.collect { map ->
                     val obdSpd = map["obd_speed"] ?: 0.0
-                    if (settings.value.useSimulator) {
-                        locationTracker.updateSimulatedStep(obdSpd)
-                    }
                     val gps = locationTracker.gps.value
                     val imuG = accelTracker.accelG.value
                     val speedGps = if (gps.hasRealFix) gps.speedKmh else obdSpd
@@ -490,9 +669,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     val merged = map.toMutableMap()
                     merged["gps_speed"] = speedGps
                     merged["accel_g"] = imuG
-                    _liveValues.value = merged
-                    _ecuExplorerValues.value = merged
-                    appendChartHistoryOnly(merged)
+                    val withCentralTrip = TripRunCalculator.applyToLiveValues(merged, _tripRunMetrics.value)
+                    _liveValues.value = withCentralTrip
+                    _ecuExplorerValues.value = withCentralTrip
+                    appendChartHistoryOnly(withCentralTrip)
 
                     if ("timer_0100" in pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty().map { it.sensorKey } || _isRecording.value) {
                         val nextTimer = timer0100Tracker.onSpeedSample(if (obdSpd > 0.5) obdSpd else speedGps)
@@ -513,6 +693,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 allTimeOdometerKm = fm.allTimeOdometerKm,
                 allTimeRoadDistanceKm = fm.allTimeRoadDistanceKm,
                 allTimeRoadFuelLiters = fm.allTimeRoadFuelLiters,
+                allTimeTotalDistanceKm = fm.allTimeTotalDistanceKm,
+                allTimeTotalFuelLiters = fm.allTimeTotalFuelLiters,
+                fuelUsedSinceFullRefuelLiters = fm.fuelUsedSinceFullRefuelLiters,
                 estimatedRemainingFuelLiters = fm.estimatedRemainingFuelLiters,
                 recentDteKpl = fm.dteEconomyKpl ?: current.recentDteKpl
             )
@@ -570,7 +753,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 val client = engine?.client
                 if (client == null || _connectionState.value !is ConnectionState.Connected) {
                     _diagnosticError.value =
-                        "Not connected to OBD adapter (${st.wifiHost}:${st.wifiPort}). Connect to adapter Wi-Fi or turn on Demo Simulator in Settings."
+                        "Not connected to OBD2 adapter (${st.adapterDetailedEndpoint()}). Check adapter connection and tap Rescan."
                     return@launch
                 }
                 val result = DtcDecoder.scanAll(client)
@@ -630,27 +813,74 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         if (_isRecording.value) stopRecording() else startRecording()
     }
 
+    fun togglePauseResumeRecording() {
+        if (!_isRecording.value) return
+        _isRecordingPaused.value = !_isRecordingPaused.value
+    }
+
     private fun startRecording() {
         if (_isRecording.value) return
+        _pendingSaveTrip.value = null
+        locationTracker.clearTrail()
+        _isRecordingPaused.value = false
         _isRecording.value = true
         LoggingForegroundService.start(getApplication())
 
         loggingJob = viewModelScope.launch(Dispatchers.IO) {
             val vehicleId = activeVehicle.value?.id ?: 1L
             val startMs = System.currentTimeMillis()
-            val startFuel = _fuelMetrics.value?.totalFuelUsedLiters ?: 0.0
-            val sessionId = tripDao.insertSession(TripSessionEntity(startedAtMs = startMs, vehicleId = vehicleId))
+            val sessionId = tripDao.insertSession(
+                TripSessionEntity(startedAtMs = startMs, vehicleId = vehicleId, isSaved = false)
+            )
             activeSessionId = sessionId
 
-            var distanceKm = 0.0
+            var currentTrip = TripRunMetrics(activeOrCompleted = true, isRecording = true, isPaused = false)
+            _tripRunMetrics.value = currentTrip
+            _liveValues.update { TripRunCalculator.applyToLiveValues(it, currentTrip) }
+
             var maxSpeed = 0.0
             var peakRpm = 0.0
             var totalCount = 0
+            var activeElapsedMs = 0L
+            var accumulatedFuelL = 0.0
+            var segmentFuelBaseline = _fuelMetrics.value?.totalFuelUsedLiters ?: 0.0
+            var wasPaused = false
+            var lastStepMs = startMs
+            var lastGpsMoveMs = startMs
             var prevGps: GpsSnapshot? = null
             val batch = ArrayList<TelemetrySampleEntity>(10)
 
             try {
                 while (_isRecording.value) {
+                    val nowMs = System.currentTimeMillis()
+                    val dtMs = (nowMs - lastStepMs).coerceAtLeast(0L)
+                    lastStepMs = nowMs
+                    val pausedNow = _isRecordingPaused.value
+                    val curTotalFuel = _fuelMetrics.value?.totalFuelUsedLiters ?: segmentFuelBaseline
+
+                    if (pausedNow) {
+                        if (!wasPaused) {
+                            accumulatedFuelL += (curTotalFuel - segmentFuelBaseline).coerceAtLeast(0.0)
+                            wasPaused = true
+                        }
+                        prevGps = null
+                        val pausedTrip = currentTrip.copy(isPaused = true)
+                        currentTrip = pausedTrip
+                        _tripRunMetrics.value = pausedTrip
+                        _liveValues.update { TripRunCalculator.applyToLiveValues(it, pausedTrip) }
+                        delay(250L)
+                        continue
+                    }
+
+                    if (wasPaused) {
+                        segmentFuelBaseline = curTotalFuel
+                        lastGpsMoveMs = nowMs
+                        prevGps = null
+                        wasPaused = false
+                    }
+
+                    activeElapsedMs += dtMs
+
                     val gps = locationTracker.gps.value
                     val vals = _liveValues.value
                     val obdSpd = vals["obd_speed"] ?: 0.0
@@ -660,17 +890,35 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     if (rpm > peakRpm) peakRpm = rpm
 
                     val prev = prevGps
-                    if (prev != null) {
-                        distanceKm += haversineKm(prev.latitude, prev.longitude, gps.latitude, gps.longitude)
-                    }
+                    val gpsDeltaKm = if (
+                        prev != null &&
+                        prev.hasRealFix &&
+                        gps.hasRealFix &&
+                        (gps.latitude != prev.latitude || gps.longitude != prev.longitude)
+                    ) {
+                        lastGpsMoveMs = nowMs
+                        haversineKm(prev.latitude, prev.longitude, gps.latitude, gps.longitude)
+                    } else null
                     prevGps = gps
 
-                    val curFuel = ((_fuelMetrics.value?.totalFuelUsedLiters ?: startFuel) - startFuel).coerceAtLeast(0.0)
-                    val curAvg = if (curFuel > 0.005) (distanceKm / curFuel).coerceIn(0.0, 99.9) else 0.0
+                    val totalFuelUsed = accumulatedFuelL + (curTotalFuel - segmentFuelBaseline).coerceAtLeast(0.0)
+                    currentTrip = TripRunCalculator.computeStep(
+                        previousDistanceKm = currentTrip.distanceKm,
+                        gpsDeltaKm = gpsDeltaKm,
+                        gpsHasRealFix = gps.hasRealFix,
+                        msSinceLastGpsMovement = nowMs - lastGpsMoveMs,
+                        useSimulator = false,
+                        speedKmh = speed,
+                        dtMs = dtMs,
+                        elapsedMs = activeElapsedMs,
+                        fuelDeltaLiters = totalFuelUsed
+                    ).copy(isPaused = false)
+                    _tripRunMetrics.value = currentTrip
+                    _liveValues.update { TripRunCalculator.applyToLiveValues(it, currentTrip) }
 
                     batch += TelemetrySampleEntity(
                         sessionId = sessionId,
-                        timestampMs = System.currentTimeMillis(),
+                        timestampMs = nowMs,
                         latitude = gps.latitude,
                         longitude = gps.longitude,
                         gpsSpeedKmh = speed,
@@ -686,50 +934,98 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                                 id = sessionId,
                                 startedAtMs = startMs,
                                 endedAtMs = null,
-                                distanceKm = distanceKm,
+                                distanceKm = currentTrip.distanceKm,
+                                avgSpeedKmh = currentTrip.avgSpeedKmh ?: 0.0,
                                 maxSpeedKmh = maxSpeed,
                                 peakRpm = peakRpm,
                                 best0100Sec = _timer0100.value.bestRunSec,
                                 sampleCount = totalCount,
                                 vehicleId = vehicleId,
-                                fuelUsedLiters = curFuel,
-                                avgKpl = curAvg
+                                fuelUsedLiters = currentTrip.fuelUsedLiters,
+                                avgKpl = currentTrip.avgKpl ?: 0.0,
+                                activeDurationSec = activeElapsedMs / 1000L,
+                                isSaved = false
                             )
                         )
                     }
                     delay(250L)
                 }
             } finally {
-                if (batch.isNotEmpty()) {
-                    tripDao.insertSamples(batch.toList())
-                    batch.clear()
-                }
-                val finalFuel = ((_fuelMetrics.value?.totalFuelUsedLiters ?: startFuel) - startFuel).coerceAtLeast(0.0)
-                val finalAvg = if (finalFuel > 0.005) (distanceKm / finalFuel).coerceIn(0.0, 99.9) else 0.0
-                tripDao.updateSession(
-                    TripSessionEntity(
+                withContext(NonCancellable) {
+                    if (batch.isNotEmpty()) {
+                        tripDao.insertSamples(batch.toList())
+                        batch.clear()
+                    }
+                    val endMs = System.currentTimeMillis()
+                    val curTotalFuel = _fuelMetrics.value?.totalFuelUsedLiters ?: segmentFuelBaseline
+                    val finalFuel = if (wasPaused) {
+                        accumulatedFuelL
+                    } else {
+                        accumulatedFuelL + (curTotalFuel - segmentFuelBaseline).coerceAtLeast(0.0)
+                    }.coerceAtLeast(0.0)
+                    val finalStep = TripRunCalculator.computeStep(
+                        previousDistanceKm = currentTrip.distanceKm,
+                        gpsDeltaKm = null,
+                        gpsHasRealFix = false,
+                        msSinceLastGpsMovement = 0L,
+                        useSimulator = false,
+                        speedKmh = 0.0,
+                        dtMs = 0L,
+                        elapsedMs = activeElapsedMs.coerceAtLeast(0L),
+                        fuelDeltaLiters = finalFuel
+                    ).copy(isRecording = false, isPaused = false)
+                    _tripRunMetrics.value = finalStep
+                    _liveValues.update { TripRunCalculator.applyToLiveValues(it, finalStep) }
+
+                    val finalSession = TripSessionEntity(
                         id = sessionId,
                         startedAtMs = startMs,
-                        endedAtMs = System.currentTimeMillis(),
-                        distanceKm = distanceKm,
+                        endedAtMs = endMs,
+                        distanceKm = finalStep.distanceKm,
+                        avgSpeedKmh = finalStep.avgSpeedKmh ?: 0.0,
                         maxSpeedKmh = maxSpeed,
                         peakRpm = peakRpm,
                         best0100Sec = _timer0100.value.bestRunSec,
                         sampleCount = totalCount,
                         vehicleId = vehicleId,
-                        fuelUsedLiters = finalFuel,
-                        avgKpl = finalAvg
+                        fuelUsedLiters = finalStep.fuelUsedLiters,
+                        avgKpl = finalStep.avgKpl ?: 0.0,
+                        activeDurationSec = activeElapsedMs / 1000L,
+                        isSaved = false
                     )
-                )
-                flushActiveVehicleStats()
+                    tripDao.updateSession(finalSession)
+                    flushActiveVehicleStats()
+                    _pendingSaveTrip.value = finalSession
+                }
             }
         }
     }
 
     private fun stopRecording() {
         _isRecording.value = false
+        _isRecordingPaused.value = false
         LoggingForegroundService.stop(getApplication())
         activeSessionId = null
+    }
+
+    fun savePendingTrip() {
+        val pending = _pendingSaveTrip.value ?: return
+        _pendingSaveTrip.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            tripDao.markSessionSaved(pending.id)
+        }
+    }
+
+    fun discardPendingTrip() {
+        val pending = _pendingSaveTrip.value ?: return
+        _pendingSaveTrip.value = null
+        val reset = TripRunMetrics()
+        _tripRunMetrics.value = reset
+        _liveValues.update { TripRunCalculator.applyToLiveValues(it, reset) }
+        locationTracker.clearTrail()
+        viewModelScope.launch(Dispatchers.IO) {
+            tripDao.deleteSessionById(pending.id)
+        }
     }
 
     fun exportSession(session: TripSessionEntity, asJson: Boolean) {
@@ -742,15 +1038,86 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun exportSessionShareCard(session: TripSessionEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val samples = tripDao.getSamplesForSession(session.id)
+            val vehicle = vehicleDao.getById(session.vehicleId) ?: activeVehicle.value
+            val stats = TripShareStatsCalculator.summarize(session, samples)
+            _shareCardDraft.value = ShareCardDraft(
+                session = session,
+                samples = samples,
+                vehicle = vehicle,
+                stats = stats
+            )
+        }
+    }
+
+    fun dismissShareCardComposer() {
+        _shareCardDraft.value = null
+    }
+
+    fun confirmShareCardExport(config: TripCardConfig) {
+        val draft = _shareCardDraft.value ?: return
+        _shareCardDraft.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            prefs.setShareCardMetrics(config.selectedMetrics)
+            val st = settings.value
+            val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            val outFile = TripCardRenderer.renderTripCardToPngFile(
+                context = getApplication(),
+                session = draft.session,
+                samples = draft.samples,
+                vehicle = draft.vehicle,
+                unitPrefs = st.toUnitPreferences(),
+                fuelType = fuelType,
+                selectedMetrics = config.selectedMetrics,
+                config = config,
+                precomputedStats = draft.stats
+            )
+            TripExporter.sharePreparedFile(
+                context = getApplication(),
+                file = outFile,
+                mimeType = "image/png",
+                title = "Share Route Card"
+            )
+        }
+    }
+
+    fun copyPickedVehiclePhoto(uri: Uri, onResult: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val tag = (activeVehicle.value?.id ?: 0L).toString()
+            val savedPath = TripCardRenderer.copyVehiclePhotoToInternal(getApplication(), uri, tag)
+            withContext(Dispatchers.Main) {
+                onResult(savedPath)
+            }
+        }
+    }
+
     suspend fun getSamplesForSession(sessionId: Long): List<TelemetrySampleEntity> =
         tripDao.getSamplesForSession(sessionId)
 
     // --- Vehicle Profiles & Odometer / Tank Management ---
     fun selectVehicle(vehicleId: Long) {
+        if (activeVehicle.value?.id == vehicleId) return
+        if (_isRecording.value) {
+            Toast.makeText(
+                getApplication(),
+                "Finish active trip recording before switching cars",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         viewModelScope.launch(Dispatchers.IO) {
             if (engine != null && activeEngineVehicleId != null && activeEngineVehicleId != vehicleId) {
                 flushActiveVehicleStats()
-                _fuelMetrics.value = null
+            }
+            val target = vehicleDao.getById(vehicleId)
+            _fuelMetrics.value = null
+            _diagnosticReport.value = null
+            _diagnosticError.value = null
+            _vin.value = null
+            if (_connectionState.value !is ConnectionState.Connected) {
+                _supportedPids.value = target?.savedSupportedPids().orEmpty()
             }
             vehicleDao.setActiveVehicle(vehicleId)
         }
@@ -759,13 +1126,18 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     fun saveVehicleProfile(
         existing: VehicleProfileEntity?,
         name: String,
-        displacementLiters: Double,
+        engineCc: Int,
+        carType: VehicleBodyType,
+        transmission: TransmissionType,
+        modelYear: Int?,
+        photoUri: String?,
         weightKg: Double,
         fuelType: FuelType,
         tankCapacityDisplayUnit: Double,
         estRemainingDisplayUnit: Double,
         odometerDisplayUnit: Double,
-        redlineRpm: Int
+        redlineRpm: Int,
+        mafTrimPct: Double = existing?.mafTrimPct ?: 100.0
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val st = settings.value
@@ -773,14 +1145,23 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val tankL = toInternalVolume(tankCapacityDisplayUnit, fuelType, unitPrefs)
             val remL = toInternalVolume(estRemainingDisplayUnit, fuelType, unitPrefs).coerceIn(0.0, tankL)
             val odoKm = toInternalDistanceKm(odometerDisplayUnit, unitPrefs)
+            val safeCc = engineCc.coerceIn(0, 12000)
 
             val entity = (existing ?: VehicleProfileEntity(isActive = true)).copy(
                 name = name.trim().ifBlank { "My Vehicle" },
-                displacementLiters = displacementLiters.coerceIn(0.0, 12.0),
+                engineCc = safeCc,
+                displacementLiters = (safeCc / 1000.0).coerceIn(0.0, 12.0),
+                carType = carType.name,
+                transmission = transmission.name,
+                modelYear = modelYear?.takeIf { it in 1960..2035 },
+                photoUri = photoUri?.takeIf { it.isNotBlank() },
+                dragCoefficientAreaCdA = carType.defaultCdA,
+                drivetrainLossPct = transmission.defaultDrivetrainLossPct,
                 weightKg = weightKg.coerceIn(400.0, 8000.0),
                 fuelType = fuelType.name,
                 tankCapacityLiters = tankL.coerceAtLeast(1.0),
                 estimatedRemainingFuelLiters = remL,
+                mafTrimPct = mafTrimPct.coerceIn(75.0, 135.0),
                 redlineRpm = redlineRpm.coerceIn(2500, 14000),
                 allTimeOdometerKm = odoKm.coerceAtLeast(0.0)
             )
@@ -813,14 +1194,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Refuel Checkpoints (Completely Independent of OBD All-Time & Run Tracking) ---
+    // --- Refuel Checkpoints (Optionally calibrates Fuel Trim % on Full-Tank fills) ---
     fun addRefuelCheckpoint(
         volumeDisplayUnit: Double,
         pricePaid: Double,
         currencyCode: String,
         ronValue: Int?,
         fuelName: String?,
-        odometerDisplayUnit: Double
+        odometerDisplayUnit: Double,
+        isFullTank: Boolean = true,
+        autoCalibrateTrim: Boolean = true
     ) {
         val vehicle = activeVehicle.value ?: return
         if (volumeDisplayUnit <= 0.0) return
@@ -848,18 +1231,35 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     ronValue = ronValue?.takeIf { fuelType == FuelType.GASOLINE && it > 0 },
                     fuelName = fuelName?.trim()?.takeIf { it.isNotBlank() },
                     cycleDistanceKm = cycleDist,
-                    cycleAvgKpl = cycleAvgKpl
+                    cycleAvgKpl = cycleAvgKpl,
+                    isFullTank = isFullTank
                 )
             )
 
-            val newRemaining = (vehicle.estimatedRemainingFuelLiters + volumeL).coerceIn(0.0, vehicle.tankCapacityLiters)
+            val calibratedTrim = if (isFullTank && autoCalibrateTrim && prev?.isFullTank == true) {
+                com.apexobd.core.protocol.FuelEconomyTracker.computeCalibratedTrimPct(
+                    currentTrimPct = vehicle.mafTrimPct,
+                    actualPumpLiters = volumeL,
+                    obdFuelUsedSinceFullLiters = vehicle.fuelUsedSinceFullRefuelLiters
+                )
+            } else {
+                vehicle.mafTrimPct
+            }
+
+            val newRemaining = if (isFullTank) {
+                vehicle.tankCapacityLiters
+            } else {
+                (vehicle.estimatedRemainingFuelLiters + volumeL).coerceIn(0.0, vehicle.tankCapacityLiters)
+            }
             val newOdo = maxOf(vehicle.allTimeOdometerKm, odoKm)
             val updated = vehicle.copy(
                 allTimeOdometerKm = newOdo,
-                estimatedRemainingFuelLiters = newRemaining
+                estimatedRemainingFuelLiters = newRemaining,
+                mafTrimPct = calibratedTrim,
+                fuelUsedSinceFullRefuelLiters = if (isFullTank) 0.0 else vehicle.fuelUsedSinceFullRefuelLiters
             )
             vehicleDao.updateVehicle(updated)
-            engine?.fuelTracker?.applyRefuelAdded(volumeL, vehicle.tankCapacityLiters)
+            engine?.fuelTracker?.applyRefuelAdded(volumeL, vehicle.tankCapacityLiters, isFullTank = isFullTank)
             engine?.setVehicleProfile(updated.toCoreModel())
         }
     }
@@ -922,6 +1322,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             WidgetDisplayType.SEMI_DIGITAL,
             WidgetDisplayType.DIGITAL,
             WidgetDisplayType.BAR,
+            WidgetDisplayType.SEGMENTED_BAR,
             WidgetDisplayType.CHART
         )
         val cur = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrNull() ?: return
@@ -1006,6 +1407,22 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { prefs.setGridSnapEnabled(!settings.value.gridSnapEnabled) }
     }
 
+    fun toggleWidgetBorders() {
+        viewModelScope.launch { prefs.setShowWidgetBorders(!settings.value.showWidgetBorders) }
+    }
+
+    fun setHudTheme(preset: HudThemePreset) {
+        viewModelScope.launch { prefs.setHudTheme(preset) }
+    }
+
+    fun setHudCanvasBackdrop(backdrop: HudCanvasBackdrop) {
+        viewModelScope.launch { prefs.setHudCanvasBackdrop(backdrop) }
+    }
+
+    fun setHudCardStyle(style: HudCardStyle) {
+        viewModelScope.launch { prefs.setHudCardStyle(style) }
+    }
+
     fun setHudGridScale(scale: HudGridScale) {
         viewModelScope.launch { prefs.setHudGridScale(scale) }
     }
@@ -1022,16 +1439,100 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { prefs.setHudMirror(!settings.value.hudMirror) }
     }
 
-    fun updateConnectionSettings(host: String, port: Int, useSim: Boolean, dualCell: Boolean) {
-        viewModelScope.launch {
-            if (settings.value.useSimulator && !useSim) {
-                locationTracker.clearTrail()
+    fun refreshLocalAdapters() {
+        val ctx = getApplication<Application>()
+        _btPairedDevices.value = BluetoothClassicObdTransport.listPairedAdapters(ctx)
+        _usbDevices.value = UsbSerialObdTransport.listAttachedAdapters(ctx)
+    }
+
+    fun scanBleAdapters() {
+        if (_bleScanning.value) return
+        _bleScanning.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _bleScannedDevices.value = BluetoothLeObdTransport.scanNearbyAdapters(getApplication())
+            } finally {
+                _bleScanning.value = false
             }
+        }
+    }
+
+    fun selectConnectionType(type: ObdConnectionType) {
+        viewModelScope.launch {
+            val prev = settings.value
+            prefs.setConnectionType(type)
+            val next = prev.copy(connectionType = type)
+            if (_onHudScreen.value || _isRecording.value) {
+                reconnectTransport(next)
+            }
+        }
+    }
+
+    fun selectBluetoothDevice(candidate: BtDeviceCandidate) {
+        viewModelScope.launch {
+            prefs.updateBluetoothTarget(candidate.address, candidate.name)
+            prefs.setConnectionType(ObdConnectionType.BLUETOOTH_CLASSIC)
+            val next = settings.value.copy(
+                connectionType = ObdConnectionType.BLUETOOTH_CLASSIC,
+                btDeviceAddress = candidate.address,
+                btDeviceName = candidate.name
+            )
+            if (_onHudScreen.value || _isRecording.value) {
+                reconnectTransport(next)
+            }
+        }
+    }
+
+    fun selectBleDevice(candidate: BtDeviceCandidate) {
+        viewModelScope.launch {
+            prefs.updateBleTarget(candidate.address, candidate.name)
+            prefs.setConnectionType(ObdConnectionType.BLUETOOTH_LE)
+            val next = settings.value.copy(
+                connectionType = ObdConnectionType.BLUETOOTH_LE,
+                bleDeviceAddress = candidate.address,
+                bleDeviceName = candidate.name
+            )
+            if (_onHudScreen.value || _isRecording.value) {
+                reconnectTransport(next)
+            }
+        }
+    }
+
+    fun selectUsbDevice(deviceId: Int, baudRate: Int) {
+        viewModelScope.launch {
+            prefs.updateUsbConfig(deviceId, baudRate)
+            prefs.setConnectionType(ObdConnectionType.USB_SERIAL)
+            val next = settings.value.copy(
+                connectionType = ObdConnectionType.USB_SERIAL,
+                usbDeviceId = deviceId,
+                usbBaudRate = baudRate
+            )
+            if (_onHudScreen.value || _isRecording.value) {
+                reconnectTransport(next)
+            }
+        }
+    }
+
+    fun requestUsbAdapterPermission(deviceId: Int) {
+        val usbMgr = getApplication<Application>().getSystemService(android.hardware.usb.UsbManager::class.java) ?: return
+        val dev = usbMgr.deviceList.values.firstOrNull { it.deviceId == deviceId } ?: return
+        UsbSerialObdTransport.requestPermission(getApplication(), dev)
+    }
+
+    fun updateConnectionSettings(host: String, port: Int, dualCell: Boolean) {
+        viewModelScope.launch {
             prefs.updateWifiEndpoint(host, port)
-            prefs.setUseSimulator(useSim)
+            prefs.setConnectionType(ObdConnectionType.WIFI_TCP)
             prefs.setDualCellularKeepalive(dualCell)
             if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(settings.value.copy(wifiHost = host, wifiPort = port, useSimulator = useSim, dualCellularKeepalive = dualCell))
+                reconnectTransport(
+                    settings.value.copy(
+                        connectionType = ObdConnectionType.WIFI_TCP,
+                        wifiHost = host,
+                        wifiPort = port,
+                        dualCellularKeepalive = dualCell
+                    )
+                )
             }
         }
     }
@@ -1045,6 +1546,49 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setMapProvider(provider: MapProvider) {
         viewModelScope.launch { prefs.setMapProvider(provider) }
+    }
+
+    fun setMapStylePreset(style: MapStylePreset) {
+        viewModelScope.launch { prefs.setMapStylePreset(style) }
+    }
+
+    fun setMapCameraMode(mode: MapCameraMode) {
+        viewModelScope.launch { prefs.setMapCameraMode(mode) }
+    }
+
+    fun setMapCursorStyle(style: MapCursorStyle) {
+        viewModelScope.launch { prefs.setMapCursorStyle(style) }
+    }
+
+    fun toggleShareCardMetric(metric: ShareCardMetric) {
+        val current = settings.value.shareCardMetrics
+        val updated = if (metric in current) {
+            if (current.size <= 1) return
+            current - metric
+        } else {
+            if (current.size >= ShareCardMetric.MAX_SELECTED) return
+            current + metric
+        }
+        viewModelScope.launch { prefs.setShareCardMetrics(updated) }
+    }
+
+    fun resetShareCardMetricsToDefault() {
+        viewModelScope.launch { prefs.setShareCardMetrics(ShareCardMetric.DEFAULT_SELECTION) }
+    }
+
+    fun setHighContrastMapRoads(enabled: Boolean) {
+        viewModelScope.launch { prefs.setHighContrastMapRoads(enabled) }
+    }
+
+    fun setGaugeSmoothingMode(mode: GaugeSmoothingMode) {
+        viewModelScope.launch { prefs.setGaugeSmoothingMode(mode) }
+    }
+
+    fun setFuelCoastingMode(mode: FuelCoastingMode) {
+        viewModelScope.launch {
+            prefs.setFuelCoastingMode(mode)
+            engine?.setFuelCoastingMode(mode)
+        }
     }
 
     fun setActivePmtilesPath(path: String?) {
@@ -1121,7 +1665,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
             SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
-            SensorCatalogItem("fuel_ctrl", "All Time KPL + Idle Pause", "KPL Ctrl", "FUEL", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
+            SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Sprint Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
             SensorCatalogItem("data_logger", "Run Telemetry Logger", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
@@ -1180,7 +1724,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
             SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
-            SensorCatalogItem("fuel_ctrl", "All Time KPL + Idle Pause", "KPL Ctrl", "FUEL", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
+            SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
             SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)

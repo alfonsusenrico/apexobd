@@ -39,11 +39,25 @@ class LocationTracker(context: Context) {
     private var currentIntervalMs = 500L
     private var lastGradeLoc: Location? = null
     private var lastGradePct = 0.0
+    private var prevBearingLoc: Location? = null
+    private var lastValidBearingDeg = 0f
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val loc: Location = result.lastLocation ?: return
             val speedKmh = if (loc.hasSpeed()) loc.speed * 3.6 else 0.0
+            if (loc.hasBearing() && (speedKmh >= 2.2 || !loc.hasSpeed())) {
+                lastValidBearingDeg = loc.bearing
+                prevBearingLoc = loc
+            } else {
+                val prev = prevBearingLoc
+                if (prev == null) {
+                    prevBearingLoc = loc
+                } else if (prev.distanceTo(loc) >= 4.0f) {
+                    lastValidBearingDeg = (prev.bearingTo(loc) + 360f) % 360f
+                    prevBearingLoc = loc
+                }
+            }
             if (loc.hasAltitude()) {
                 val prev = lastGradeLoc
                 if (prev != null && prev.hasAltitude()) {
@@ -63,7 +77,7 @@ class LocationTracker(context: Context) {
                 latitude = loc.latitude,
                 longitude = loc.longitude,
                 speedKmh = speedKmh,
-                bearingDeg = if (loc.hasBearing()) loc.bearing else 0f,
+                bearingDeg = lastValidBearingDeg,
                 altitudeMeters = if (loc.hasAltitude()) loc.altitude else 0.0,
                 roadGradePct = lastGradePct,
                 hasRealFix = true,
@@ -74,15 +88,15 @@ class LocationTracker(context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startUpdates(highFrequency: Boolean = true) {
-        val desiredInterval = if (highFrequency) 500L else 1500L
+        val desiredInterval = if (highFrequency) 350L else 1500L
         if (updatesRunning && currentIntervalMs == desiredInterval) return
         stopUpdates()
 
         currentIntervalMs = desiredInterval
         val priority = if (highFrequency) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
         val req = LocationRequest.Builder(priority, desiredInterval)
-            .setMinUpdateIntervalMillis(desiredInterval / 2)
-            .setMinUpdateDistanceMeters(2f)
+            .setMinUpdateIntervalMillis(if (highFrequency) 180L else 750L)
+            .setMinUpdateDistanceMeters(if (highFrequency) 0.5f else 3f)
             .build()
         runCatching {
             client.requestLocationUpdates(req, callback, Looper.getMainLooper())

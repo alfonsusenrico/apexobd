@@ -1,7 +1,12 @@
 package com.apexobd.app.platform
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.apexobd.app.data.db.TelemetrySampleEntity
 import com.apexobd.app.data.db.TripSessionEntity
@@ -65,7 +70,11 @@ object TripExporter {
         sb.append("  \"sessionId\": ${session.id},\n")
         sb.append("  \"startedAtMs\": ${session.startedAtMs},\n")
         sb.append("  \"endedAtMs\": ${session.endedAtMs ?: "null"},\n")
+        sb.append("  \"durationSec\": ${session.effectiveDurationSec()},\n")
         sb.append("  \"distanceKm\": ${session.distanceKm},\n")
+        sb.append("  \"avgSpeedKmh\": ${session.avgSpeedKmh},\n")
+        sb.append("  \"fuelUsedLiters\": ${session.fuelUsedLiters},\n")
+        sb.append("  \"avgKpl\": ${session.avgKpl},\n")
         sb.append("  \"maxSpeedKmh\": ${session.maxSpeedKmh},\n")
         sb.append("  \"peakRpm\": ${session.peakRpm},\n")
         sb.append("  \"best0100Sec\": ${session.best0100Sec ?: "null"},\n")
@@ -85,17 +94,52 @@ object TripExporter {
         return sb.toString()
     }
 
-    fun shareFile(context: Context, fileName: String, mimeType: String, content: String) {
-        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
-        val file = File(dir, fileName)
-        file.writeText(content)
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
+    fun buildShareChooserIntent(
+        uri: Uri,
+        mimeType: String,
+        title: String = "Export Trip Log"
+    ): Intent {
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newRawUri(title, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(Intent.createChooser(intent, "Export Trip Log"))
+        return Intent.createChooser(sendIntent, title).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    fun exportCacheFile(context: Context, fileName: String): File {
+        val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+        return File(dir, fileName)
+    }
+
+    fun shareFile(context: Context, fileName: String, mimeType: String, content: String) {
+        val file = exportCacheFile(context, fileName)
+        file.writeText(content)
+        sharePreparedFile(context, file, mimeType, "Export Trip Log")
+    }
+
+    fun sharePreparedFile(
+        context: Context,
+        file: File,
+        mimeType: String,
+        title: String = "Export Trip Log"
+    ) {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val chooser = buildShareChooserIntent(uri, mimeType, title)
+        val launch = {
+            val result = runCatching { context.startActivity(chooser) }
+            if (result.isFailure) {
+                Toast.makeText(context.applicationContext, "Unable to open share sheet: ${result.exceptionOrNull()?.message ?: "unknown"}", Toast.LENGTH_LONG).show()
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            launch()
+        } else {
+            Handler(Looper.getMainLooper()).post(launch)
+        }
     }
 
     private fun escapeJson(s: String): String =

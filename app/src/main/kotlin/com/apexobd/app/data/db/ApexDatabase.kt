@@ -16,6 +16,8 @@ import androidx.room.Update
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.apexobd.core.model.FuelType
+import com.apexobd.core.model.TransmissionType
+import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.model.VehicleProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +29,7 @@ enum class WidgetDisplayType {
     SEMI_DIGITAL,
     DIGITAL,
     BAR,
+    SEGMENTED_BAR,
     CHART,
     MINI_MAP,
     DTC_CHECKER,
@@ -39,6 +42,11 @@ data class VehicleProfileEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String = "My Vehicle",
     val displacementLiters: Double = 1.3,
+    val engineCc: Int = 1300,
+    val carType: String = VehicleBodyType.MPV.name,
+    val transmission: String = TransmissionType.AUTOMATIC.name,
+    val modelYear: Int? = null,
+    val photoUri: String? = null,
     val weightKg: Double = 1175.0,
     val fuelType: String = FuelType.GASOLINE.name,
     val tankCapacityLiters: Double = 45.0,
@@ -51,6 +59,9 @@ data class VehicleProfileEntity(
     val allTimeOdometerKm: Double = 0.0,
     val allTimeRoadDistanceKm: Double = 0.0,
     val allTimeRoadFuelLiters: Double = 0.0,
+    val allTimeTotalDistanceKm: Double = 0.0,
+    val allTimeTotalFuelLiters: Double = 0.0,
+    val fuelUsedSinceFullRefuelLiters: Double = 0.0,
     val recentDteKpl: Double? = null,
     val supportedPidsCsv: String = "",
     val best0100Sec: Double? = null,
@@ -59,7 +70,12 @@ data class VehicleProfileEntity(
     fun toCoreModel(): VehicleProfile = VehicleProfile(
         id = id,
         name = name,
-        displacementLiters = displacementLiters,
+        displacementLiters = if (engineCc > 0) engineCc / 1000.0 else displacementLiters,
+        engineCc = if (engineCc > 0) engineCc else (displacementLiters * 1000.0).toInt().coerceAtLeast(100),
+        carType = runCatching { VehicleBodyType.valueOf(carType) }.getOrDefault(VehicleBodyType.MPV),
+        transmission = runCatching { TransmissionType.valueOf(transmission) }.getOrDefault(TransmissionType.MANUAL),
+        modelYear = modelYear,
+        photoUri = photoUri,
         weightKg = weightKg,
         fuelType = runCatching { FuelType.valueOf(fuelType) }.getOrDefault(FuelType.GASOLINE),
         tankCapacityLiters = tankCapacityLiters,
@@ -72,12 +88,27 @@ data class VehicleProfileEntity(
         allTimeOdometerKm = allTimeOdometerKm,
         allTimeRoadDistanceKm = allTimeRoadDistanceKm,
         allTimeRoadFuelLiters = allTimeRoadFuelLiters,
+        allTimeTotalDistanceKm = if (allTimeTotalFuelLiters > 0.005) allTimeTotalDistanceKm else allTimeRoadDistanceKm,
+        allTimeTotalFuelLiters = if (allTimeTotalFuelLiters > 0.005) allTimeTotalFuelLiters else allTimeRoadFuelLiters,
+        fuelUsedSinceFullRefuelLiters = fuelUsedSinceFullRefuelLiters,
         recentDteKpl = recentDteKpl,
         best0To100Sec = best0100Sec
     )
 
-    fun allTimeAvgKpl(): Double =
-        if (allTimeRoadFuelLiters > 0.005) (allTimeRoadDistanceKm / allTimeRoadFuelLiters).coerceIn(0.0, 99.9) else 0.0
+    fun specSummaryLine(): String {
+        val ccVal = if (engineCc > 0) engineCc else (displacementLiters * 1000.0).toInt()
+        val tx = runCatching { TransmissionType.valueOf(transmission).shortCode }.getOrDefault("MT")
+        val body = runCatching { VehicleBodyType.valueOf(carType).label }.getOrDefault("Car")
+        val yr = modelYear?.let { " · $it" } ?: ""
+        return "$ccVal cc · $tx · $body$yr"
+    }
+
+    fun allTimeAvgKpl(): Double {
+        val useTotal = allTimeTotalFuelLiters > 0.005
+        val dist = if (useTotal) allTimeTotalDistanceKm else allTimeRoadDistanceKm
+        val fuel = if (useTotal) allTimeTotalFuelLiters else allTimeRoadFuelLiters
+        return if (fuel > 0.005) (dist / fuel).coerceIn(0.0, 99.9) else 0.0
+    }
 
     fun savedSupportedPids(): Set<String> =
         supportedPidsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
@@ -106,7 +137,8 @@ data class RefuelLogEntity(
     val ronValue: Int? = null,
     val fuelName: String? = null,
     val cycleDistanceKm: Double? = null,
-    val cycleAvgKpl: Double? = null
+    val cycleAvgKpl: Double? = null,
+    val isFullTank: Boolean = true
 )
 
 @Entity(tableName = "hud_pages")
@@ -163,14 +195,26 @@ data class TripSessionEntity(
     val startedAtMs: Long,
     val endedAtMs: Long? = null,
     val distanceKm: Double = 0.0,
+    val avgSpeedKmh: Double = 0.0,
     val maxSpeedKmh: Double = 0.0,
     val peakRpm: Double = 0.0,
     val best0100Sec: Double? = null,
     val sampleCount: Int = 0,
     val vehicleId: Long = 1L,
     val fuelUsedLiters: Double = 0.0,
-    val avgKpl: Double = 0.0
-)
+    val avgKpl: Double = 0.0,
+    val activeDurationSec: Long? = null,
+    val isSaved: Boolean = true
+) {
+    fun effectiveDurationSec(): Long =
+        activeDurationSec ?: (((endedAtMs ?: startedAtMs) - startedAtMs).coerceAtLeast(0L) / 1000L)
+
+    fun effectiveAvgSpeedKmh(): Double {
+        if (avgSpeedKmh > 0.1) return avgSpeedKmh
+        val sec = effectiveDurationSec()
+        return if (distanceKm > 0.05 && sec > 0L) distanceKm / (sec / 3600.0) else 0.0
+    }
+}
 
 @Entity(
     tableName = "telemetry_samples",
@@ -283,14 +327,26 @@ interface CustomPidDao {
 
 @Dao
 interface TripDao {
-    @Query("SELECT * FROM trip_sessions ORDER BY startedAtMs DESC")
+    @Query("SELECT * FROM trip_sessions WHERE isSaved = 1 ORDER BY startedAtMs DESC")
     fun observeSessions(): Flow<List<TripSessionEntity>>
+
+    @Query("SELECT * FROM trip_sessions WHERE isSaved = 1 AND vehicleId = :vehicleId ORDER BY startedAtMs DESC")
+    fun observeSessionsForVehicle(vehicleId: Long): Flow<List<TripSessionEntity>>
 
     @Insert
     suspend fun insertSession(session: TripSessionEntity): Long
 
     @Update
     suspend fun updateSession(session: TripSessionEntity)
+
+    @Query("UPDATE trip_sessions SET isSaved = 1 WHERE id = :sessionId")
+    suspend fun markSessionSaved(sessionId: Long)
+
+    @Query("DELETE FROM trip_sessions WHERE id = :sessionId")
+    suspend fun deleteSessionById(sessionId: Long)
+
+    @Query("DELETE FROM trip_sessions WHERE isSaved = 0")
+    suspend fun deleteDraftSessions()
 
     @Insert
     suspend fun insertSample(sample: TelemetrySampleEntity)
@@ -315,7 +371,7 @@ interface TripDao {
         TripSessionEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 4,
+    version = 7,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -405,6 +461,46 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE trip_sessions ADD COLUMN avgSpeedKmh REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE trip_sessions ADD COLUMN isSaved INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN engineCc INTEGER NOT NULL DEFAULT 1300")
+                db.execSQL("UPDATE vehicle_profiles SET engineCc = CAST(ROUND(displacementLiters * 1000.0) AS INTEGER) WHERE displacementLiters > 0.1")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN carType TEXT NOT NULL DEFAULT 'MPV'")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN transmission TEXT NOT NULL DEFAULT 'AUTOMATIC'")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN modelYear INTEGER")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN photoUri TEXT")
+                db.execSQL("ALTER TABLE trip_sessions ADD COLUMN activeDurationSec INTEGER")
+            }
+        }
+
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN allTimeTotalDistanceKm REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN allTimeTotalFuelLiters REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN fuelUsedSinceFullRefuelLiters REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE refuel_logs ADD COLUMN isFullTank INTEGER NOT NULL DEFAULT 1")
+                // Clear pre-calibration road-only/premature-DFCO counters so All-Time Avg & DTE start cleanly with idle-inclusive tracking
+                db.execSQL(
+                    """
+                    UPDATE vehicle_profiles SET
+                        allTimeRoadDistanceKm = 0.0,
+                        allTimeRoadFuelLiters = 0.0,
+                        allTimeTotalDistanceKm = 0.0,
+                        allTimeTotalFuelLiters = 0.0,
+                        fuelUsedSinceFullRefuelLiters = 0.0,
+                        recentDteKpl = NULL
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -414,7 +510,7 @@ abstract class ApexDatabase : RoomDatabase() {
         private fun buildDatabase(context: Context): ApexDatabase {
             lateinit var db: ApexDatabase
             db = Room.databaseBuilder(context, ApexDatabase::class.java, "apex_obd.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
                         super.onCreate(sqliteDb)

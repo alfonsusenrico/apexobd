@@ -1,8 +1,11 @@
 package com.apexobd.app.ui
 
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,22 +17,27 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.LocalGasStation
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -43,22 +51,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.apexobd.app.platform.TripExporter
+import com.apexobd.app.ui.components.ApexBrandLogo
 import com.apexobd.app.ui.components.DualMapCanvas
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.model.FuelType
+import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
+import com.apexobd.core.transport.ObdConnectionType
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class ActiveHomeSheet { NONE, VEHICLE, REFUEL, FAULTS, RUNS_AND_MAPS, OFFLINE_MAPS, ECU_PIDS, SETTINGS }
+private enum class ActiveHomeSheet { NONE, ADAPTER, VEHICLE, REFUEL, FAULTS, RUNS_AND_MAPS, OFFLINE_MAPS, ECU_PIDS, SETTINGS }
 
 @Composable
 fun HomeMenuScreen(
@@ -76,14 +91,21 @@ fun HomeMenuScreen(
     val diagnosticError by viewModel.diagnosticError.collectAsStateWithLifecycle()
     val diagnosticScanning by viewModel.diagnosticScanning.collectAsStateWithLifecycle()
     val explorerStatus by viewModel.explorerStatus.collectAsStateWithLifecycle()
+    val deepScanRunning by viewModel.deepScanRunning.collectAsStateWithLifecycle()
+    val ecuDumpReady by viewModel.ecuDumpReady.collectAsStateWithLifecycle()
     val vin by viewModel.vin.collectAsStateWithLifecycle()
     val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
     val liveValues by viewModel.ecuExplorerValues.collectAsStateWithLifecycle()
     val offlineRegions by viewModel.offlineMapManager.regions.collectAsStateWithLifecycle()
     val pmtilesPacks by viewModel.offlineMapManager.pmtilesPacks.collectAsStateWithLifecycle()
     val offlineMsg by viewModel.offlineMapManager.statusMessage.collectAsStateWithLifecycle()
+    val btPairedDevices by viewModel.btPairedDevices.collectAsStateWithLifecycle()
+    val bleScannedDevices by viewModel.bleScannedDevices.collectAsStateWithLifecycle()
+    val bleScanning by viewModel.bleScanning.collectAsStateWithLifecycle()
+    val usbDevices by viewModel.usbDevices.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
+    var startAddingNewVehicle by remember { mutableStateOf(false) }
 
     val unitPrefs = settings.toUnitPreferences()
     val fuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
@@ -121,7 +143,7 @@ fun HomeMenuScreen(
         } ?: ""
         "%.1f %s%s%s".format(rfVol, rfSym, ronTxt, cycTxt)
     } else {
-        "Log fuel & checkpoint avg"
+        "No entries"
     }
 
     val faultCount = (report?.confirmed?.size ?: 0) + (report?.pending?.size ?: 0)
@@ -137,84 +159,158 @@ fun HomeMenuScreen(
         val isLandscape = maxWidth > maxHeight
 
         val headerRow: @Composable () -> Unit = {
+            val adapterIcon = when (settings.connectionType) {
+                ObdConnectionType.WIFI_TCP -> Icons.Default.Wifi
+                ObdConnectionType.BLUETOOTH_CLASSIC, ObdConnectionType.BLUETOOTH_LE -> Icons.Default.Bluetooth
+                ObdConnectionType.USB_SERIAL -> Icons.Default.Usb
+            }
+            val adapterTint = TorqueEvoColors.ElectricBlue
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    ApexBrandLogo.ComposeWordmark(height = 17.dp)
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("ApexOBD", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                        Text("v1.0", fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
+                        Row(
+                            modifier = Modifier
+                                .heightIn(min = 32.dp)
+                                .widthIn(max = 166.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF101620))
+                                .border(1.dp, adapterTint.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                .clickable { activeSheet = ActiveHomeSheet.ADAPTER }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(adapterIcon, contentDescription = "OBD2 Adapter", tint = adapterTint, modifier = Modifier.size(13.dp))
+                            Text(
+                                text = settings.adapterChipLabel(),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = adapterTint,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF101620))
+                                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                                .clickable { activeSheet = ActiveHomeSheet.SETTINGS },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "App Settings",
+                                tint = TorqueEvoColors.TextPrimary,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
                     }
-                    Text(
-                        text = "${settings.wifiHost}:${settings.wifiPort} · ${if (settings.useSimulator) "SIM" else "Wi-Fi"}",
-                        fontSize = 11.sp,
-                        color = TorqueEvoColors.ElectricBlue
-                    )
                 }
                 HorizontalDivider(color = TorqueEvoColors.SubtleBorder)
             }
         }
 
-        val launchHudButton: @Composable () -> Unit = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
+        val hudDashboardHeroCard: @Composable (Modifier) -> Unit = { mod ->
+            Box(
+                modifier = mod
                     .clip(RoundedCornerShape(12.dp))
-                    .background(TorqueEvoColors.ElectricBlue)
+                    .background(Color(0xFF0A0D13))
+                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
                     .clickable { onOpenHudCanvas() }
-                    .padding(horizontal = 15.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(18.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Column {
-                    Text("LIVE DRIVING DISPLAY", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 0.8.sp, color = Color(0xBF020810))
-                    Text("Open HUD Canvas", fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF020810))
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text(
-                        "${pages.size} Page(s) · Grid ${if (settings.gridSnapEnabled) "${settings.hudGridScale.cols}×${settings.hudGridScale.rows}" else "Free"} · Landscape HUD",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xCC020810)
+                        "HUD Dashboard",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = TorqueEvoColors.TextPrimary
                     )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TorqueEvoColors.ElectricBlue)
+                            .padding(horizontal = 16.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            "Open HUD",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF020810)
+                        )
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowForward,
+                            contentDescription = null,
+                            tint = Color(0xFF020810),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, tint = Color(0xFF020810), modifier = Modifier.size(22.dp))
             }
         }
 
         val lastRunMapCard: @Composable (Modifier) -> Unit = { mod ->
-            val tripSub = if (latestTrip != null) {
+            val tripMetricLine = if (latestTrip != null) {
                 val (td, ts) = UnitConverter.convertDistanceKm(latestTrip.distanceKm, unitPrefs)
                 val (tk, ks) = UnitConverter.convertFuelEconomy(latestTrip.avgKpl, unitPrefs, fuelType)
-                val mins = (((latestTrip.endedAtMs ?: System.currentTimeMillis()) - latestTrip.startedAtMs) / 60_000L).coerceAtLeast(1L)
+                val mins = (latestTrip.effectiveDurationSec() / 60L).coerceAtLeast(1L)
                 "%.1f %s · %.1f %s · %d min".format(td, ts, tk, ks, mins)
             } else {
-                "No recorded run yet"
+                "No recorded runs"
             }
             val mapCenterLat = lastTripTrail.lastOrNull()?.first ?: gps.latitude
             val mapCenterLon = lastTripTrail.lastOrNull()?.second ?: gps.longitude
 
-            Column(
+            Row(
                 modifier = mod
                     .clip(RoundedCornerShape(12.dp))
                     .background(TorqueEvoColors.ElevatedDark)
                     .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(12.dp))
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(7.dp)
+                    .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
+                    .padding(9.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.Center
+                ) {
                     Text(
-                        text = latestTrip?.let { "Last Saved Run · ${dateFmt.format(Date(it.startedAtMs))}" } ?: "Last Saved Run",
-                        fontSize = 11.sp,
+                        text = latestTrip?.let { "LAST SAVED RUN · ${dateFmt.format(Date(it.startedAtMs)).uppercase()}" } ?: "LAST SAVED RUN",
+                        fontSize = 9.5.sp,
                         fontWeight = FontWeight.Bold,
-                        color = TorqueEvoColors.TextPrimary
+                        letterSpacing = 0.5.sp,
+                        color = TorqueEvoColors.TextSecondary,
+                        maxLines = 1
                     )
-                    Text(tripSub, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.ElectricBlue)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = tripMetricLine,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.TextPrimary,
+                        style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = true)
+                        .width(114.dp)
+                        .fillMaxHeight()
                         .clip(RoundedCornerShape(8.dp))
                         .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
                 ) {
@@ -224,63 +320,145 @@ fun HomeMenuScreen(
                         longitude = mapCenterLon,
                         trail = lastTripTrail,
                         activePmtilesPath = settings.activePmtilesPath,
+                        mapStylePreset = settings.mapStylePreset,
+                        mapCameraMode = settings.mapCameraMode,
+                        mapCursorStyle = settings.mapCursorStyle,
+                        highContrastRoads = settings.highContrastMapRoads,
                         modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
                     )
                 }
             }
         }
 
+        val carPhotoBmp = remember(activeVehicle?.photoUri) {
+            activeVehicle?.photoUri?.takeIf { File(it).exists() }?.let { path ->
+                runCatching { BitmapFactory.decodeFile(path)?.asImageBitmap() }.getOrNull()
+            }
+        }
         val carProfileCard: @Composable () -> Unit = {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(TorqueEvoColors.CarProfileSurface)
                     .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.42f), RoundedCornerShape(12.dp))
-                    .clickable { activeSheet = ActiveHomeSheet.VEHICLE }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(9.dp))
-                            .background(TorqueEvoColors.ElectricBlue.copy(alpha = 0.14f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = TorqueEvoColors.ElectricBlue, modifier = Modifier.size(20.dp))
+                    .clickable {
+                        startAddingNewVehicle = false
+                        activeSheet = ActiveHomeSheet.VEHICLE
                     }
-                    Column {
-                        Text("VEHICLE PROFILE", fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.7.sp, color = TorqueEvoColors.ElectricBlue)
-                        Text(activeVehicle?.name ?: "Avanza 1.3L", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    vehicles.sortedBy { it.id }.forEach { v ->
+                        val isSelected = v.id == activeVehicle?.id
+                        val trShort = runCatching {
+                            when (TransmissionType.valueOf(v.transmission)) {
+                                TransmissionType.MANUAL -> "MT"
+                                TransmissionType.AUTOMATIC -> "AT"
+                                TransmissionType.CVT -> "CVT"
+                                TransmissionType.DCT -> "DCT"
+                                TransmissionType.SINGLE_SPEED_EV -> "EV"
+                            }
+                        }.getOrNull()?.let { " ($it)" } ?: ""
                         Text(
-                            "%.1fL · %.0f kg · %s · Tank %.1f/%.0f %s".format(
-                                activeVehicle?.displacementLiters ?: 1.3,
-                                activeVehicle?.weightKg ?: 1175.0,
-                                fuelType.label,
-                                dispRemFuel,
-                                dispCapFuel,
-                                volSym
-                            ),
-                            fontSize = 10.sp,
-                            color = TorqueEvoColors.TextSecondary,
-                            maxLines = 1
+                            text = "${v.name}$trShort",
+                            fontSize = 10.5.sp,
+                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                            color = if (isSelected) Color.Black else TorqueEvoColors.TextPrimary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(if (isSelected) TorqueEvoColors.ElectricBlue else Color(0xFF131922))
+                                .border(
+                                    1.dp,
+                                    if (isSelected) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder,
+                                    RoundedCornerShape(7.dp)
+                                )
+                                .clickable { viewModel.selectVehicle(v.id) }
+                                .padding(horizontal = 9.dp, vertical = 4.dp)
                         )
                     }
+                    Text(
+                        text = "+ Car",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(TorqueEvoColors.ElectricBlue.copy(alpha = 0.12f))
+                            .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(7.dp))
+                            .clickable {
+                                startAddingNewVehicle = true
+                                activeSheet = ActiveHomeSheet.VEHICLE
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
                 }
-                Text(
-                    "Edit ▾",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TorqueEvoColors.TextPrimary,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(7.dp))
-                        .background(Color(0xFF161A22))
-                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(7.dp))
-                        .padding(horizontal = 9.dp, vertical = 5.dp)
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(TorqueEvoColors.ElectricBlue.copy(alpha = 0.14f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (carPhotoBmp != null) {
+                                Image(
+                                    bitmap = carPhotoBmp,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Icon(Icons.Default.DirectionsCar, contentDescription = null, tint = TorqueEvoColors.ElectricBlue, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                        Column {
+                            Text(activeVehicle?.name ?: "My Vehicle", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+                            val ccTxt = activeVehicle?.let { if (it.engineCc > 0) "${it.engineCc} cc · " else "" } ?: ""
+                            val yearTxt = activeVehicle?.modelYear?.takeIf { it > 0 }?.let { "$it · " } ?: ""
+                            Text(
+                                "%s%sTank %.1f/%.0f %s".format(
+                                    ccTxt,
+                                    yearTxt,
+                                    dispRemFuel,
+                                    dispCapFuel,
+                                    volSym
+                                ),
+                                fontSize = 10.sp,
+                                color = TorqueEvoColors.TextSecondary,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                    Text(
+                        "Edit",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.TextPrimary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(Color(0xFF161A22))
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(7.dp))
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
             }
         }
 
@@ -317,7 +495,7 @@ fun HomeMenuScreen(
                     )
                     HomeModuleTile(
                         title = "Fault Codes",
-                        subtitle = if (report == null) "Scan & Clear 04" else "$faultCount DTC(s)",
+                        subtitle = if (report == null) "Not scanned" else "$faultCount DTC(s)",
                         icon = Icons.Default.WarningAmber,
                         tint = TorqueEvoColors.WarnAmber,
                         bg = TorqueEvoColors.CardSurface,
@@ -327,9 +505,10 @@ fun HomeMenuScreen(
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    val offlineTotal = offlineRegions.size + pmtilesPacks.size
                     HomeModuleTile(
                         title = "Run Logs & Maps",
-                        subtitle = "${sessions.size} Run(s) · ${offlineRegions.size + pmtilesPacks.size} Offline",
+                        subtitle = if (offlineTotal > 0) "${sessions.size} Run(s) · $offlineTotal Offline" else "${sessions.size} Run(s)",
                         icon = Icons.Default.Route,
                         tint = TorqueEvoColors.SkyBlue,
                         bg = TorqueEvoColors.CardSurface,
@@ -339,7 +518,7 @@ fun HomeMenuScreen(
                     )
                     HomeModuleTile(
                         title = "ECU PIDs",
-                        subtitle = "${supportedPids.size.takeIf { it > 0 } ?: 16} Supported · UDS 22",
+                        subtitle = if (supportedPids.isNotEmpty()) "${supportedPids.size} Supported" else "Explorer",
                         icon = Icons.Default.Tune,
                         tint = TorqueEvoColors.AccentViolet,
                         bg = TorqueEvoColors.CardSurface,
@@ -351,34 +530,6 @@ fun HomeMenuScreen(
             }
         }
 
-        val settingsCard: @Composable () -> Unit = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(TorqueEvoColors.SettingsSurface)
-                    .border(1.dp, Color(0x2EFFFFFF), RoundedCornerShape(12.dp))
-                    .clickable { activeSheet = ActiveHomeSheet.SETTINGS }
-                    .padding(horizontal = 13.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Default.Settings, contentDescription = null, tint = TorqueEvoColors.ElectricBlue, modifier = Modifier.size(18.dp))
-                    Column {
-                        Text("Adapter, Units, Map Mode & Polling", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                        Text(
-                            "${settings.mapProvider.label} · $avgSym, $distSym, ${unitPrefs.pressure.symbol}",
-                            fontSize = 10.sp,
-                            color = TorqueEvoColors.TextSecondary,
-                            maxLines = 1
-                        )
-                    }
-                }
-                Text("Configure →", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.ElectricBlue)
-            }
-        }
-
         if (isLandscape) {
             Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 headerRow()
@@ -386,13 +537,12 @@ fun HomeMenuScreen(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1.05f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        launchHudButton()
-                        lastRunMapCard(Modifier.weight(1f).fillMaxWidth())
-                        settingsCard()
+                    Column(modifier = Modifier.weight(1.08f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        hudDashboardHeroCard(Modifier.weight(1f).fillMaxWidth())
+                        lastRunMapCard(Modifier.fillMaxWidth().height(92.dp))
                     }
                     Column(
-                        modifier = Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()),
+                        modifier = Modifier.weight(0.95f).fillMaxHeight().verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         carProfileCard()
@@ -406,10 +556,9 @@ fun HomeMenuScreen(
                 headerRow()
                 carProfileCard()
                 statStripCard()
-                launchHudButton()
-                lastRunMapCard(Modifier.weight(1f).fillMaxWidth())
+                hudDashboardHeroCard(Modifier.weight(1f).fillMaxWidth())
+                lastRunMapCard(Modifier.fillMaxWidth().height(106.dp))
                 modulesGrid()
-                settingsCard()
             }
         }
     }
@@ -419,20 +568,25 @@ fun HomeMenuScreen(
             vehicles = vehicles,
             activeVehicle = activeVehicle,
             unitPrefs = unitPrefs,
+            startAddingNew = startAddingNewVehicle,
             onSelectVehicle = { viewModel.selectVehicle(it) },
-            onSaveVehicle = { existing, n, d, w, ft, cap, rem, odo, red ->
-                viewModel.saveVehicleProfile(existing, n, d, w, ft, cap, rem, odo, red)
+            onPickPhoto = { uri, cb -> viewModel.copyPickedVehiclePhoto(uri, cb) },
+            onSaveVehicle = { existing, n, cc, bt, tr, yr, photo, w, ft, cap, rem, odo, red, trim ->
+                viewModel.saveVehicleProfile(existing, n, cc, bt, tr, yr, photo, w, ft, cap, rem, odo, red, trim)
             },
             onDeleteVehicle = { viewModel.deleteVehicleProfile(it) },
-            onDismiss = { activeSheet = ActiveHomeSheet.NONE }
+            onDismiss = {
+                startAddingNewVehicle = false
+                activeSheet = ActiveHomeSheet.NONE
+            }
         )
         ActiveHomeSheet.REFUEL -> RefuelLogSheet(
             vehicle = activeVehicle,
             logs = refuels,
             defaultCurrency = settings.currencyCode,
             unitPrefs = unitPrefs,
-            onAddRefuel = { vol, price, cur, ron, fName, odo ->
-                viewModel.addRefuelCheckpoint(vol, price, cur, ron, fName, odo)
+            onAddRefuel = { vol, price, cur, ron, fName, odo, isFull, autoCal ->
+                viewModel.addRefuelCheckpoint(vol, price, cur, ron, fName, odo, isFull, autoCal)
             },
             onDeleteRefuel = { viewModel.deleteRefuelCheckpoint(it) },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
@@ -448,9 +602,16 @@ fun HomeMenuScreen(
         )
         ActiveHomeSheet.RUNS_AND_MAPS -> RunLogsAndMapsSheet(
             sessions = sessions,
+            vehicleName = activeVehicle?.name ?: "Active Vehicle",
+            settings = settings,
+            onSelectMapStylePreset = { viewModel.setMapStylePreset(it) },
+            onSelectMapCameraMode = { viewModel.setMapCameraMode(it) },
+            onSelectMapCursorStyle = { viewModel.setMapCursorStyle(it) },
+            onToggleHighContrastRoads = { viewModel.setHighContrastMapRoads(!settings.highContrastMapRoads) },
             unitPrefs = unitPrefs,
             fuelType = fuelType,
             onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
+            onShareCard = { s -> viewModel.exportSessionShareCard(s) },
             onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.OFFLINE_MAPS },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
@@ -484,19 +645,49 @@ fun HomeMenuScreen(
             supportedPids = supportedPids,
             liveValues = liveValues,
             explorerStatus = explorerStatus,
+            isDeepScanning = deepScanRunning,
+            hasEcuDump = ecuDumpReady,
             onDiscoverExplorer = { viewModel.forceConnectAndDiscoverForExplorer() },
             onStopExplorer = { viewModel.restoreVisibleCanvasPolling() },
             onAddCustomPid = { n, hex, form, u -> viewModel.addManualCustomPid(n, hex, form, u) },
             onImportCsv = { viewModel.importTorqueCsv(it) },
             onRunDeepDump = { viewModel.runDeepEcuDump() },
+            onShareDeepDump = { viewModel.shareEcuDump() },
+            onDismiss = { activeSheet = ActiveHomeSheet.NONE }
+        )
+        ActiveHomeSheet.ADAPTER -> AdapterConnectionSheet(
+            settings = settings,
+            btPairedDevices = btPairedDevices,
+            bleScannedDevices = bleScannedDevices,
+            bleScanning = bleScanning,
+            usbDevices = usbDevices,
+            onRefreshLocalAdapters = { viewModel.refreshLocalAdapters() },
+            onScanBleAdapters = { viewModel.scanBleAdapters() },
+            onSelectConnectionType = { viewModel.selectConnectionType(it) },
+            onSaveWifiConnection = { h, p, dual -> viewModel.updateConnectionSettings(h, p, dual) },
+            onSelectBtDevice = { viewModel.selectBluetoothDevice(it) },
+            onSelectBleDevice = { viewModel.selectBleDevice(it) },
+            onSelectUsbDevice = { id, baud -> viewModel.selectUsbDevice(id, baud) },
+            onRequestUsbPermission = { viewModel.requestUsbAdapterPermission(it) },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.SETTINGS -> SettingsSheet(
             settings = settings,
-            onSaveConnection = { h, p, sim, dual -> viewModel.updateConnectionSettings(h, p, sim, dual) },
+            onOpenAdapterConnection = { activeSheet = ActiveHomeSheet.ADAPTER },
             onSelectPolling = { viewModel.setPollingProfile(it) },
+            onSelectGaugeSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+            onSelectFuelCoasting = { viewModel.setFuelCoastingMode(it) },
             onSelectGridScale = { viewModel.setHudGridScale(it) },
-            onSelectMapProvider = { viewModel.setMapProvider(it) },
+            onSelectMapStylePreset = { viewModel.setMapStylePreset(it) },
+            onSelectMapCameraMode = { viewModel.setMapCameraMode(it) },
+            onSelectMapCursorStyle = { viewModel.setMapCursorStyle(it) },
+            onToggleShareMetric = { viewModel.toggleShareCardMetric(it) },
+            onResetShareMetrics = { viewModel.resetShareCardMetricsToDefault() },
+            onToggleHighContrastRoads = { viewModel.setHighContrastMapRoads(!settings.highContrastMapRoads) },
+            onSelectHudTheme = { viewModel.setHudTheme(it) },
+            onSelectCanvasBackdrop = { viewModel.setHudCanvasBackdrop(it) },
+            onSelectCardStyle = { viewModel.setHudCardStyle(it) },
+            onToggleWidgetBorders = { viewModel.toggleWidgetBorders() },
             onUpdateUnits = { viewModel.updateUnits(it) },
             onUpdateCurrency = { viewModel.setCurrencyCode(it) },
             onToggleHudMirror = { viewModel.toggleHudMirror() },

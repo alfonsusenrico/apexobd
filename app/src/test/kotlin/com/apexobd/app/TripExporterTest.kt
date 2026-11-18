@@ -15,10 +15,13 @@ class TripExporterTest {
             startedAtMs = 1700000000000L,
             endedAtMs = 1700000060000L,
             distanceKm = 2.4,
+            avgSpeedKmh = 144.0,
             maxSpeedKmh = 95.0,
             peakRpm = 4800.0,
             best0100Sec = 6.84,
-            sampleCount = 1
+            sampleCount = 1,
+            fuelUsedLiters = 0.2,
+            avgKpl = 12.0
         )
         val sample = TelemetrySampleEntity(
             id = 1L,
@@ -36,7 +39,31 @@ class TripExporterTest {
 
         val json = TripExporter.toJson(session, listOf(sample))
         assertTrue(json.contains("\"sessionId\": 7"))
+        assertTrue(json.contains("\"durationSec\": 60"))
+        assertTrue(json.contains("\"avgSpeedKmh\": 144.0"))
+        assertTrue(json.contains("\"fuelUsedLiters\": 0.2"))
+        assertTrue(json.contains("\"avgKpl\": 12.0"))
         assertTrue(json.contains("\"gpsSpeedKmh\": 84"))
+    }
+
+    @Test
+    fun `HUD theme resolver builds 7 distinct palettes and supports Clear Glass on Glassy Dimmed backdrop`() {
+        val presets = com.apexobd.app.data.prefs.HudThemePreset.entries
+        org.junit.Assert.assertEquals(7, presets.size)
+        val accents = presets.map {
+            com.apexobd.app.ui.theme.resolveHudVisualPalette(preset = it).accent
+        }.toSet()
+        org.junit.Assert.assertEquals(7, accents.size)
+
+        val hybrid = com.apexobd.app.ui.theme.resolveHudVisualPalette(
+            preset = com.apexobd.app.data.prefs.HudThemePreset.OLED_BLUE,
+            backdrop = com.apexobd.app.data.prefs.HudCanvasBackdrop.GLASSY_DIMMED,
+            cardStyle = com.apexobd.app.data.prefs.HudCardStyle.CLEAR_GLASS,
+            showBorders = false
+        )
+        org.junit.Assert.assertFalse(hybrid.showBorders)
+        org.junit.Assert.assertNotNull(hybrid.canvasGlow)
+        assertTrue(hybrid.canvasTop != androidx.compose.ui.graphics.Color.Black)
     }
 
     @Test
@@ -88,5 +115,74 @@ class TripExporterTest {
         org.junit.Assert.assertFalse(
             com.apexobd.app.platform.LocationTracker.shouldResetTrail(-6.1780, 106.6300, -6.1782, 106.6303, wasSimulated = false, nowSimulated = false)
         )
+    }
+
+    @Test
+    fun `fitDigitsFontSizeSp scales cleanly down inside 1x1 compact cells so xx-xx values never truncate`() {
+        val compactSp = com.apexobd.app.ui.components.fitDigitsFontSizeSp(
+            availWidthDp = 61f,
+            text = "13.45",
+            unit = "km/L",
+            unitSp = 9f,
+            minSp = 13f,
+            maxSp = 23f
+        )
+        assertTrue(compactSp in 13f..20f)
+        val wideSp = com.apexobd.app.ui.components.fitDigitsFontSizeSp(
+            availWidthDp = 160f,
+            text = "738",
+            unit = "RPM",
+            unitSp = 11.5f,
+            minSp = 13f,
+            maxSp = 32f
+        )
+        assertTrue(wideSp >= 28f)
+        val lblSp = com.apexobd.app.ui.components.fitLabelFontSizeSp(46f, "KPL · TRIP", minSp = 8.0f, maxSp = 11.5f)
+        assertTrue(lblSp in 8.0f..10.5f)
+    }
+
+    @Test
+    fun `VehicleProfileEntity syncs detailed specs, TripSessionEntity uses activeDurationSec, and MapStylePresets cover all 6 styles`() {
+        val avanza24 = com.apexobd.app.data.db.VehicleProfileEntity(
+            name = "Avanza 1.5G",
+            displacementLiters = 1.496,
+            engineCc = 1496,
+            carType = com.apexobd.core.model.VehicleBodyType.MPV.name,
+            transmission = com.apexobd.core.model.TransmissionType.MANUAL.name,
+            modelYear = 2024
+        )
+        val core = avanza24.toCoreModel()
+        org.junit.Assert.assertEquals(1496, core.engineCc)
+        org.junit.Assert.assertEquals(1.496, core.displacementLiters, 0.001)
+        org.junit.Assert.assertEquals(com.apexobd.core.model.VehicleBodyType.MPV, core.carType)
+        org.junit.Assert.assertEquals(com.apexobd.core.model.TransmissionType.MANUAL, core.transmission)
+        org.junit.Assert.assertEquals(2024, core.modelYear)
+        assertTrue(avanza24.specSummaryLine().contains("1496 cc"))
+        assertTrue(avanza24.specSummaryLine().contains("MT"))
+
+        val pausedSession = TripSessionEntity(
+            startedAtMs = 1_000_000L,
+            endedAtMs = 2_000_000L, // 1000s wall clock
+            activeDurationSec = 420L // 7m active excluding pause
+        )
+        org.junit.Assert.assertEquals(420L, pausedSession.effectiveDurationSec())
+
+        val pmtilesNavy = com.apexobd.app.platform.OfflineMapManager.buildPmtilesStyleJson(
+            "/data/user/0/com.apexobd.app/files/pmtiles/java.pmtiles",
+            com.apexobd.app.data.prefs.MapStylePreset.FIORD_NAVY
+        )
+        assertTrue(pmtilesNavy.contains("#2B364C"))
+        org.junit.Assert.assertEquals(6, com.apexobd.app.data.prefs.MapStylePreset.entries.size)
+        org.junit.Assert.assertEquals(3, com.apexobd.app.data.prefs.MapCameraMode.entries.size)
+
+        // Idle-inclusive total avg takes precedence over road-only avg when populated
+        val totalWithIdle = com.apexobd.app.data.db.VehicleProfileEntity(
+            name = "Avanza 1.3L",
+            allTimeRoadDistanceKm = 100.0,
+            allTimeRoadFuelLiters = 8.0, // 12.5 road-only
+            allTimeTotalDistanceKm = 100.0,
+            allTimeTotalFuelLiters = 10.0 // 10.0 incl. idle
+        )
+        org.junit.Assert.assertEquals(10.0, totalWithIdle.allTimeAvgKpl(), 0.01)
     }
 }

@@ -1,6 +1,14 @@
 package com.apexobd.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,7 +42,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -45,6 +53,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -91,11 +100,21 @@ import com.apexobd.app.ui.components.DtcCheckerWidget
 import com.apexobd.app.ui.components.FuelControlWidget
 import com.apexobd.app.ui.components.MiniMapWidget
 import com.apexobd.app.ui.components.PerfTimerWidget
+import com.apexobd.app.ui.components.SegmentedBarGaugeWidget
 import com.apexobd.app.ui.components.SemiDigitalArcWidget
 import com.apexobd.app.ui.components.SparklineChartWidget
+import com.apexobd.app.ui.theme.LocalHudVisualStyle
 import com.apexobd.app.ui.theme.TorqueEvoColors
+import com.apexobd.app.ui.theme.hudCanvasBackdrop
+import com.apexobd.app.ui.theme.resolveHudVisualPalette
+import com.apexobd.core.model.FuelType
+import com.apexobd.core.model.SensorQuantity
+import com.apexobd.core.protocol.TripRunCalculator
+import com.apexobd.core.scheduler.ConnectionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 @Composable
 fun ApexAppRoot(
@@ -103,22 +122,58 @@ fun ApexAppRoot(
     onHudModeChanged: (inHud: Boolean) -> Unit
 ) {
     var onHudPage by remember { mutableStateOf(false) }
+    val pendingSaveTrip by viewModel.pendingSaveTrip.collectAsStateWithLifecycle()
+    val shareCardDraft by viewModel.shareCardDraft.collectAsStateWithLifecycle()
+    val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
 
     LaunchedEffect(onHudPage) {
         viewModel.setOnHudScreen(onHudPage)
         onHudModeChanged(onHudPage)
     }
 
-    if (!onHudPage) {
-        HomeMenuScreen(
-            viewModel = viewModel,
-            onOpenHudCanvas = { onHudPage = true }
-        )
-    } else {
-        HudCanvasScreen(
-            viewModel = viewModel,
-            onBackToHome = { onHudPage = false }
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (!onHudPage) {
+            HomeMenuScreen(
+                viewModel = viewModel,
+                onOpenHudCanvas = { onHudPage = true }
+            )
+        } else {
+            HudCanvasScreen(
+                viewModel = viewModel,
+                onBackToHome = { onHudPage = false }
+            )
+        }
+
+        pendingSaveTrip?.let { session ->
+            val fuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            SaveTripSummaryDialog(
+                session = session,
+                vehicleName = activeVehicle?.name ?: "Active Vehicle",
+                unitPrefs = settings.toUnitPreferences(),
+                fuelType = fuelType,
+                onSave = { viewModel.savePendingTrip() },
+                onSaveAndShareCard = {
+                    viewModel.savePendingTrip()
+                    viewModel.exportSessionShareCard(session)
+                },
+                onDiscard = { viewModel.discardPendingTrip() }
+            )
+        }
+
+        shareCardDraft?.let { draft ->
+            val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() }
+                ?: activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() }
+                ?: FuelType.GASOLINE
+            ShareCardComposerDialog(
+                draft = draft,
+                initialMetrics = settings.shareCardMetrics,
+                unitPrefs = settings.toUnitPreferences(),
+                fuelType = fuelType,
+                onConfirmShare = { cfg -> viewModel.confirmShareCardExport(cfg) },
+                onDismiss = { viewModel.dismissShareCardComposer() }
+            )
+        }
     }
 }
 
@@ -131,23 +186,57 @@ fun HudCanvasScreen(
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
-    val liveValues by viewModel.liveValues.collectAsStateWithLifecycle()
+    val liveValues by viewModel.displayValues.collectAsStateWithLifecycle()
     val historyBuffers by viewModel.historyBuffers.collectAsStateWithLifecycle()
     val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
     val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
     val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
     val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
+    val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+
+    var showConnectedToast by remember { mutableStateOf(false) }
+    var wasNotConnected by remember { mutableStateOf(true) }
+    LaunchedEffect(connectionState) {
+        if (connectionState is ConnectionState.Connected) {
+            if (wasNotConnected) {
+                wasNotConnected = false
+                showConnectedToast = true
+                delay(1800L)
+                showConnectedToast = false
+            }
+        } else {
+            wasNotConnected = true
+            showConnectedToast = false
+        }
+    }
 
     var editMode by remember { mutableStateOf(false) }
     var isDraggingAny by remember { mutableStateOf(false) }
     var selectedWidgetId by remember { mutableStateOf<Long?>(null) }
     var editingWidgetId by remember { mutableStateOf<Long?>(null) }
     var showContextMenu by remember { mutableStateOf(false) }
+    var showAppearanceDialog by remember { mutableStateOf(false) }
     var showComponentPicker by remember { mutableStateOf(false) }
+
+    val hudPalette = remember(
+        settings.hudTheme,
+        settings.hudCanvasBackdrop,
+        settings.hudCardStyle,
+        settings.showWidgetBorders
+    ) {
+        resolveHudVisualPalette(
+            preset = settings.hudTheme,
+            backdrop = settings.hudCanvasBackdrop,
+            cardStyle = settings.hudCardStyle,
+            showBorders = settings.showWidgetBorders
+        )
+    }
 
     BackHandler {
         when {
+            showAppearanceDialog -> showAppearanceDialog = false
             showComponentPicker -> showComponentPicker = false
             editingWidgetId != null -> editingWidgetId = null
             showContextMenu -> showContextMenu = false
@@ -172,14 +261,15 @@ fun HudCanvasScreen(
         }
     }
 
+    CompositionLocalProvider(LocalHudVisualStyle provides hudPalette) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(TorqueEvoColors.PureBlack)
+            .hudCanvasBackdrop(hudPalette)
             .graphicsLayer { scaleX = if (settings.hudMirror) -1f else 1f }
     ) {
         if (pages.isNotEmpty()) {
-            HorizontalPager(
+            VerticalPager(
                 state = pagerState,
                 userScrollEnabled = !editMode,
                 modifier = Modifier.fillMaxSize()
@@ -204,6 +294,7 @@ fun HudCanvasScreen(
                     onDraggingChanged = { dragging -> isDraggingAny = dragging },
                     onCommitGridPos = { w, col, row -> viewModel.updateWidgetGridPosition(w, col, row) },
                     onToggleRecord = { viewModel.toggleRecording() },
+                    onTogglePauseResume = { viewModel.togglePauseResumeRecording() },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
                     onReset0100 = { viewModel.reset0100Best() },
@@ -211,10 +302,23 @@ fun HudCanvasScreen(
                         viewModel.updateWidgetFreeformPosition(w, xf, yf, mxf, myf)
                     },
                     renderContextExtras = Triple(gps, diagReport, timer0100),
-                    extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0))
+                    extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0)),
+                    isRecordingPaused = isRecordingPaused
                 )
             }
         }
+
+        HudConnectionStatusBanner(
+            connectionState = connectionState,
+            showConnectedToast = showConnectedToast,
+            endpoint = settings.adapterDetailedEndpoint(),
+            mirrored = settings.hudMirror,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(top = 8.dp)
+                .zIndex(20f)
+        )
 
         // Subtle low-opacity edge dots (zero chrome, glance-only page awareness)
         if (pages.size > 1) {
@@ -233,7 +337,7 @@ fun HudCanvasScreen(
                             .height(if (active) 14.dp else 5.dp)
                             .clip(CircleShape)
                             .background(
-                                if (active) TorqueEvoColors.ElectricBlue.copy(alpha = 0.7f)
+                                if (active) hudPalette.accent.copy(alpha = 0.78f)
                                 else Color(0x45FFFFFF)
                             )
                     )
@@ -383,6 +487,20 @@ fun HudCanvasScreen(
                     showContextMenu = false
                 }
                 ContextMenuButton(
+                    "Component Borders: ${if (settings.showWidgetBorders) "Visible" else "Hidden"}",
+                    color = if (settings.showWidgetBorders) TorqueEvoColors.TextPrimary else TorqueEvoColors.SkyBlue
+                ) {
+                    viewModel.toggleWidgetBorders()
+                    showContextMenu = false
+                }
+                ContextMenuButton(
+                    "Theme & Background (${settings.hudTheme.label}) ▸",
+                    color = Color(settings.hudTheme.accentHex)
+                ) {
+                    showContextMenu = false
+                    showAppearanceDialog = true
+                }
+                ContextMenuButton(
                     "Grid Snap (${settings.hudGridScale.cols}×${settings.hudGridScale.rows}): ${if (settings.gridSnapEnabled) "Snap to Tile" else "Freeform"}"
                 ) {
                     viewModel.toggleGridSnap()
@@ -439,10 +557,157 @@ fun HudCanvasScreen(
             }
         }
     }
+
+    if (showAppearanceDialog) {
+        Dialog(onDismissRequest = { showAppearanceDialog = false }) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 520.dp)
+                    .fillMaxWidth()
+                    .heightIn(max = 365.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0xF20E1116))
+                    .border(1.dp, hudPalette.accent.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "HUD Theme & Canvas Appearance",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.TextPrimary,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "Done",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.ElectricBlue,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                            .clickable { showAppearanceDialog = false }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+                HudAppearanceControlsColumn(
+                    selectedTheme = settings.hudTheme,
+                    selectedBackdrop = settings.hudCanvasBackdrop,
+                    selectedCardStyle = settings.hudCardStyle,
+                    showBorders = settings.showWidgetBorders,
+                    onSelectTheme = { viewModel.setHudTheme(it) },
+                    onSelectBackdrop = { viewModel.setHudCanvasBackdrop(it) },
+                    onSelectCardStyle = { viewModel.setHudCardStyle(it) },
+                    onToggleBorders = { viewModel.toggleWidgetBorders() },
+                    selectedGridScale = settings.hudGridScale,
+                    onSelectGridScale = { viewModel.setHudGridScale(it) },
+                    selectedSmoothing = settings.gaugeSmoothingMode,
+                    onSelectSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+                    hudMirror = settings.hudMirror,
+                    onToggleHudMirror = { viewModel.toggleHudMirror() }
+                )
+            }
+        }
+    }
+    }
 }
 
 private fun isFixedLayoutSpecialWidget(sensorKey: String): Boolean =
     sensorKey in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")
+
+/**
+ * Flashing top OBD2 status indicator modeled after Torque Pro:
+ * pulses while finding or disconnected from the adapter and disappears once live data connects.
+ */
+@Composable
+private fun HudConnectionStatusBanner(
+    connectionState: ConnectionState,
+    showConnectedToast: Boolean,
+    endpoint: String,
+    mirrored: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val visible = connectionState !is ConnectionState.Connected || showConnectedToast
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(animationSpec = tween(180)),
+        exit = fadeOut(animationSpec = tween(350)),
+        modifier = modifier.graphicsLayer { scaleX = if (mirrored) -1f else 1f }
+    ) {
+        val pulseTransition = rememberInfiniteTransition(label = "obdPulse")
+        val pulseAlpha by pulseTransition.animateFloat(
+            initialValue = 1.0f,
+            targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 600),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "obdDotAlpha"
+        )
+        val (dotCol, borderCol, bgCol, text) = when (connectionState) {
+            is ConnectionState.Connected -> listOf(
+                TorqueEvoColors.NominalGreen,
+                TorqueEvoColors.NominalGreen.copy(alpha = 0.72f),
+                Color(0xF5061B10),
+                "OBD2 CONNECTED · ${connectionState.handshake.protocolName}"
+            )
+            is ConnectionState.Connecting -> listOf(
+                TorqueEvoColors.ElectricBlue,
+                TorqueEvoColors.ElectricBlue.copy(alpha = 0.72f),
+                Color(0xF5071320),
+                "FINDING OBD2 ADAPTER ($endpoint)..."
+            )
+            is ConnectionState.Reconnecting -> listOf(
+                TorqueEvoColors.WarnAmber,
+                TorqueEvoColors.WarnAmber.copy(alpha = 0.75f),
+                Color(0xF51A1205),
+                "OBD2 RECONNECTING (#${connectionState.attempt})..."
+            )
+            is ConnectionState.Disconnected -> listOf(
+                TorqueEvoColors.CriticalRed,
+                TorqueEvoColors.CriticalRed.copy(alpha = 0.72f),
+                Color(0xF51C0709),
+                "OBD2 NOT CONNECTED · $endpoint"
+            )
+        }
+        val activeDotAlpha = if (connectionState is ConnectionState.Connected) 1f else pulseAlpha
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(99.dp))
+                .background(bgCol as Color)
+                .border(1.dp, borderCol as Color, RoundedCornerShape(99.dp))
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .alpha(activeDotAlpha)
+                    .clip(CircleShape)
+                    .background(dotCol as Color)
+            )
+            Text(
+                text = text as String,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = TorqueEvoColors.TextPrimary,
+                maxLines = 1
+            )
+        }
+    }
+}
 
 @Composable
 private fun rememberStationaryHoldModifier(
@@ -514,12 +779,14 @@ private fun ProportionalHudPageCanvas(
     onDraggingChanged: (Boolean) -> Unit,
     onCommitGridPos: (HudWidgetEntity, Int, Int) -> Unit,
     onToggleRecord: () -> Unit,
+    onTogglePauseResume: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
     onUpdateFreeformPos: (HudWidgetEntity, Float, Float, Float, Float) -> Unit,
     renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
-    extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>
+    extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>,
+    isRecordingPaused: Boolean = false
 ) {
     val density = LocalDensity.current
     var snapPreview by remember { mutableStateOf<SnapDragPreview?>(null) }
@@ -604,7 +871,7 @@ private fun ProportionalHudPageCanvas(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    "Blank HUD Canvas · Page ${pageIndex + 1}",
+                    "Blank HUD Dashboard · Page ${pageIndex + 1}",
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Color(0x73FFFFFF)
@@ -761,8 +1028,10 @@ private fun ProportionalHudPageCanvas(
                             mapProvider = extraFlags.first,
                             fuelPaused = extraFlags.second,
                             isRecording = extraFlags.third.first,
+                            isRecordingPaused = isRecordingPaused,
                             sampleCount = extraFlags.third.second,
                             onToggleRecord = onToggleRecord,
+                            onTogglePauseResume = onTogglePauseResume,
                             onToggleFuelPause = onToggleFuelPause,
                             onScanDtc = onScanDtc,
                             onReset0100 = onReset0100
@@ -825,8 +1094,10 @@ private fun RenderWidgetContent(
     mapProvider: com.apexobd.app.data.prefs.MapProvider,
     fuelPaused: Boolean,
     isRecording: Boolean,
+    isRecordingPaused: Boolean = false,
     sampleCount: Int,
     onToggleRecord: () -> Unit,
+    onTogglePauseResume: (() -> Unit)? = null,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit
@@ -836,12 +1107,30 @@ private fun RenderWidgetContent(
     when (widget.sensorKey) {
         "minimap" -> {
             val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val tripState by viewModel.tripRunMetrics.collectAsStateWithLifecycle()
+            val recLabel = if (isRecording) {
+                val clock = TripRunCalculator.formatDurationClock(tripState.elapsedSec)
+                val (dVal, dUnit) = viewModel.convertForDisplay(
+                    tripState.distanceKm,
+                    SensorQuantity.DISTANCE_KM,
+                    "km"
+                )
+                val distTxt = dVal?.let { "%.1f %s".format(it, dUnit) } ?: "0.0 $dUnit"
+                "${if (isRecordingPaused) "PAUSED" else "REC"} · $clock · $distTxt"
+            } else null
             MiniMapWidget(
                 gps = gps,
                 mapProvider = mapProvider,
                 activePmtilesPath = activeSettings.activePmtilesPath,
+                mapStylePreset = activeSettings.mapStylePreset,
+                mapCameraMode = activeSettings.mapCameraMode,
+                mapCursorStyle = activeSettings.mapCursorStyle,
+                highContrastRoads = activeSettings.highContrastMapRoads,
                 isRecording = isRecording,
-                onToggleRecord = onToggleRecord
+                isPaused = isRecordingPaused,
+                recordingStatusLabel = recLabel,
+                onToggleRecord = onToggleRecord,
+                onTogglePauseResume = onTogglePauseResume
             )
         }
         "fuel_ctrl" -> {
@@ -879,6 +1168,7 @@ private fun RenderWidgetContent(
                 WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
                 WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
                 WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
                 WidgetDisplayType.CHART -> {
                     val hist = (historyBuffers[widget.sensorKey] ?: emptyList()).map {
                         viewModel.convertForDisplay(it, meta.quantity, meta.unit).first ?: it
@@ -934,7 +1224,8 @@ private val DISPLAY_STYLE_OPTIONS = listOf(
     WidgetDisplayType.ANALOG_DIAL to "Radial",
     WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
     WidgetDisplayType.DIGITAL to "Digital",
-    WidgetDisplayType.BAR to "Bar",
+    WidgetDisplayType.BAR to "Line Bar",
+    WidgetDisplayType.SEGMENTED_BAR to "Boxed Bar",
     WidgetDisplayType.CHART to "Chart"
 )
 
@@ -1393,6 +1684,8 @@ private fun FullscreenComponentPickerDialog(
                             val valueStr = when {
                                 !enabled -> "Unavailable"
                                 item.isSpecialWidget -> "Widget"
+                                item.quantity == SensorQuantity.DURATION_SEC ->
+                                    TripRunCalculator.formatDurationClock((dispVal ?: 0.0).roundToLong())
                                 dispVal != null -> {
                                     val numTxt = when {
                                         item.maxValue - item.minValue <= 5.0 -> "%.2f".format(dispVal)
@@ -1516,13 +1809,14 @@ private fun FullscreenComponentPickerDialog(
                         )
                     }
 
+                    val previewPalette = LocalHudVisualStyle.current
                     BoxWithConstraints(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(12.dp))
-                            .background(TorqueEvoColors.PureBlack)
-                            .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                            .hudCanvasBackdrop(previewPalette)
+                            .border(1.dp, previewPalette.accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {

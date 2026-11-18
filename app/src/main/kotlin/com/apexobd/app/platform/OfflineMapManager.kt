@@ -413,15 +413,37 @@ class OfflineMapManager(context: Context) {
         }
 
         /**
-         * Builds an in-memory dark OLED MapLibre style supporting Protomaps (`roads`, `water`),
-         * OpenMapTiles (`transportation`, `water`), and BBBike Shortbread (`streets`, `ocean`, `water_polygons`).
+         * Builds an in-memory MapLibre style supporting Protomaps (`roads`, `water`),
+         * OpenMapTiles (`transportation`, `water`), and BBBike Shortbread (`streets`, `ocean`, `water_polygons`)
+         * tuned for the selected [com.apexobd.app.data.prefs.MapStylePreset].
          */
-        fun buildDarkPmtilesStyleJson(pmtilesFilePath: String): String {
+        private data class PmtilesPalette(
+            val bg: String,
+            val water: String,
+            val bldg: String,
+            val minorRoad: String,
+            val majorRoad: String,
+            val boundary: String
+        )
+
+        fun buildPmtilesStyleJson(
+            pmtilesFilePath: String,
+            preset: com.apexobd.app.data.prefs.MapStylePreset = com.apexobd.app.data.prefs.MapStylePreset.DARK_CONTRAST
+        ): String {
+            val pal = when (preset) {
+                com.apexobd.app.data.prefs.MapStylePreset.FIORD_NAVY -> PmtilesPalette("#2B364C", "#1E283B", "#374662", "#5D749B", "#8EB0DC", "#495B7C")
+                com.apexobd.app.data.prefs.MapStylePreset.LIBERTY_3D,
+                com.apexobd.app.data.prefs.MapStylePreset.BRIGHT_NAV -> PmtilesPalette("#EFECE6", "#CBE0F5", "#DDD5C8", "#FFFFFF", "#F5B951", "#CBD5E1")
+                com.apexobd.app.data.prefs.MapStylePreset.POSITRON_LIGHT -> PmtilesPalette("#EFEFEF", "#D7E1EB", "#E2E4E6", "#FFFFFF", "#B8C0CC", "#CBD5E1")
+                else -> PmtilesPalette("#07090D", "#050E1B", "#131C2B", "#38506F", "#648CBE", "#344C6B")
+            }
+            val (bg, water, bldg, minorRoad, majorRoad) = listOf(pal.bg, pal.water, pal.bldg, pal.minorRoad, pal.majorRoad)
+            val boundary = pal.boundary
             val escaped = pmtilesFilePath.replace("\\", "\\\\").replace("\"", "\\\"")
             return """
             {
               "version": 8,
-              "name": "ApexOBD Dark PMTiles",
+              "name": "ApexOBD ${preset.label} PMTiles",
               "sources": {
                 "offline_vec": {
                   "type": "vector",
@@ -432,28 +454,28 @@ class OfflineMapManager(context: Context) {
                 {
                   "id": "bg",
                   "type": "background",
-                  "paint": { "background-color": "#07090D" }
+                  "paint": { "background-color": "$bg" }
                 },
                 {
                   "id": "water-pm",
                   "type": "fill",
                   "source": "offline_vec",
                   "source-layer": "water",
-                  "paint": { "fill-color": "#050E1B" }
+                  "paint": { "fill-color": "$water" }
                 },
                 {
                   "id": "water-sb",
                   "type": "fill",
                   "source": "offline_vec",
                   "source-layer": "water_polygons",
-                  "paint": { "fill-color": "#050E1B" }
+                  "paint": { "fill-color": "$water" }
                 },
                 {
                   "id": "ocean-sb",
                   "type": "fill",
                   "source": "offline_vec",
                   "source-layer": "ocean",
-                  "paint": { "fill-color": "#050E1B" }
+                  "paint": { "fill-color": "$water" }
                 },
                 {
                   "id": "bldg-pm",
@@ -461,7 +483,7 @@ class OfflineMapManager(context: Context) {
                   "source": "offline_vec",
                   "source-layer": "buildings",
                   "minzoom": 13,
-                  "paint": { "fill-color": "#0F1622", "fill-opacity": 0.7 }
+                  "paint": { "fill-color": "$bldg", "fill-opacity": 0.78 }
                 },
                 {
                   "id": "bldg-omt",
@@ -469,7 +491,7 @@ class OfflineMapManager(context: Context) {
                   "source": "offline_vec",
                   "source-layer": "building",
                   "minzoom": 13,
-                  "paint": { "fill-color": "#0F1622", "fill-opacity": 0.7 }
+                  "paint": { "fill-color": "$bldg", "fill-opacity": 0.78 }
                 },
                 {
                   "id": "roads-pm-minor",
@@ -477,8 +499,8 @@ class OfflineMapManager(context: Context) {
                   "source": "offline_vec",
                   "source-layer": "roads",
                   "paint": {
-                    "line-color": "#1B2A3E",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.7, 15, 3.0]
+                    "line-color": "$minorRoad",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.0, 15, 4.2]
                   }
                 },
                 {
@@ -488,8 +510,8 @@ class OfflineMapManager(context: Context) {
                   "source-layer": "roads",
                   "filter": ["in", ["get", "pmap:kind"], ["literal", ["highway", "major_road"]]],
                   "paint": {
-                    "line-color": "#284364",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.0, 14, 4.5]
+                    "line-color": "$majorRoad",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.4, 14, 6.0]
                   }
                 },
                 {
@@ -498,8 +520,8 @@ class OfflineMapManager(context: Context) {
                   "source": "offline_vec",
                   "source-layer": "transportation",
                   "paint": {
-                    "line-color": "#1E3048",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 15, 3.4]
+                    "line-color": "$majorRoad",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.1, 15, 4.6]
                   }
                 },
                 {
@@ -508,8 +530,8 @@ class OfflineMapManager(context: Context) {
                   "source": "offline_vec",
                   "source-layer": "streets",
                   "paint": {
-                    "line-color": "#1E3048",
-                    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 15, 3.4]
+                    "line-color": "$majorRoad",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.1, 15, 4.6]
                   }
                 },
                 {
@@ -517,12 +539,15 @@ class OfflineMapManager(context: Context) {
                   "type": "line",
                   "source": "offline_vec",
                   "source-layer": "boundaries",
-                  "paint": { "line-color": "#233246", "line-width": 1.0 }
+                  "paint": { "line-color": "$boundary", "line-width": 1.2 }
                 }
               ]
             }
             """.trimIndent()
         }
+
+        fun buildDarkPmtilesStyleJson(pmtilesFilePath: String): String =
+            buildPmtilesStyleJson(pmtilesFilePath, com.apexobd.app.data.prefs.MapStylePreset.DARK_CONTRAST)
 
         private fun latToTileY(latDeg: Double, n: Double): Long {
             val rad = Math.toRadians(latDeg.coerceIn(-85.05, 85.05))
