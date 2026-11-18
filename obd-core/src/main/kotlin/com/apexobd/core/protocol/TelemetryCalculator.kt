@@ -524,7 +524,7 @@ object DerivedSensorCatalog {
             defaultUnit = "km/h",
             quantity = SensorQuantity.SPEED,
             minValue = 0.0,
-            maxValue = 240.0
+            maxValue = 220.0
         ),
         DerivedSensorSpec(
             key = "accel_g",
@@ -820,8 +820,8 @@ enum class GaugeSmoothingMode(
     val tauMs: Double
 ) {
     RAW_INSTANT("Raw Instant (0ms)", 0.0),
-    LIGHT_DAMPER("Light Damper (40ms)", 40.0),
-    ADAPTIVE_GLIDE("Adaptive Glide", 95.0)
+    LIGHT_DAMPER("Light Damper (26ms)", 26.0),
+    ADAPTIVE_GLIDE("Adaptive Glide", 85.0)
 }
 
 /**
@@ -885,17 +885,17 @@ object TelemetryDisplaySmoother {
                     tracks[k] = ChannelRamp(
                         startVal = raw,
                         targetVal = raw,
-                        elapsedMs = 160.0,
-                        durationMs = 160.0,
+                        elapsedMs = 130.0,
+                        durationMs = 130.0,
                         lastTargetAtMs = nowMs,
-                        avgPeriodMs = 160.0
+                        avgPeriodMs = 130.0
                     )
                     out[k] = raw
                     continue
                 }
                 val curVisual = currentTrackValue(track)
                 if (mode == GaugeSmoothingMode.LIGHT_DAMPER) {
-                    val alpha = (1.0 - kotlin.math.exp(-safeDt / mode.tauMs)).coerceIn(0.08, 1.0)
+                    val alpha = (1.0 - kotlin.math.exp(-safeDt / mode.tauMs)).coerceIn(0.10, 1.0)
                     val delta = raw - curVisual
                     val next = if (abs(delta) < 0.05 && abs(raw) < 20.0 || abs(delta) < 0.5 && abs(raw) >= 200.0) {
                         raw
@@ -909,13 +909,19 @@ object TelemetryDisplaySmoother {
                     out[k] = next
                 } else {
                     if (abs(raw - track.targetVal) > 1e-4) {
-                        val measured = (nowMs - track.lastTargetAtMs).coerceIn(55L, 550L).toDouble()
+                        val gapMs = nowMs - track.lastTargetAtMs
+                        // Long steady-cruise or pedal-hold plateaus must not inflate ramp duration into sluggish lag.
+                        val measured = if (gapMs > 260L) {
+                            95.0
+                        } else {
+                            gapMs.coerceIn(45L, 220L).toDouble()
+                        }
                         track.avgPeriodMs = (track.avgPeriodMs * 0.65) + (measured * 0.35)
                         track.lastTargetAtMs = nowMs
                         track.startVal = curVisual
                         track.targetVal = raw
                         track.elapsedMs = 0.0
-                        track.durationMs = (track.avgPeriodMs * 1.02).coerceIn(75.0, 480.0)
+                        track.durationMs = track.avgPeriodMs.coerceIn(55.0, 155.0)
                     } else {
                         track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
                     }

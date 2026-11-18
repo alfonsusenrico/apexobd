@@ -286,6 +286,18 @@ class TelemetryCalculatorTest {
         assertEquals(40.0, firstStep["obd_speed"]!!, 0.01)
         assertTrue(midStep["obd_speed"]!! in 32.0..38.0)
         assertEquals(30.0, endStep["obd_speed"]!!, 0.01)
+
+        // Long steady hold on throttle/load/speed (2000ms without change) must not inflate subsequent glide duration
+        session.reset()
+        session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 1000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 3000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        val snapStart = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 16L, nowMs = 3016L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertEquals(10.0, snapStart["throttle"]!!, 0.5)
+        val fastFollow = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 110L, nowMs = 3126L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertTrue("Expected rapid >65% climb by 110ms, got ${fastFollow["throttle"]}", fastFollow["throttle"]!! > 65.0)
+        val settled = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 60L, nowMs = 3186L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertEquals(90.0, settled["throttle"]!!, 0.01)
+        assertEquals(85.0, settled["engine_load"]!!, 0.01)
     }
 
     @Test

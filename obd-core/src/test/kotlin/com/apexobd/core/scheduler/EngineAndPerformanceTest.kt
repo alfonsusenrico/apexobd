@@ -179,4 +179,59 @@ class EngineAndPerformanceTest {
         assertTrue(handshake.isCanProtocol)
         assertTrue("ATST19" in commandsSeen)
     }
+
+    @Test
+    fun `single-PID CAN scheduler polls visible throttle, engine_load, and speed in high-priority cycle`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val mockTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "single-pid-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    return when {
+                        cmd == "ATZ" -> "ELM327 v1.5\r"
+                        cmd.startsWith("AT") && cmd != "ATDP" && cmd != "ATDPN" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        cmd == "0100" -> "41 00 18 18 80 01\r" // 04, 05, 0C, 0D, 11, 20
+                        cmd == "0120" -> "41 20 00 00 00 01\r" // 40
+                        cmd == "0140" -> "41 40 08 00 00 00\r" // 45 (rel_throttle)
+                        cmd.startsWith("01") && cmd.length > 5 -> "NO DATA\r" // force single-PID mode like Avanza ECU
+                        cmd.startsWith("010C") -> "41 0C 1A F8\r"
+                        cmd.startsWith("010D") -> "41 0D 3C\r"
+                        cmd.startsWith("0104") -> "41 04 80\r"
+                        cmd.startsWith("0111") -> "41 11 40\r"
+                        cmd.startsWith("0145") -> "41 45 50\r"
+                        cmd.startsWith("0105") -> "41 05 78\r"
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(mockTransport, scope)
+            engine.setActiveSensors(setOf("rpm", "obd_speed", "throttle", "engine_load", "rel_throttle", "coolant"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(180L)
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            val polledPids = cmds.filter { it.startsWith("01") && it.length in 4..5 }.map { it.substring(2, 4) }
+            assertTrue("Expected 0C in $polledPids", "0C" in polledPids)
+            assertTrue("Expected 0D in $polledPids", "0D" in polledPids)
+            assertTrue("Expected 04 in $polledPids", "04" in polledPids)
+            assertTrue("Expected 11 in $polledPids", "11" in polledPids)
+            assertTrue("Expected 45 in $polledPids", "45" in polledPids)
+        }
+    }
 }

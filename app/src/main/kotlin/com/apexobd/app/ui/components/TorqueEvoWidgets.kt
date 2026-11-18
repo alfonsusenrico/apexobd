@@ -1,10 +1,5 @@
 package com.apexobd.app.ui.components
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -40,6 +35,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -112,8 +108,8 @@ internal fun fitDigitsFontSizeSp(
 internal fun fitLabelFontSizeSp(
     availWidthDp: Float,
     label: String,
-    minSp: Float = 6.5f,
-    maxSp: Float = 12.5f
+    minSp: Float = 7.5f,
+    maxSp: Float = 13f
 ): Float {
     // Uppercase bold condensed-width estimate so compact 1x1 HUD labels fit without ellipses.
     val chars = label.uppercase().sumOf { ch ->
@@ -205,7 +201,7 @@ fun AnalogDialWidget(
         val rDp = minOf(availW / 2.12f, availH / 1.72f).coerceAtLeast(22.dp)
         val dialD = rDp * 2f
         val cyDp = 4.dp + (availH * 0.5f) + (rDp * 0.20f)
-        val labelSp = (dialD.value * 0.068f).coerceIn(9.5f, 14.5f).sp
+        val labelSp = (dialD.value * 0.080f).coerceIn(10f, 15.5f).sp
         val unitSpVal = (dialD.value * 0.056f).coerceIn(9f, 12.5f)
         val valSp = fitDigitsFontSizeSp(
             availWidthDp = (dialD * 0.68f).value,
@@ -282,9 +278,9 @@ fun AnalogDialWidget(
         Text(
             text = shortLabel.uppercase(),
             fontSize = labelSp,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.ExtraBold,
             letterSpacing = 0.8.sp,
-            color = palette.textSecondary,
+            color = palette.labelColor,
             maxLines = 1,
             softWrap = false,
             modifier = Modifier
@@ -336,12 +332,7 @@ fun SemiDigitalArcWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val rawPct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val pct by animateFloatAsState(
-        targetValue = rawPct,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow, dampingRatio = 0.85f),
-        label = "semiPct"
-    )
+    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
     val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
 
@@ -353,10 +344,10 @@ fun SemiDigitalArcWidget(
     ) {
         Text(
             text = shortLabel.uppercase(),
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.ExtraBold,
             letterSpacing = 0.9.sp,
-            color = palette.textSecondary,
+            color = palette.labelColor,
             maxLines = 1,
             modifier = Modifier.align(Alignment.TopCenter)
         )
@@ -453,8 +444,8 @@ fun DigitalReadoutWidget(
         val labelSp = fitLabelFontSizeSp(
             availWidthDp = (availInnerW - dotReserve.value).coerceAtLeast(26f),
             label = shortLabel,
-            minSp = 6.5f,
-            maxSp = if (compact) 11.5f else 12.5f
+            minSp = 7.5f,
+            maxSp = if (compact) 12f else 13f
         ).sp
         val unitSpVal = if (compact) 8.5.sp else 11.5.sp
         val valSp = fitDigitsFontSizeSp(
@@ -480,9 +471,9 @@ fun DigitalReadoutWidget(
                 Text(
                     text = shortLabel.uppercase(),
                     fontSize = labelSp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = if (compact) 0.sp else 0.4.sp,
-                    color = palette.textSecondary,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = if (compact) 0.1.sp else 0.45.sp,
+                    color = palette.labelColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
@@ -562,7 +553,7 @@ fun BarGaugeWidget(
             minSp = 12.5f,
             maxSp = 21f
         ).sp
-        val wideLabelSp = 11.5.sp
+        val wideLabelSp = 12.sp
 
         Row(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxHeight().size(width = 3.dp, height = 100.dp).background(accent))
@@ -571,13 +562,13 @@ fun BarGaugeWidget(
                 verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Center
             ) {
                 if (compact) {
-                    val compactLabelSp = fitLabelFontSizeSp(innerW, shortLabel, minSp = 6.5f, maxSp = 11f).sp
+                    val compactLabelSp = fitLabelFontSizeSp(innerW, shortLabel, minSp = 7.5f, maxSp = 12f).sp
                     Text(
                         text = shortLabel.uppercase(),
                         fontSize = compactLabelSp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.sp,
-                        color = palette.textSecondary,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.1.sp,
+                        color = palette.labelColor,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
@@ -605,9 +596,9 @@ fun BarGaugeWidget(
                         Text(
                             text = shortLabel.uppercase(),
                             fontSize = wideLabelSp,
-                            fontWeight = FontWeight.Bold,
+                            fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.5.sp,
-                            color = palette.textSecondary,
+                            color = palette.labelColor,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
@@ -654,7 +645,23 @@ fun BarGaugeWidget(
     }
 }
 
-/** Discrete boxed LED segmented bar style (`WidgetDisplayType.SEGMENTED_BAR`) with range ticks. */
+/** Smooth Blue -> Green -> Yellow (mid) -> Orange -> Red spectrum for discrete boxed LED bars. */
+internal fun segmentedSpectrumColor(fraction: Float): Color {
+    val t = fraction.coerceIn(0f, 1f)
+    val cBlue = Color(0xFF00A8FF)
+    val cGreen = Color(0xFF22C55E)
+    val cYellow = Color(0xFFFACC15)
+    val cOrange = Color(0xFFF97316)
+    val cRed = Color(0xFFEF4444)
+    return when {
+        t <= 0.25f -> lerp(cBlue, cGreen, t / 0.25f)
+        t <= 0.50f -> lerp(cGreen, cYellow, (t - 0.25f) / 0.25f)
+        t <= 0.75f -> lerp(cYellow, cOrange, (t - 0.50f) / 0.25f)
+        else -> lerp(cOrange, cRed, (t - 0.75f) / 0.25f)
+    }
+}
+
+/** Discrete boxed LED segmented bar style (`WidgetDisplayType.SEGMENTED_BAR`) — empty neutral boxes until lit. */
 @Composable
 fun SegmentedBarGaugeWidget(
     shortLabel: String,
@@ -669,7 +676,11 @@ fun SegmentedBarGaugeWidget(
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
+    val activeAccent = if (value == null || pct <= 0.004f) {
+        palette.dialTrack
+    } else {
+        thresholdColor(value, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
+    }
     val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
 
     BoxWithConstraints(
@@ -679,12 +690,16 @@ fun SegmentedBarGaugeWidget(
     ) {
         val compact = maxWidth < 145.dp
         val segments = if (compact) 12 else 18
-        val litCount = (segments * pct).roundToInt().coerceIn(0, segments)
+        val litCount = if (value == null || pct <= 0.004f) {
+            0
+        } else {
+            (segments * pct).roundToInt().coerceIn(1, segments)
+        }
         val padH = if (compact) 5.5.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
         val unitSpVal = if (compact) 8.5.sp else 10.sp
         val fittedValSp = fitDigitsFontSizeSp(
-            availWidthDp = if (compact) innerW * 0.56f else innerW * 0.45f,
+            availWidthDp = if (compact) innerW * 0.54f else innerW * 0.44f,
             text = displayVal,
             unit = displayUnit,
             unitSp = unitSpVal.value,
@@ -693,14 +708,14 @@ fun SegmentedBarGaugeWidget(
         ).sp
 
         Row(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.fillMaxHeight().size(width = 3.dp, height = 100.dp).background(accent))
+            Box(modifier = Modifier.fillMaxHeight().size(width = 3.dp, height = 100.dp).background(activeAccent))
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = padH, vertical = if (compact) 4.dp else 6.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.50f else 0.56f), shortLabel, minSp = 6.5f, maxSp = 11.5f).sp
+                val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.50f else 0.56f), shortLabel, minSp = 7.5f, maxSp = 12.5f).sp
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -709,9 +724,9 @@ fun SegmentedBarGaugeWidget(
                     Text(
                         text = shortLabel.uppercase(),
                         fontSize = segLabelSp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = if (compact) 0.sp else 0.25.sp,
-                        color = palette.textSecondary,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = if (compact) 0.1.sp else 0.35.sp,
+                        color = palette.labelColor,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis,
@@ -722,7 +737,7 @@ fun SegmentedBarGaugeWidget(
                             text = displayVal,
                             fontSize = fittedValSp,
                             fontWeight = FontWeight.Bold,
-                            color = if (accent == TorqueEvoColors.CriticalRed) TorqueEvoColors.CriticalRed else palette.textPrimary,
+                            color = if (activeAccent == TorqueEvoColors.CriticalRed && litCount > 0) TorqueEvoColors.CriticalRed else palette.textPrimary,
                             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
                             maxLines = 1,
                             softWrap = false
@@ -739,24 +754,23 @@ fun SegmentedBarGaugeWidget(
                         .height(if (compact) 10.dp else 13.dp),
                     horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 3.dp)
                 ) {
+                    val lastIdx = (segments - 1).coerceAtLeast(1)
                     for (idx in 0 until segments) {
-                        val frac = idx.toFloat() / segments.toFloat()
-                        val zoneColor = when {
-                            frac >= 0.82f -> TorqueEvoColors.CriticalRed
-                            frac >= 0.65f -> TorqueEvoColors.WarnAmber
-                            else -> accent
-                        }
-                        val blockColor = if (idx < litCount) {
-                            zoneColor
-                        } else {
-                            if (frac >= 0.65f) zoneColor.copy(alpha = 0.16f) else palette.dialTrack.copy(alpha = 0.55f)
-                        }
+                        val isLit = idx < litCount
+                        val frac = idx.toFloat() / lastIdx.toFloat()
+                        val litColor = segmentedSpectrumColor(frac)
+                        val boxMod = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(2.5.dp))
                         Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .clip(RoundedCornerShape(2.5.dp))
-                                .background(blockColor)
+                            modifier = if (isLit) {
+                                boxMod.background(litColor)
+                            } else {
+                                boxMod
+                                    .background(Color(0x14FFFFFF))
+                                    .border(0.6.dp, Color(0x1EFFFFFF), RoundedCornerShape(2.5.dp))
+                            }
                         )
                     }
                 }
@@ -773,7 +787,7 @@ fun SegmentedBarGaugeWidget(
                     Text(
                         text = if (unit == "mm:ss") "3h" else "${max.roundToInt()}",
                         fontSize = 8.sp,
-                        color = if (pct > 0.82f) TorqueEvoColors.CriticalRed else palette.textSecondary
+                        color = if (litCount > 0 && pct > 0.85f) TorqueEvoColors.CriticalRed else palette.textSecondary
                     )
                 }
             }
@@ -808,10 +822,10 @@ fun SparklineChartWidget(
         ) {
             Text(
                 text = shortLabel.uppercase(),
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 0.5.sp,
-                color = palette.textSecondary,
+                color = palette.labelColor,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis,
@@ -1067,7 +1081,7 @@ fun FuelControlWidget(
         val btnGap = 6.dp
         val textMaxW = (maxWidth.value - padH.value * 2f - btnSize.value - btnGap.value).coerceAtLeast(44f)
         val kplText = formatTelemetryValue(kplValue, 0.0, 30.0)
-        val labelSpVal = fitLabelFontSizeSp(textMaxW, "KPL · AVG", minSp = 7.5f, maxSp = if (compact) 9.5f else 11f)
+        val labelSpVal = fitLabelFontSizeSp(textMaxW, "KPL · AVG", minSp = 8.5f, maxSp = if (compact) 10.5f else 12f)
         val unitSpVal = if (compact) 8.5.sp else 10.5.sp
         val heightBoundMaxSp = ((maxHeight.value - padV.value * 2f - labelSpVal * 1.3f) * 0.72f)
             .coerceIn(13f, if (compact) 20f else 24f)
@@ -1097,9 +1111,9 @@ fun FuelControlWidget(
                 Text(
                     text = "KPL · AVG",
                     fontSize = labelSpVal.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.ExtraBold,
                     letterSpacing = if (compact) 0.2.sp else 0.6.sp,
-                    color = palette.textSecondary,
+                    color = palette.labelColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
@@ -1190,10 +1204,10 @@ fun DtcCheckerWidget(
         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(
                 text = "FAULT CHECK (03/07)",
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 0.5.sp,
-                color = palette.textSecondary,
+                color = palette.labelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1245,9 +1259,9 @@ fun PerfTimerWidget(
         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(
                 text = "0–100 KM/H SPRINT",
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                color = palette.textSecondary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = palette.labelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1299,9 +1313,9 @@ fun DataLoggerWidget(
         Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(
                 text = "RUN LOGGER",
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                color = palette.textSecondary,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = palette.labelColor,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )

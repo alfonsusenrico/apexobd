@@ -391,41 +391,48 @@ class ObdPollingEngine(
                 .filter { discovered.isEmpty() || it.pidHex in discovered }
 
             val relThrSupported = "45" in discovered || discovered.isEmpty()
-            val promotedFallbackKeys = buildSet {
-                if (!relThrSupported) add("throttle")
-                if ("boost_kpa" in requested || "boost_bar" in requested) add("map")
+            val mafSupported = "10" in discovered || discovered.isEmpty()
+            val coreFuelAirKeys = buildSet {
+                add("rpm")
+                add("obd_speed")
+                add(if (relThrSupported) "rel_throttle" else "throttle")
+                if (mafSupported) add("maf") else add("engine_load")
+                if (!mafSupported && "0B" in discovered) add("map")
             }
 
+            val isHighTarget: (PidDefinition) -> Boolean = { pid ->
+                pid.defaultTier == PollTier.HIGH && (pid.key in requested || pid.key in coreFuelAirKeys)
+            }
             val highTargets = allAvailableTargets
-                .filter { it.defaultTier == PollTier.HIGH || it.key in promotedFallbackKeys }
+                .filter(isHighTarget)
                 .sortedBy { pid ->
                     val idx = fastPriorityOrder.indexOf(pid.key)
                     if (idx >= 0) idx else 100
                 }
-            val slowAll = allAvailableTargets.filter { it.defaultTier != PollTier.HIGH && it.key !in promotedFallbackKeys }
-            // Split visible HUD secondary PIDs vs background fuel helpers so visible dials/bars update frequently without blocking RPM/Throttle.
+            val slowAll = allAvailableTargets.filterNot(isHighTarget)
             val visibleSecondary = slowAll.filter { it.key in requested }
             val helperSecondary = slowAll.filter { it.key !in requested }
-            val slowDue = when {
-                slowAll.isEmpty() -> emptyList()
-                cycle == 0 -> slowAll
-                visibleSecondary.isNotEmpty() && cycle % 2 == 1 -> {
-                    val item = visibleSecondary[slowCursor % visibleSecondary.size]
-                    slowCursor++
-                    listOf(item)
+            val fuelStatusPid = helperSecondary.firstOrNull { it.key == "fuel_system_status" }
+            val otherHelpers = helperSecondary.filter { it.key != "fuel_system_status" }
+            val slowDue = buildList {
+                if (cycle == 0) {
+                    addAll(slowAll)
+                } else {
+                    if (visibleSecondary.isNotEmpty() && cycle % 2 == 1) {
+                        val batch = if (visibleSecondary.size >= 3) 2 else 1
+                        repeat(batch) {
+                            add(visibleSecondary[slowCursor % visibleSecondary.size])
+                            slowCursor++
+                        }
+                    }
+                    if (fuelStatusPid != null && cycle % 2 == 0) {
+                        add(fuelStatusPid)
+                    }
+                    if (otherHelpers.isNotEmpty() && cycle % 6 == 0) {
+                        add(otherHelpers[(cycle / 6) % otherHelpers.size])
+                    }
                 }
-                helperSecondary.isNotEmpty() && cycle % 6 == 0 -> {
-                    val item = helperSecondary[slowCursor % helperSecondary.size]
-                    slowCursor++
-                    listOf(item)
-                }
-                visibleSecondary.isEmpty() && cycle % 4 == 0 -> {
-                    val item = slowAll[slowCursor % slowAll.size]
-                    slowCursor++
-                    listOf(item)
-                }
-                else -> emptyList()
-            }
+            }.distinctBy { it.pidHex }
             val standardTargets = (highTargets + slowDue).distinctBy { it.pidHex }
 
             if (supportsMultiPid && standardTargets.size >= 2) {
@@ -465,7 +472,6 @@ class ObdPollingEngine(
                     }
                 }
             } else {
-                // Interleave primary RPM / high-priority PID every 2nd step for 2x smoother gauge updates
                 val rpmPid = standardTargets.firstOrNull { it.key == "rpm" }
                 val others = standardTargets.filter { it.key != "rpm" }
 
@@ -475,9 +481,16 @@ class ObdPollingEngine(
                     latencyAccumMs += rtt
                     rttCount++
                 } else {
+                    val midRpmIndex = if (others.size >= 3) others.size / 2 else -1
+                    if (rpmPid != null) {
+                        val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
+                        if (okRpm) samplesInSec++
+                        latencyAccumMs += rttRpm
+                        rttCount++
+                    }
                     for ((idx, pid) in others.withIndex()) {
                         if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
-                        if (rpmPid != null && idx % 2 == 0) {
+                        if (rpmPid != null && midRpmIndex >= 1 && idx == midRpmIndex) {
                             val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
                             if (okRpm) samplesInSec++
                             latencyAccumMs += rttRpm
