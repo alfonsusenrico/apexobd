@@ -4,6 +4,8 @@ import android.app.Application
 import android.net.Uri
 import android.widget.Toast
 import com.apexobd.app.data.prefs.MapCursorStyle
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
+import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
 import androidx.lifecycle.AndroidViewModel
@@ -53,6 +55,7 @@ import com.apexobd.core.protocol.DerivedSensorCatalog
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.EcuDiscoveryDumper
+import com.apexobd.core.protocol.FuelEconomyTracker
 import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.GaugeSmoothingMode
 import com.apexobd.core.protocol.ObdPidRegistry
@@ -222,6 +225,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingSaveTrip = MutableStateFlow<TripSessionEntity?>(null)
     val pendingSaveTrip: StateFlow<TripSessionEntity?> = _pendingSaveTrip.asStateFlow()
 
+    enum class ShareCardExportAction { SHARE_TO_APPS, DOWNLOAD_PNG }
+
     data class ShareCardDraft(
         val session: TripSessionEntity,
         val samples: List<TelemetrySampleEntity>,
@@ -231,6 +236,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _shareCardDraft = MutableStateFlow<ShareCardDraft?>(null)
     val shareCardDraft: StateFlow<ShareCardDraft?> = _shareCardDraft.asStateFlow()
+
+    private val _shareCardPreparing = MutableStateFlow(false)
+    val shareCardPreparing: StateFlow<Boolean> = _shareCardPreparing.asStateFlow()
+
+    private val _shareCardExporting = MutableStateFlow(false)
+    val shareCardExporting: StateFlow<Boolean> = _shareCardExporting.asStateFlow()
 
     private val _fuelMetrics = MutableStateFlow<FuelMetricsSnapshot?>(null)
     val fuelMetrics: StateFlow<FuelMetricsSnapshot?> = _fuelMetrics.asStateFlow()
@@ -392,7 +403,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Visible page only polling set (plus logged baseline PIDs while Run Recording is active)
+        // Visible page only polling set; background Run Recording uses separate non-blocking logger queue
         viewModelScope.launch {
             combine(pagesWithWidgets, _visiblePageIndex, _isRecording, settings, _onHudScreen) { pages, pageIdx, recording, st, onHud ->
                 val visibleWidgets = if (onHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
@@ -401,22 +412,40 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     .map { it.sensorKey }
                     .toSet()
 
-                val activeKeys = buildSet {
+                val visibleKeys = buildSet {
                     visibleWidgets.forEach { widget ->
                         add(widget.sensorKey)
                         if (widget.sensorKey == "fuel_ctrl") add("kpl_road_avg")
                     }
-                    if (recording) {
-                        addAll(listOf("rpm", "obd_speed", "throttle", "rel_throttle", "maf", "map", "iat", "baro", "engine_load", "stft_b1", "ltft_b1", "coolant", "voltage", "timing_advance", "kpl_road_avg"))
-                    }
                 }
-                val needsHighFreqGps = recording || (onHud && st.pollingProfile != PollingProfile.ECO_BATTERY && activeKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
+                val backgroundKeys = if (recording) RECORDING_EXTRA_KEYS else emptySet()
+                val needsHighFreqGps = recording || (onHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
                 if (onHud || recording) {
                     locationTracker.startUpdates(highFrequency = needsHighFreqGps)
                 }
-                activeKeys
-            }.collect { keys ->
-                engine?.setActiveSensors(keys)
+                visibleKeys to backgroundKeys
+            }.collect { (visibleKeys, backgroundKeys) ->
+                engine?.setActiveSensors(visibleKeys)
+                engine?.setBackgroundRecordKeys(backgroundKeys)
+            }
+        }
+
+        // Direct 0ms-overhead GPS speed emission independent of OBD poll cycle cadence
+        viewModelScope.launch {
+            combine(_onHudScreen, _isRecording, locationTracker.gps) { onHud, recording, gps ->
+                Triple(onHud || recording, recording, gps)
+            }.collect { (active, recording, gps) ->
+                if (active && gps.hasRealFix) {
+                    val imuG = accelTracker.accelG.value
+                    engine?.updateExternalTelemetry(gps.speedKmh, imuG, gps.roadGradePct)
+                    _liveValues.update { cur ->
+                        val prevSpeed = cur["gps_speed"]
+                        if (prevSpeed == gps.speedKmh) cur else cur.toMutableMap().apply { put("gps_speed", gps.speedKmh) }
+                    }
+                    if (!recording && !onHudScreen.value) Unit else {
+                        _ecuExplorerValues.value = _liveValues.value
+                    }
+                }
             }
         }
 
@@ -627,6 +656,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
         val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
         newEngine.setActiveSensors(visible.map { it.sensorKey }.toSet())
+        newEngine.setBackgroundRecordKeys(if (_isRecording.value) RECORDING_EXTRA_KEYS else emptySet())
 
         engineCollectorsJob = viewModelScope.launch {
             launch { newEngine.connectionState.collect { _connectionState.value = it } }
@@ -697,7 +727,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 allTimeTotalFuelLiters = fm.allTimeTotalFuelLiters,
                 fuelUsedSinceFullRefuelLiters = fm.fuelUsedSinceFullRefuelLiters,
                 estimatedRemainingFuelLiters = fm.estimatedRemainingFuelLiters,
-                recentDteKpl = fm.dteEconomyKpl ?: current.recentDteKpl
+                recentDteKpl = fm.rawRecentDteKpl ?: current.recentDteKpl
             )
         )
     }
@@ -1039,16 +1069,22 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun exportSessionShareCard(session: TripSessionEntity) {
+        if (_shareCardPreparing.value) return
+        _shareCardPreparing.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val samples = tripDao.getSamplesForSession(session.id)
-            val vehicle = vehicleDao.getById(session.vehicleId) ?: activeVehicle.value
-            val stats = TripShareStatsCalculator.summarize(session, samples)
-            _shareCardDraft.value = ShareCardDraft(
-                session = session,
-                samples = samples,
-                vehicle = vehicle,
-                stats = stats
-            )
+            try {
+                val samples = tripDao.getSamplesForSession(session.id)
+                val vehicle = vehicleDao.getById(session.vehicleId) ?: activeVehicle.value
+                val stats = TripShareStatsCalculator.summarize(session, samples)
+                _shareCardDraft.value = ShareCardDraft(
+                    session = session,
+                    samples = samples,
+                    vehicle = vehicle,
+                    stats = stats
+                )
+            } finally {
+                _shareCardPreparing.value = false
+            }
         }
     }
 
@@ -1056,30 +1092,110 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         _shareCardDraft.value = null
     }
 
-    fun confirmShareCardExport(config: TripCardConfig) {
-        val draft = _shareCardDraft.value ?: return
-        _shareCardDraft.value = null
+    fun updateSavedTripCardConfig(config: TripCardConfig) {
         viewModelScope.launch(Dispatchers.IO) {
-            prefs.setShareCardMetrics(config.selectedMetrics)
-            val st = settings.value
-            val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
-            val outFile = TripCardRenderer.renderTripCardToPngFile(
-                context = getApplication(),
-                session = draft.session,
-                samples = draft.samples,
-                vehicle = draft.vehicle,
-                unitPrefs = st.toUnitPreferences(),
-                fuelType = fuelType,
-                selectedMetrics = config.selectedMetrics,
-                config = config,
-                precomputedStats = draft.stats
-            )
-            TripExporter.sharePreparedFile(
-                context = getApplication(),
-                file = outFile,
-                mimeType = "image/png",
-                title = "Share Route Card"
-            )
+            prefs.saveTripCardConfig(config)
+        }
+    }
+
+    fun copyPickedCardBackgroundPhoto(uri: Uri, onResult: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val savedPath = TripCardRenderer.copyCardBackgroundPhotoToInternal(getApplication(), uri)
+            withContext(Dispatchers.Main) {
+                onResult(savedPath)
+            }
+        }
+    }
+
+    suspend fun loadSurroundingRoadsForCard(
+        samples: List<TelemetrySampleEntity>,
+        boxWidth: Int,
+        boxHeight: Int
+    ): TripCardRenderer.RoadContextLayer? = TripCardRenderer.captureSurroundingRoadsLayer(
+        context = getApplication(),
+        samples = samples,
+        boxWidth = boxWidth,
+        boxHeight = boxHeight,
+        activePmtilesPath = settings.value.activePmtilesPath
+    )
+
+    fun confirmShareCardExport(
+        config: TripCardConfig,
+        action: ShareCardExportAction = ShareCardExportAction.SHARE_TO_APPS,
+        roadContextLayer: TripCardRenderer.RoadContextLayer? = null
+    ) {
+        val draft = _shareCardDraft.value ?: return
+        if (_shareCardExporting.value) return
+        _shareCardExporting.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                prefs.saveTripCardConfig(config)
+                val st = settings.value
+                val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+                val resolvedRoadLayer = if (config.showSurroundingRoads) {
+                    val (reqW, reqH) = TripCardRenderer.routeCanvasSizeForConfig(config)
+                    val matchesExisting = roadContextLayer != null &&
+                        !roadContextLayer.roadsAlphaBitmap.isRecycled &&
+                        roadContextLayer.boxWidth == reqW &&
+                        roadContextLayer.boxHeight == reqH
+                    if (matchesExisting) {
+                        roadContextLayer
+                    } else {
+                        TripCardRenderer.captureSurroundingRoadsLayer(
+                            context = getApplication(),
+                            samples = draft.samples,
+                            boxWidth = reqW,
+                            boxHeight = reqH,
+                            activePmtilesPath = st.activePmtilesPath
+                        )
+                    }
+                } else null
+
+                val outFile = TripCardRenderer.renderTripCardToPngFile(
+                    context = getApplication(),
+                    session = draft.session,
+                    samples = draft.samples,
+                    vehicle = draft.vehicle,
+                    unitPrefs = st.toUnitPreferences(),
+                    fuelType = fuelType,
+                    selectedMetrics = config.selectedMetrics,
+                    config = config,
+                    precomputedStats = draft.stats,
+                    roadContextLayer = resolvedRoadLayer
+                )
+
+                withContext(Dispatchers.Main) {
+                    _shareCardDraft.value = null
+                }
+
+                when (action) {
+                    ShareCardExportAction.SHARE_TO_APPS -> {
+                        TripExporter.sharePreparedFile(
+                            context = getApplication(),
+                            file = outFile,
+                            mimeType = "image/png",
+                            title = "Export Route Card"
+                        )
+                    }
+                    ShareCardExportAction.DOWNLOAD_PNG -> {
+                        val savedRes = TripExporter.savePngToPictures(
+                            context = getApplication(),
+                            sourceFile = outFile,
+                            displayName = "apex_route_${draft.session.id}_${System.currentTimeMillis()}.png"
+                        )
+                        withContext(Dispatchers.Main) {
+                            val msg = if (savedRes.isSuccess) {
+                                "Saved to ${savedRes.getOrNull()}"
+                            } else {
+                                "Save failed: ${savedRes.exceptionOrNull()?.message ?: "unknown"}"
+                            }
+                            Toast.makeText(getApplication(), msg, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            } finally {
+                _shareCardExporting.value = false
+            }
         }
     }
 
@@ -1799,5 +1915,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             flushActiveVehicleStats()
             engine?.stop()
         }
+    }
+
+    companion object {
+        private val RECORDING_EXTRA_KEYS = setOf(
+            "rpm", "obd_speed", "throttle", "rel_throttle", "maf", "map",
+            "iat", "baro", "engine_load", "stft_b1", "ltft_b1",
+            "coolant", "voltage", "timing_advance", "kpl_road_avg"
+        )
     }
 }

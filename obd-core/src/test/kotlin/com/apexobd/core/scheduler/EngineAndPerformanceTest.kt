@@ -234,4 +234,62 @@ class EngineAndPerformanceTest {
             assertTrue("Expected 45 in $polledPids", "45" in polledPids)
         }
     }
+
+    @Test
+    fun `background recording keys do not steal HIGH-tier frequency from visible gauges`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val mockTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "bg-sched-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    return when {
+                        cmd == "ATZ" -> "ELM327 v1.5\r"
+                        cmd.startsWith("AT") && cmd != "ATDP" && cmd != "ATDPN" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        cmd == "0100" -> "41 00 18 19 80 01\r" // 04, 05, 0C, 0D, 10, 11, 20
+                        cmd == "0120" -> "41 20 00 00 00 01\r" // 40
+                        cmd == "0140" -> "41 40 48 00 00 00\r" // 42 (voltage), 45 (rel_throttle)
+                        cmd.startsWith("01") && cmd.length > 5 -> "NO DATA\r"
+                        cmd.startsWith("010C") -> "41 0C 1A F8\r"
+                        cmd.startsWith("010D") -> "41 0D 3C\r"
+                        cmd.startsWith("0110") -> "41 10 02 80\r"
+                        cmd.startsWith("0145") -> "41 45 50\r"
+                        cmd.startsWith("0111") -> "41 11 40\r"
+                        cmd.startsWith("0142") -> "41 42 36 B0\r"
+                        cmd.startsWith("0105") -> "41 05 78\r"
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(mockTransport, scope)
+            engine.setPollingProfile(PollingProfile.MAX_PERFORMANCE)
+            // Visible HUD wants RPM, RelThr, Voltage; background logger wants AbsThr (11) & Coolant (05)
+            engine.setActiveSensors(setOf("rpm", "rel_throttle", "voltage"))
+            engine.setBackgroundRecordKeys(setOf("throttle", "coolant"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(220L)
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            val polledPids = cmds.filter { it.startsWith("01") && it.length in 4..5 }.map { it.substring(2, 4) }
+            val relThrCount = polledPids.count { it == "45" }
+            val redundantThrCount = polledPids.count { it == "11" }
+            assertTrue("Expected 45 polled often ($relThrCount) while redundant 11 ($redundantThrCount) stays backgrounded", relThrCount > redundantThrCount)
+            assertTrue("Expected visible dynamic secondary 42 (voltage) in $polledPids", "42" in polledPids)
+        }
+    }
 }

@@ -661,6 +661,17 @@ internal fun segmentedSpectrumColor(fraction: Float): Color {
     }
 }
 
+/** Returns the 0..1 filled fraction for segment [segmentIndex] so wide scales animate smoothly per pixel. */
+internal fun segmentedBoxFillFraction(
+    pct: Float,
+    segmentIndex: Int,
+    segmentCount: Int
+): Float {
+    if (segmentCount <= 0 || pct <= 0.002f) return 0f
+    val exactSegments = pct.coerceIn(0f, 1f) * segmentCount.toFloat()
+    return (exactSegments - segmentIndex.toFloat()).coerceIn(0f, 1f)
+}
+
 /** Discrete boxed LED segmented bar style (`WidgetDisplayType.SEGMENTED_BAR`) — empty neutral boxes until lit. */
 @Composable
 fun SegmentedBarGaugeWidget(
@@ -676,7 +687,8 @@ fun SegmentedBarGaugeWidget(
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val activeAccent = if (value == null || pct <= 0.004f) {
+    val hasActiveFill = value != null && pct > 0.002f
+    val activeAccent = if (!hasActiveFill) {
         palette.dialTrack
     } else {
         thresholdColor(value, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
@@ -690,11 +702,6 @@ fun SegmentedBarGaugeWidget(
     ) {
         val compact = maxWidth < 145.dp
         val segments = if (compact) 12 else 18
-        val litCount = if (value == null || pct <= 0.004f) {
-            0
-        } else {
-            (segments * pct).roundToInt().coerceIn(1, segments)
-        }
         val padH = if (compact) 5.5.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
         val unitSpVal = if (compact) 8.5.sp else 10.sp
@@ -737,7 +744,7 @@ fun SegmentedBarGaugeWidget(
                             text = displayVal,
                             fontSize = fittedValSp,
                             fontWeight = FontWeight.Bold,
-                            color = if (activeAccent == TorqueEvoColors.CriticalRed && litCount > 0) TorqueEvoColors.CriticalRed else palette.textPrimary,
+                            color = if (activeAccent == TorqueEvoColors.CriticalRed && hasActiveFill) TorqueEvoColors.CriticalRed else palette.textPrimary,
                             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
                             maxLines = 1,
                             softWrap = false
@@ -756,22 +763,40 @@ fun SegmentedBarGaugeWidget(
                 ) {
                     val lastIdx = (segments - 1).coerceAtLeast(1)
                     for (idx in 0 until segments) {
-                        val isLit = idx < litCount
+                        val boxFill = if (value == null) 0f else segmentedBoxFillFraction(pct, idx, segments)
                         val frac = idx.toFloat() / lastIdx.toFloat()
                         val litColor = segmentedSpectrumColor(frac)
+                        val boxShape = RoundedCornerShape(2.5.dp)
                         val boxMod = Modifier
                             .weight(1f)
                             .fillMaxHeight()
-                            .clip(RoundedCornerShape(2.5.dp))
-                        Box(
-                            modifier = if (isLit) {
-                                boxMod.background(litColor)
-                            } else {
-                                boxMod
-                                    .background(Color(0x14FFFFFF))
-                                    .border(0.6.dp, Color(0x1EFFFFFF), RoundedCornerShape(2.5.dp))
+                            .clip(boxShape)
+                        when {
+                            boxFill >= 0.99f -> {
+                                Box(modifier = boxMod.background(litColor))
                             }
-                        )
+                            boxFill <= 0.01f -> {
+                                Box(
+                                    modifier = boxMod
+                                        .background(Color(0x14FFFFFF))
+                                        .border(0.6.dp, Color(0x1EFFFFFF), boxShape)
+                                )
+                            }
+                            else -> {
+                                Box(
+                                    modifier = boxMod
+                                        .background(Color(0x14FFFFFF))
+                                        .border(0.6.dp, Color(0x1EFFFFFF), boxShape)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxHeight()
+                                            .fillMaxWidth(boxFill)
+                                            .background(litColor)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -787,7 +812,7 @@ fun SegmentedBarGaugeWidget(
                     Text(
                         text = if (unit == "mm:ss") "3h" else "${max.roundToInt()}",
                         fontSize = 8.sp,
-                        color = if (litCount > 0 && pct > 0.85f) TorqueEvoColors.CriticalRed else palette.textSecondary
+                        color = if (hasActiveFill && pct > 0.85f) TorqueEvoColors.CriticalRed else palette.textSecondary
                     )
                 }
             }

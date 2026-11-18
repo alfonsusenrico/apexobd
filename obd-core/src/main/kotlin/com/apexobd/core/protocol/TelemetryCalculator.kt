@@ -28,6 +28,7 @@ data class FuelMetricsSnapshot(
     val estimatedRemainingFuelLiters: Double,
     val estimatedRangeKm: Double?,
     val dteEconomyKpl: Double?,
+    val rawRecentDteKpl: Double? = null,
     val dfcoActive: Boolean,
     val fuelCalculationPaused: Boolean
 )
@@ -236,7 +237,7 @@ class FuelEconomyTracker {
                     }
                     if (sliceReady) {
                         if (recentSliceFuelL > 0.0005) {
-                            val sliceKpl = (recentSliceDistKm / recentSliceFuelL).coerceIn(2.0, 28.0)
+                            val sliceKpl = (recentSliceDistKm / recentSliceFuelL).coerceIn(2.0, 24.0)
                             val alpha = (recentSliceFuelL / 0.85).coerceIn(0.02, 0.25)
                             recentDteKpl = recentDteKpl?.let { prev -> alpha * sliceKpl + (1.0 - alpha) * prev } ?: sliceKpl
                         }
@@ -273,18 +274,18 @@ class FuelEconomyTracker {
         } else null
         val fastWindow = recentDteKpl ?: tripAvg.takeIf { totalFuelLiters > 0.002 && it > 1.0 }
 
-        val dteKpl: Double? = when {
-            fastWindow != null && slowBaseline != null -> {
-                val tankFrac = (estimatedFuelLiters / profile.tankCapacityLiters.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
-                val wRecent = if (tankFrac <= 0.25) 0.62 else 0.50
-                (wRecent * fastWindow + (1.0 - wRecent) * slowBaseline).coerceIn(1.5, 35.0)
-            }
-            fastWindow != null -> fastWindow
-            slowBaseline != null -> slowBaseline
-            else -> null
-        }
+        val dteKpl = computeConservativeDteKpl(
+            allTimeTotalAvgKpl = slowBaseline,
+            recentDteKpl = fastWindow,
+            remainingFuelLiters = estimatedFuelLiters,
+            tankCapacityLiters = profile.tankCapacityLiters
+        )
 
-        val estRangeRaw = dteKpl?.let { (estimatedFuelLiters * it).coerceAtLeast(0.0) }
+        val estRangeRaw = computeEstimatedRangeKm(
+            remainingFuelLiters = estimatedFuelLiters,
+            tankCapacityLiters = profile.tankCapacityLiters,
+            dteKpl = dteKpl
+        )
         val smoothedRange: Double? = if (estRangeRaw != null) {
             val prev = displayedRangeKm
             if (prev == null) {
@@ -319,6 +320,7 @@ class FuelEconomyTracker {
             estimatedRemainingFuelLiters = estimatedFuelLiters,
             estimatedRangeKm = smoothedRange,
             dteEconomyKpl = dteKpl,
+            rawRecentDteKpl = recentDteKpl,
             dfcoActive = isDfcoCoasting,
             fuelCalculationPaused = paused
         )
@@ -498,6 +500,56 @@ class FuelEconomyTracker {
             val ratio = (actualPumpLiters / obdFuelUsedSinceFullLiters).coerceIn(0.80, 1.25)
             val targetTrim = (clampedCurrent * ratio).coerceIn(75.0, 135.0)
             return ((0.40 * targetTrim) + (0.60 * clampedCurrent)).coerceIn(75.0, 135.0)
+        }
+
+        /** Reserve cushion (10% of tank, bounded to 2..6 L) kept out of usable range before dry empty. */
+        fun computeReserveLiters(tankCapacityLiters: Double): Double =
+            (tankCapacityLiters.coerceAtLeast(1.0) * 0.10).coerceIn(2.0, 6.0)
+
+        /** Remaining usable fuel liters above safety reserve. */
+        fun computeUsableFuelLiters(remainingFuelLiters: Double, tankCapacityLiters: Double): Double {
+            val cap = tankCapacityLiters.coerceAtLeast(1.0)
+            return (remainingFuelLiters.coerceIn(0.0, cap) - computeReserveLiters(cap)).coerceAtLeast(0.0)
+        }
+
+        /**
+         * Cumulative-anchored DTE fuel economy: weights lifetime all-time economy `80%` on a high tank
+         * (rising to `55%` below quarter tank) and prevents highway spikes from inflating high-tank estimates.
+         */
+        fun computeConservativeDteKpl(
+            allTimeTotalAvgKpl: Double?,
+            recentDteKpl: Double?,
+            remainingFuelLiters: Double,
+            tankCapacityLiters: Double
+        ): Double? {
+            val slow = allTimeTotalAvgKpl?.takeIf { it > 1.0 }?.coerceIn(1.5, 40.0)
+            val fast = recentDteKpl?.takeIf { it > 1.0 }?.coerceIn(1.5, 24.0)
+            return when {
+                fast != null && slow != null -> {
+                    val tankFrac = (remainingFuelLiters / tankCapacityLiters.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
+                    val wRecent = when {
+                        tankFrac <= 0.25 -> 0.45
+                        tankFrac <= 0.50 -> 0.30
+                        else -> 0.20
+                    }
+                    val blended = (wRecent * fast) + ((1.0 - wRecent) * slow)
+                    val capped = if (tankFrac > 0.50) minOf(blended, slow) else blended.coerceAtMost(slow * 1.04)
+                    capped.coerceIn(1.5, 28.0)
+                }
+                fast != null -> fast.coerceIn(1.5, 24.0)
+                slow != null -> slow.coerceIn(1.5, 28.0)
+                else -> null
+            }
+        }
+
+        /** Estimated usable range (km) after deducting standard safety reserve cushion. */
+        fun computeEstimatedRangeKm(
+            remainingFuelLiters: Double,
+            tankCapacityLiters: Double,
+            dteKpl: Double?
+        ): Double? {
+            val kpl = dteKpl?.takeIf { it > 0.5 } ?: return null
+            return (computeUsableFuelLiters(remainingFuelLiters, tankCapacityLiters) * kpl).coerceAtLeast(0.0)
         }
     }
 }
@@ -849,6 +901,9 @@ object TelemetryDisplaySmoother {
         "accel_g"
     )
 
+    private val GPS_ROLLING_KEYS = setOf("gps_speed")
+    private val OBD_SPEED_KEYS = setOf("obd_speed")
+
     private data class ChannelRamp(
         var startVal: Double,
         var targetVal: Double,
@@ -857,6 +912,58 @@ object TelemetryDisplaySmoother {
         var lastTargetAtMs: Long,
         var avgPeriodMs: Double
     )
+
+    private data class ChannelTimingSpec(
+        val initialPeriodMs: Double,
+        val minPeriodMs: Long,
+        val maxPeriodMs: Long,
+        val plateauResetMs: Long,
+        val wakePeriodMs: Double,
+        val stopSnapMs: Double,
+        val lightScale: Double,
+        val adaptiveScale: Double,
+        val minDurationMs: Double,
+        val maxDurationMs: Double
+    )
+
+    private fun specForKey(key: String): ChannelTimingSpec = when (key) {
+        in GPS_ROLLING_KEYS -> ChannelTimingSpec(
+            initialPeriodMs = 920.0,
+            minPeriodMs = 300L,
+            maxPeriodMs = 1080L,
+            plateauResetMs = 2400L,
+            wakePeriodMs = 240.0,
+            stopSnapMs = 200.0,
+            lightScale = 0.84,
+            adaptiveScale = 0.94,
+            minDurationMs = 180.0,
+            maxDurationMs = 980.0
+        )
+        in OBD_SPEED_KEYS -> ChannelTimingSpec(
+            initialPeriodMs = 260.0,
+            minPeriodMs = 120L,
+            maxPeriodMs = 880L,
+            plateauResetMs = 2000L,
+            wakePeriodMs = 175.0,
+            stopSnapMs = 180.0,
+            lightScale = 0.78,
+            adaptiveScale = 0.90,
+            minDurationMs = 110.0,
+            maxDurationMs = 780.0
+        )
+        else -> ChannelTimingSpec(
+            initialPeriodMs = 140.0,
+            minPeriodMs = 45L,
+            maxPeriodMs = 520L,
+            plateauResetMs = 1150L,
+            wakePeriodMs = 100.0,
+            stopSnapMs = 110.0,
+            lightScale = 0.68,
+            adaptiveScale = 0.86,
+            minDurationMs = 55.0,
+            maxDurationMs = 440.0
+        )
+    }
 
     class AdaptiveSession {
         private val tracks = HashMap<String, ChannelRamp>(16)
@@ -880,56 +987,53 @@ object TelemetryDisplaySmoother {
                     out[k] = raw
                     continue
                 }
+                val spec = specForKey(k)
                 val track = tracks[k]
                 if (track == null || !track.targetVal.isFinite()) {
                     tracks[k] = ChannelRamp(
                         startVal = raw,
                         targetVal = raw,
-                        elapsedMs = 130.0,
-                        durationMs = 130.0,
+                        elapsedMs = spec.initialPeriodMs,
+                        durationMs = spec.initialPeriodMs,
                         lastTargetAtMs = nowMs,
-                        avgPeriodMs = 130.0
+                        avgPeriodMs = spec.initialPeriodMs
                     )
                     out[k] = raw
                     continue
                 }
                 val curVisual = currentTrackValue(track)
-                if (mode == GaugeSmoothingMode.LIGHT_DAMPER) {
-                    val alpha = (1.0 - kotlin.math.exp(-safeDt / mode.tauMs)).coerceIn(0.10, 1.0)
-                    val delta = raw - curVisual
-                    val next = if (abs(delta) < 0.05 && abs(raw) < 20.0 || abs(delta) < 0.5 && abs(raw) >= 200.0) {
-                        raw
+                if (abs(raw - track.targetVal) > 1e-4) {
+                    val gapMs = (nowMs - track.lastTargetAtMs).coerceAtLeast(1L)
+                    val isStopping = k in rollingSpeedKeys && raw < 0.8 && track.targetVal > 1.5
+                    val measured = if (gapMs > spec.plateauResetMs) {
+                        spec.wakePeriodMs
                     } else {
-                        curVisual + delta * alpha
+                        gapMs.coerceIn(spec.minPeriodMs, spec.maxPeriodMs).toDouble()
                     }
-                    track.startVal = next
-                    track.targetVal = next
-                    track.elapsedMs = 1.0
-                    track.durationMs = 1.0
-                    out[k] = next
+                    track.avgPeriodMs = if (gapMs > spec.plateauResetMs) {
+                        measured
+                    } else {
+                        (track.avgPeriodMs * 0.60) + (measured * 0.40)
+                    }
+                    track.lastTargetAtMs = nowMs
+                    track.startVal = curVisual
+                    track.targetVal = raw
+                    track.elapsedMs = 0.0
+                    val modeScale = if (mode == GaugeSmoothingMode.LIGHT_DAMPER) spec.lightScale else spec.adaptiveScale
+                    track.durationMs = if (isStopping) {
+                        spec.stopSnapMs
+                    } else {
+                        (track.avgPeriodMs * modeScale).coerceIn(spec.minDurationMs, spec.maxDurationMs)
+                    }
                 } else {
-                    if (abs(raw - track.targetVal) > 1e-4) {
-                        val gapMs = nowMs - track.lastTargetAtMs
-                        // Long steady-cruise or pedal-hold plateaus must not inflate ramp duration into sluggish lag.
-                        val measured = if (gapMs > 260L) {
-                            95.0
-                        } else {
-                            gapMs.coerceIn(45L, 220L).toDouble()
-                        }
-                        track.avgPeriodMs = (track.avgPeriodMs * 0.65) + (measured * 0.35)
-                        track.lastTargetAtMs = nowMs
-                        track.startVal = curVisual
-                        track.targetVal = raw
-                        track.elapsedMs = 0.0
-                        track.durationMs = track.avgPeriodMs.coerceIn(55.0, 155.0)
-                    } else {
-                        track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
-                    }
-                    out[k] = currentTrackValue(track)
+                    track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
                 }
+                out[k] = currentTrackValue(track)
             }
             return out
         }
+
+        private val rollingSpeedKeys = setOf("gps_speed", "obd_speed")
 
         private fun currentTrackValue(t: ChannelRamp): Double {
             if (t.elapsedMs >= t.durationMs || t.durationMs <= 1.0) return t.targetVal

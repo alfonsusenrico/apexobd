@@ -2,6 +2,7 @@ package com.apexobd.app
 
 import androidx.compose.ui.graphics.Color
 import com.apexobd.app.data.prefs.HudThemePreset
+import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
 import com.apexobd.app.ui.theme.resolveHudVisualPalette
 import org.junit.Assert.assertEquals
@@ -32,5 +33,19 @@ class HudWidgetStyleTest {
             val luma = 0.2126f * p.labelColor.red + 0.7152f * p.labelColor.green + 0.0722f * p.labelColor.blue
             assertTrue("Low label luminance $luma on ${preset.name}", luma > 0.78f)
         }
+    }
+
+    @Test
+    fun `segmentedBoxFillFraction stays empty at zero and fills leading active block smoothly`() {
+        // Default 0 / nearly-zero speed shows empty dark boxes
+        for (idx in 0 until 12) {
+            assertEquals(0.0f, segmentedBoxFillFraction(0.0f, idx, 12), 0.001f)
+            assertEquals(0.0f, segmentedBoxFillFraction(0.001f, idx, 12), 0.001f)
+        }
+
+        // At 27.5 km/h out of 220 km/h (pct = 0.125 -> 1.50 segments out of 12): box 0 full, box 1 50%, box 2+ empty
+        assertEquals(1.0f, segmentedBoxFillFraction(0.125f, 0, 12), 0.001f)
+        assertEquals(0.5f, segmentedBoxFillFraction(0.125f, 1, 12), 0.001f)
+        assertEquals(0.0f, segmentedBoxFillFraction(0.125f, 2, 12), 0.001f)
     }
 }

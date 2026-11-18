@@ -73,6 +73,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +81,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apexobd.app.data.db.RefuelLogEntity
+import com.apexobd.app.data.db.TelemetrySampleEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.prefs.HudCanvasBackdrop
@@ -90,6 +92,7 @@ import com.apexobd.app.data.prefs.MapCameraMode
 import com.apexobd.app.data.prefs.MapCursorStyle
 import com.apexobd.app.data.prefs.MapProvider
 import com.apexobd.app.data.prefs.MapStylePreset
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
 import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
@@ -127,6 +130,8 @@ import com.apexobd.core.protocol.GaugeSmoothingMode
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.scheduler.PollingProfile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
@@ -1107,6 +1112,7 @@ fun RunLogsAndMapsSheet(
     fuelType: FuelType,
     onExport: (TripSessionEntity, Boolean) -> Unit,
     onShareCard: (TripSessionEntity) -> Unit,
+    isPreparingCard: Boolean = false,
     onOpenOfflineMaps: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1193,9 +1199,20 @@ fun RunLogsAndMapsSheet(
                         OutlinedButton(onClick = { onExport(s, true) }, modifier = Modifier.weight(0.8f)) { Text("JSON", fontSize = 11.sp) }
                         Button(
                             onClick = { onShareCard(s) },
+                            enabled = !isPreparingCard,
                             colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
                             modifier = Modifier.weight(1.5f)
-                        ) { Text("Preview & Share", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                        ) {
+                            if (isPreparingCard) {
+                                CircularProgressIndicator(
+                                    color = Color.Black,
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Create Card", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
                     }
                 }
             }
@@ -2219,49 +2236,165 @@ fun HudAppearanceControlsColumn(
 @Composable
 fun ShareCardComposerDialog(
     draft: HudViewModel.ShareCardDraft,
-    initialMetrics: List<ShareCardMetric>,
+    initialConfig: TripCardConfig,
     unitPrefs: UnitPreferences,
     fuelType: FuelType,
-    onConfirmShare: (TripCardConfig) -> Unit,
+    isExporting: Boolean,
+    onConfigChanged: (TripCardConfig) -> Unit,
+    onPickBackgroundPhoto: (Uri, (String?) -> Unit) -> Unit,
+    onLoadSurroundingRoads: suspend (List<TelemetrySampleEntity>, Int, Int) -> TripCardRenderer.RoadContextLayer?,
+    onConfirmExport: (TripCardConfig, HudViewModel.ShareCardExportAction, TripCardRenderer.RoadContextLayer?) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val defaultBg = if (!draft.vehicle?.photoUri.isNullOrBlank()) {
-        ShareCardBackgroundMode.CAR_PHOTO
-    } else {
-        ShareCardBackgroundMode.PLAIN_DARK
+    val defaultBg = when {
+        initialConfig.backgroundMode == ShareCardBackgroundMode.CUSTOM_PHOTO && !initialConfig.customPhotoPath.isNullOrBlank() ->
+            ShareCardBackgroundMode.CUSTOM_PHOTO
+        initialConfig.backgroundMode == ShareCardBackgroundMode.CAR_PHOTO && draft.vehicle?.photoUri.isNullOrBlank() ->
+            ShareCardBackgroundMode.PLAIN_DARK
+        else -> initialConfig.backgroundMode
     }
     var config by remember(draft.session.id) {
         mutableStateOf(
-            TripCardConfig(
+            initialConfig.copy(
                 backgroundMode = defaultBg,
-                selectedMetrics = initialMetrics.ifEmpty { ShareCardMetric.DEFAULT_SELECTION }
+                selectedMetrics = initialConfig.selectedMetrics.ifEmpty { ShareCardMetric.DEFAULT_SELECTION }
             )
         )
     }
 
-    val previewBitmap = remember(draft, config, unitPrefs, fuelType) {
-        TripCardRenderer.renderTripCardBitmap(
-            session = draft.session,
-            samples = draft.samples,
-            vehicle = draft.vehicle,
-            unitPrefs = unitPrefs,
-            fuelType = fuelType,
-            selectedMetrics = config.selectedMetrics,
-            config = config,
-            precomputedStats = draft.stats
-        ).asImageBitmap()
+    fun updateConfig(next: TripCardConfig) {
+        config = next
+        onConfigChanged(next)
+    }
+
+    var previewBitmap by remember(draft.session.id) { mutableStateOf<ImageBitmap?>(null) }
+    var roadContextCache by remember(draft.session.id) { mutableStateOf<TripCardRenderer.RoadContextLayer?>(null) }
+    var isRenderingPreview by remember(draft.session.id) { mutableStateOf(true) }
+    var isPickingBgPhoto by remember(draft.session.id) { mutableStateOf(false) }
+    var showExportChooser by remember { mutableStateOf(false) }
+
+    val cardBgPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            isPickingBgPhoto = true
+            onPickBackgroundPhoto(uri) { savedPath ->
+                isPickingBgPhoto = false
+                if (!savedPath.isNullOrBlank()) {
+                    updateConfig(
+                        config.copy(
+                            backgroundMode = ShareCardBackgroundMode.CUSTOM_PHOTO,
+                            customPhotoPath = savedPath
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(draft, config, unitPrefs, fuelType) {
+        isRenderingPreview = true
+        try {
+            val activeRoadLayer = if (config.showSurroundingRoads) {
+                val (reqW, reqH) = TripCardRenderer.routeCanvasSizeForConfig(config)
+                val cached = roadContextCache
+                if (cached != null && !cached.roadsAlphaBitmap.isRecycled && cached.boxWidth == reqW && cached.boxHeight == reqH) {
+                    cached
+                } else {
+                    val captured = onLoadSurroundingRoads(draft.samples, reqW, reqH)
+                    if (captured != null) {
+                        roadContextCache = captured
+                    }
+                    captured
+                }
+            } else null
+
+            val rendered = withContext(Dispatchers.Default) {
+                TripCardRenderer.renderTripCardBitmap(
+                    session = draft.session,
+                    samples = draft.samples,
+                    vehicle = draft.vehicle,
+                    unitPrefs = unitPrefs,
+                    fuelType = fuelType,
+                    selectedMetrics = config.selectedMetrics,
+                    config = config,
+                    precomputedStats = draft.stats,
+                    roadContextLayer = activeRoadLayer
+                ).asImageBitmap()
+            }
+            previewBitmap = rendered
+        } finally {
+            isRenderingPreview = false
+        }
+    }
+
+    if (showExportChooser) {
+        AlertDialog(
+            onDismissRequest = { if (!isExporting) showExportChooser = false },
+            containerColor = TorqueEvoColors.ElevatedDark,
+            title = {
+                Text(
+                    "Export Route Card (${config.aspectRatio.label})",
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary
+                )
+            },
+            text = {
+                Text(
+                    "Share directly to Instagram Stories, chats, or other apps, or save the PNG file to Pictures/ApexOBD.",
+                    color = TorqueEvoColors.TextSecondary,
+                    fontSize = 12.5.sp
+                )
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = !isExporting,
+                        onClick = {
+                            showExportChooser = false
+                            onConfirmExport(config, HudViewModel.ShareCardExportAction.DOWNLOAD_PNG, roadContextCache)
+                        }
+                    ) {
+                        Text("Download PNG", color = TorqueEvoColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        enabled = !isExporting,
+                        onClick = {
+                            showExportChooser = false
+                            onConfirmExport(config, HudViewModel.ShareCardExportAction.SHARE_TO_APPS, roadContextCache)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black)
+                    ) {
+                        Text("Share to Apps", fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !isExporting, onClick = { showExportChooser = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     ApexLockedSheet(onBackRequest = onDismiss, scrollable = false) {
         ApexSheetHeader(
-            title = "Customize Share Route Card",
+            title = "Create Route Card",
             onClose = onDismiss,
             actions = {
                 TextButton(
                     onClick = {
-                        config = TripCardConfig(
-                            backgroundMode = defaultBg,
-                            selectedMetrics = ShareCardMetric.DEFAULT_SELECTION
+                        val resetBg = if (!draft.vehicle?.photoUri.isNullOrBlank()) {
+                            ShareCardBackgroundMode.CAR_PHOTO
+                        } else {
+                            ShareCardBackgroundMode.PLAIN_DARK
+                        }
+                        updateConfig(
+                            TripCardConfig(
+                                backgroundMode = resetBg,
+                                aspectRatio = ShareCardAspectRatio.SQUARE_1_1,
+                                selectedMetrics = ShareCardMetric.DEFAULT_SELECTION
+                            )
                         )
                     }
                 ) {
@@ -2270,12 +2403,15 @@ fun ShareCardComposerDialog(
             }
         )
 
+        val ratioFloat = config.aspectRatio.widthPx.toFloat() / config.aspectRatio.heightPx.toFloat()
         val previewCard: @Composable (Modifier) -> Unit = { boxMod ->
             Box(
                 modifier = boxMod
-                    .aspectRatio(1080f / 1350f)
+                    .heightIn(max = 228.dp)
+                    .aspectRatio(ratioFloat)
                     .clip(RoundedCornerShape(14.dp))
-                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center
             ) {
                 if (config.backgroundMode == ShareCardBackgroundMode.TRANSPARENT) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -2294,12 +2430,43 @@ fun ShareCardComposerDialog(
                         }
                     }
                 }
-                Image(
-                    bitmap = previewBitmap,
-                    contentDescription = "Share Card Preview",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
+                previewBitmap?.let { bmp ->
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = "Route Card Preview",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (isRenderingPreview || isPickingBgPhoto || isExporting || previewBitmap == null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0x9905080E)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = TorqueEvoColors.ElectricBlue,
+                                modifier = Modifier.size(26.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                            Text(
+                                text = when {
+                                    isPickingBgPhoto -> "Loading photo..."
+                                    isExporting -> "Exporting PNG..."
+                                    else -> "Generating..."
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -2308,16 +2475,48 @@ fun ShareCardComposerDialog(
                 modifier = scrollMod.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Background Style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                Text("Card Aspect Ratio", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ShareCardBackgroundMode.entries.forEach { mode ->
+                    ShareCardAspectRatio.entries.forEach { ratioOpt ->
                         ApexFilterChip(
-                            selected = config.backgroundMode == mode,
-                            onClick = { config = config.copy(backgroundMode = mode) },
-                            label = mode.label,
+                            selected = config.aspectRatio == ratioOpt,
+                            onClick = { updateConfig(config.copy(aspectRatio = ratioOpt)) },
+                            label = when (ratioOpt) {
+                                ShareCardAspectRatio.SQUARE_1_1 -> "1:1 Post"
+                                ShareCardAspectRatio.LANDSCAPE_4_3 -> "4:3 Wide"
+                                ShareCardAspectRatio.STORY_9_16 -> "9:16 Story"
+                            },
                             compact = true
                         )
                     }
+                }
+
+                Text("Background Style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ShareCardBackgroundMode.entries.forEach { mode ->
+                        val isCustom = mode == ShareCardBackgroundMode.CUSTOM_PHOTO
+                        ApexFilterChip(
+                            selected = config.backgroundMode == mode,
+                            onClick = {
+                                if (isCustom && config.customPhotoPath.isNullOrBlank()) {
+                                    cardBgPicker.launch("image/*")
+                                } else {
+                                    updateConfig(config.copy(backgroundMode = mode))
+                                }
+                            },
+                            label = if (isCustom && !config.customPhotoPath.isNullOrBlank()) "Custom Image" else mode.label,
+                            compact = true
+                        )
+                    }
+                    ApexFilterChip(
+                        selected = false,
+                        onClick = { cardBgPicker.launch("image/*") },
+                        label = if (config.customPhotoPath.isNullOrBlank()) "+ Add Image" else "Change Image",
+                        compact = true
+                    )
                 }
 
                 Text("Include Components", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
@@ -2326,13 +2525,13 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "App Brand Icon",
                             checked = config.showAppMark,
-                            onCheckedChange = { config = config.copy(showAppMark = it) },
+                            onCheckedChange = { updateConfig(config.copy(showAppMark = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Vehicle Name",
                             checked = config.showVehicleName,
-                            onCheckedChange = { config = config.copy(showVehicleName = it) },
+                            onCheckedChange = { updateConfig(config.copy(showVehicleName = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2340,13 +2539,13 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "Vehicle Specs",
                             checked = config.showVehicleSpecs,
-                            onCheckedChange = { config = config.copy(showVehicleSpecs = it) },
+                            onCheckedChange = { updateConfig(config.copy(showVehicleSpecs = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Date",
                             checked = config.showDate,
-                            onCheckedChange = { config = config.copy(showDate = it) },
+                            onCheckedChange = { updateConfig(config.copy(showDate = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2354,36 +2553,44 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "Time",
                             checked = config.showTime,
-                            onCheckedChange = { config = config.copy(showTime = it) },
+                            onCheckedChange = { updateConfig(config.copy(showTime = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Route Path",
                             checked = config.showRouteLine,
-                            onCheckedChange = { config = config.copy(showRouteLine = it) },
+                            onCheckedChange = { updateConfig(config.copy(showRouteLine = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth()) {
                         ComposerCheckboxItem(
-                            label = "Start / End Dots",
-                            checked = config.showStartEndMarkers,
-                            onCheckedChange = { config = config.copy(showStartEndMarkers = it) },
+                            label = "Surrounding Roads (60%)",
+                            checked = config.showSurroundingRoads,
+                            onCheckedChange = { updateConfig(config.copy(showSurroundingRoads = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
-                            label = "Metrics Backing",
-                            checked = config.showMetricsPanelBg,
-                            onCheckedChange = { config = config.copy(showMetricsPanelBg = it) },
+                            label = "Start / End Dots",
+                            checked = config.showStartEndMarkers,
+                            onCheckedChange = { updateConfig(config.copy(showStartEndMarkers = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    ComposerCheckboxItem(
-                        label = "Show Telemetry Metrics Grid",
-                        checked = config.showMetrics,
-                        onCheckedChange = { config = config.copy(showMetrics = it) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ComposerCheckboxItem(
+                            label = "Metrics Backing",
+                            checked = config.showMetricsPanelBg,
+                            onCheckedChange = { updateConfig(config.copy(showMetricsPanelBg = it)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ComposerCheckboxItem(
+                            label = "Telemetry Metrics",
+                            checked = config.showMetrics,
+                            onCheckedChange = { updateConfig(config.copy(showMetrics = it)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
 
                 if (config.showMetrics) {
@@ -2396,10 +2603,10 @@ fun ShareCardComposerDialog(
                             } else {
                                 if (cur.size < ShareCardMetric.MAX_SELECTED) cur + metric else cur
                             }
-                            config = config.copy(selectedMetrics = next)
+                            updateConfig(config.copy(selectedMetrics = next))
                         },
                         onResetDefault = {
-                            config = config.copy(selectedMetrics = ShareCardMetric.DEFAULT_SELECTION)
+                            updateConfig(config.copy(selectedMetrics = ShareCardMetric.DEFAULT_SELECTION))
                         }
                     )
                 }
@@ -2414,7 +2621,7 @@ fun ShareCardComposerDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Top
                 ) {
-                    previewCard(Modifier.width(176.dp))
+                    previewCard(Modifier.widthIn(min = 126.dp, max = 220.dp))
                     controlsBody(Modifier.weight(1f).fillMaxHeight())
                 }
             } else {
@@ -2423,7 +2630,7 @@ fun ShareCardComposerDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        previewCard(Modifier.width(184.dp))
+                        previewCard(Modifier.widthIn(min = 126.dp, max = 236.dp))
                     }
                     HorizontalDivider(color = TorqueEvoColors.SubtleBorder)
                     controlsBody(Modifier.weight(1f, fill = true).fillMaxWidth())
@@ -2437,17 +2644,27 @@ fun ShareCardComposerDialog(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedButton(
+                enabled = !isExporting,
                 onClick = onDismiss,
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Cancel")
             }
             Button(
-                onClick = { onConfirmShare(config) },
+                enabled = !isExporting,
+                onClick = { showExportChooser = true },
                 colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
                 modifier = Modifier.weight(1.4f)
             ) {
-                Text("Share Image (PNG)", fontWeight = FontWeight.ExtraBold)
+                if (isExporting) {
+                    CircularProgressIndicator(
+                        color = Color.Black,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("Export", fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
@@ -2568,7 +2785,7 @@ fun SaveTripSummaryDialog(
                     onClick = onSaveAndShareCard,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Save & Share Route Card (PNG)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.SkyBlue)
+                    Text("Save & Create Card", fontWeight = FontWeight.Bold, color = TorqueEvoColors.SkyBlue)
                 }
             }
         }

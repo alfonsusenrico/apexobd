@@ -1,11 +1,15 @@
 package com.apexobd.app.platform
 
 import android.content.ClipData
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.apexobd.app.data.db.TelemetrySampleEntity
@@ -139,6 +143,39 @@ object TripExporter {
             launch()
         } else {
             Handler(Looper.getMainLooper()).post(launch)
+        }
+    }
+
+    /** Saves a PNG file into public `Pictures/ApexOBD` via MediaStore so it appears immediately in Gallery/Files. */
+    fun savePngToPictures(
+        context: Context,
+        sourceFile: File,
+        displayName: String = "apex_route_${System.currentTimeMillis()}.png"
+    ): Result<String> = runCatching {
+        val cleanName = if (displayName.endsWith(".png", ignoreCase = true)) displayName else "$displayName.png"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, cleanName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/ApexOBD")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("MediaStore returned null URI")
+            resolver.openOutputStream(uri)?.use { out ->
+                sourceFile.inputStream().use { inp -> inp.copyTo(out) }
+            } ?: error("Unable to open MediaStore output stream")
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            "Pictures/ApexOBD/$cleanName"
+        } else {
+            @Suppress("DEPRECATION")
+            val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ApexOBD").apply { mkdirs() }
+            val dest = File(dir, cleanName)
+            sourceFile.copyTo(dest, overwrite = true)
+            dest.absolutePath
         }
     }
 

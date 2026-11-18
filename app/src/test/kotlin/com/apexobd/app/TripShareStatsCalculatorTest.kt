@@ -3,9 +3,11 @@ package com.apexobd.app
 import com.apexobd.app.data.db.TelemetrySampleEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.prefs.MapCursorStyle
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
 import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
+import com.apexobd.app.platform.TripCardRenderer
 import com.apexobd.app.platform.TripShareStatsCalculator
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.UnitPreferences
@@ -179,5 +181,27 @@ class TripShareStatsCalculatorTest {
         ).associateBy { it.metric }
         assertEquals(rendered[ShareCardMetric.PEAK_AVG_HP]?.value, fromSummary[ShareCardMetric.PEAK_AVG_HP]?.value)
         assertEquals(rendered[ShareCardMetric.MAX_G_FORCE]?.value, fromSummary[ShareCardMetric.MAX_G_FORCE]?.value)
+    }
+
+    @Test
+    fun `Route Card supports 1x1, 4x3, and 9x16 aspect ratios, custom photo, and surrounding roads config`() {
+        assertEquals(1080 to 1080, ShareCardAspectRatio.SQUARE_1_1.widthPx to ShareCardAspectRatio.SQUARE_1_1.heightPx)
+        assertEquals(1440 to 1080, ShareCardAspectRatio.LANDSCAPE_4_3.widthPx to ShareCardAspectRatio.LANDSCAPE_4_3.heightPx)
+        assertEquals(1080 to 1920, ShareCardAspectRatio.STORY_9_16.widthPx to ShareCardAspectRatio.STORY_9_16.heightPx)
+
+        val customCfg = TripCardConfig(
+            backgroundMode = ShareCardBackgroundMode.CUSTOM_PHOTO,
+            customPhotoPath = "/tmp/custom_ride.jpg",
+            aspectRatio = ShareCardAspectRatio.STORY_9_16,
+            showSurroundingRoads = true
+        )
+        assertEquals(ShareCardBackgroundMode.CUSTOM_PHOTO, customCfg.backgroundMode)
+        assertTrue(customCfg.showSurroundingRoads)
+
+        val sqBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.SQUARE_1_1))
+        val wideBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.LANDSCAPE_4_3))
+        val storyBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.STORY_9_16))
+        assertTrue("Expected wider route box in 4:3 (${wideBox.first} vs ${sqBox.first})", wideBox.first > sqBox.first)
+        assertTrue("Expected taller route box in 9:16 (${storyBox.second} vs ${sqBox.second})", storyBox.second > sqBox.second)
     }
 }

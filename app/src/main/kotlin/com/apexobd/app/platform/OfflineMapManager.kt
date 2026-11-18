@@ -549,6 +549,137 @@ class OfflineMapManager(context: Context) {
         fun buildDarkPmtilesStyleJson(pmtilesFilePath: String): String =
             buildPmtilesStyleJson(pmtilesFilePath, com.apexobd.app.data.prefs.MapStylePreset.DARK_CONTRAST)
 
+        /**
+         * Builds a pure high-contrast white/steel roads-on-black MapLibre style used by [TripCardRenderer]
+         * so surrounding streets in the tracked area can be alpha-blended at 60% opacity over any card backdrop.
+         */
+        fun buildRoadsMaskStyleJson(pmtilesFilePath: String?): String {
+            val validPmtiles = pmtilesFilePath?.takeIf { File(it).exists() }
+            if (validPmtiles != null) {
+                val escaped = validPmtiles.replace("\\", "\\\\").replace("\"", "\\\"")
+                return """
+                {
+                  "version": 8,
+                  "name": "ApexOBD Roads Mask PMTiles",
+                  "sources": {
+                    "offline_vec": {
+                      "type": "vector",
+                      "url": "pmtiles://file://$escaped"
+                    }
+                  },
+                  "layers": [
+                    {
+                      "id": "bg",
+                      "type": "background",
+                      "paint": { "background-color": "#000000" }
+                    },
+                    {
+                      "id": "roads-pm-minor",
+                      "type": "line",
+                      "source": "offline_vec",
+                      "source-layer": "roads",
+                      "layout": { "line-cap": "round", "line-join": "round" },
+                      "paint": {
+                        "line-color": "#94B8E0",
+                        "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.0, 15, 3.2]
+                      }
+                    },
+                    {
+                      "id": "roads-pm-major",
+                      "type": "line",
+                      "source": "offline_vec",
+                      "source-layer": "roads",
+                      "filter": ["in", ["get", "pmap:kind"], ["literal", ["highway", "major_road"]]],
+                      "layout": { "line-cap": "round", "line-join": "round" },
+                      "paint": {
+                        "line-color": "#FFFFFF",
+                        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.6, 15, 5.2]
+                      }
+                    },
+                    {
+                      "id": "roads-omt",
+                      "type": "line",
+                      "source": "offline_vec",
+                      "source-layer": "transportation",
+                      "layout": { "line-cap": "round", "line-join": "round" },
+                      "paint": {
+                        "line-color": "#D4E4F7",
+                        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 15, 4.0]
+                      }
+                    },
+                    {
+                      "id": "roads-sb",
+                      "type": "line",
+                      "source": "offline_vec",
+                      "source-layer": "streets",
+                      "layout": { "line-cap": "round", "line-join": "round" },
+                      "paint": {
+                        "line-color": "#D4E4F7",
+                        "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.2, 15, 4.0]
+                      }
+                    }
+                  ]
+                }
+                """.trimIndent()
+            }
+
+            return """
+            {
+              "version": 8,
+              "name": "ApexOBD Roads Mask OpenFreeMap",
+              "sources": {
+                "openmaptiles": {
+                  "type": "vector",
+                  "url": "https://tiles.openfreemap.org/planet"
+                }
+              },
+              "layers": [
+                {
+                  "id": "bg",
+                  "type": "background",
+                  "paint": { "background-color": "#000000" }
+                },
+                {
+                  "id": "roads-minor",
+                  "type": "line",
+                  "source": "openmaptiles",
+                  "source-layer": "transportation",
+                  "filter": ["in", ["get", "class"], ["literal", ["minor", "service", "track", "path"]]],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#94B8E0",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 10, 0.9, 15, 3.0]
+                  }
+                },
+                {
+                  "id": "roads-secondary",
+                  "type": "line",
+                  "source": "openmaptiles",
+                  "source-layer": "transportation",
+                  "filter": ["in", ["get", "class"], ["literal", ["secondary", "tertiary", "secondary_link", "tertiary_link"]]],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#CFE2F7",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.3, 15, 4.2]
+                  }
+                },
+                {
+                  "id": "roads-major",
+                  "type": "line",
+                  "source": "openmaptiles",
+                  "source-layer": "transportation",
+                  "filter": ["in", ["get", "class"], ["literal", ["motorway", "trunk", "primary", "motorway_link", "trunk_link", "primary_link"]]],
+                  "layout": { "line-cap": "round", "line-join": "round" },
+                  "paint": {
+                    "line-color": "#FFFFFF",
+                    "line-width": ["interpolate", ["linear"], ["zoom"], 7, 1.8, 15, 5.5]
+                  }
+                }
+              ]
+            }
+            """.trimIndent()
+        }
+
         private fun latToTileY(latDeg: Double, n: Double): Long {
             val rad = Math.toRadians(latDeg.coerceIn(-85.05, 85.05))
             return floor((1.0 - ln(tan(rad) + 1.0 / cos(rad)) / PI) / 2.0 * n).toLong()

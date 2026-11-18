@@ -246,6 +246,9 @@ class ObdPollingEngine(
     private var activeSensorKeys: Set<String> = emptySet()
 
     @Volatile
+    private var backgroundRecordKeys: Set<String> = emptySet()
+
+    @Volatile
     private var customPids: Map<String, CustomPidDefinition> = emptyMap()
 
     @Volatile
@@ -270,6 +273,10 @@ class ObdPollingEngine(
 
     fun setActiveSensors(keys: Set<String>) {
         activeSensorKeys = keys
+    }
+
+    fun setBackgroundRecordKeys(keys: Set<String>) {
+        backgroundRecordKeys = keys
     }
 
     fun setCustomPids(defs: List<CustomPidDefinition>) {
@@ -369,7 +376,9 @@ class ObdPollingEngine(
 
     private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
         var cycle = 0
-        var slowCursor = 0
+        var dynamicSecCursor = 0
+        var slowThermalCursor = 0
+        var helperCursor = 0
         var samplesInSec = 0
         var latencyAccumMs = 0L
         var rttCount = 0
@@ -377,14 +386,16 @@ class ObdPollingEngine(
         var supportsMultiPid = handshake.isCanProtocol
         val values = _liveValues.value.toMutableMap()
         val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "obd_speed", "engine_load", "map", "maf", "throttle")
+        val dynamicSecondaryKeys = setOf("timing_advance", "voltage", "fuel_pressure", "o2_b1s1_wr_lambda", "o2_b1s1_lambda")
 
         while (currentCoroutineContext().isActive && transport.isConnected.value) {
             val profile = pollingProfile
             val requested = activeSensorKeys.ifEmpty {
                 setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "rel_throttle", "maf", "timing_advance")
             }
+            val background = backgroundRecordKeys
 
-            val expandedKeys = expandDependencies(requested, discovered)
+            val expandedKeys = expandDependencies(requested + background, discovered)
             val allAvailableTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
                 .distinctBy { it.pidHex }
@@ -411,6 +422,8 @@ class ObdPollingEngine(
                 }
             val slowAll = allAvailableTargets.filterNot(isHighTarget)
             val visibleSecondary = slowAll.filter { it.key in requested }
+            val visibleDynamic = visibleSecondary.filter { it.key in dynamicSecondaryKeys }
+            val visibleThermal = visibleSecondary.filter { it.key !in dynamicSecondaryKeys }
             val helperSecondary = slowAll.filter { it.key !in requested }
             val fuelStatusPid = helperSecondary.firstOrNull { it.key == "fuel_system_status" }
             val otherHelpers = helperSecondary.filter { it.key != "fuel_system_status" }
@@ -418,18 +431,23 @@ class ObdPollingEngine(
                 if (cycle == 0) {
                     addAll(slowAll)
                 } else {
-                    if (visibleSecondary.isNotEmpty() && cycle % 2 == 1) {
-                        val batch = if (visibleSecondary.size >= 3) 2 else 1
-                        repeat(batch) {
-                            add(visibleSecondary[slowCursor % visibleSecondary.size])
-                            slowCursor++
-                        }
+                    if (visibleDynamic.isNotEmpty()) {
+                        add(visibleDynamic[dynamicSecCursor % visibleDynamic.size])
+                        dynamicSecCursor++
+                    }
+                    if (visibleThermal.isNotEmpty() && (visibleDynamic.isEmpty() || cycle % 3 == 1)) {
+                        add(visibleThermal[slowThermalCursor % visibleThermal.size])
+                        slowThermalCursor++
                     }
                     if (fuelStatusPid != null && cycle % 2 == 0) {
                         add(fuelStatusPid)
                     }
-                    if (otherHelpers.isNotEmpty() && cycle % 6 == 0) {
-                        add(otherHelpers[(cycle / 6) % otherHelpers.size])
+                    if (otherHelpers.isNotEmpty()) {
+                        val helperStride = if (background.isNotEmpty()) 2 else 6
+                        if (cycle % helperStride == 0) {
+                            add(otherHelpers[helperCursor % otherHelpers.size])
+                            helperCursor++
+                        }
                     }
                 }
             }.distinctBy { it.pidHex }
@@ -732,13 +750,25 @@ class ObdPollingEngine(
             )
             _fuelMetrics.value = fuel
         } else {
-            // Only expose DTE if real fuel economy history already exists (no fabricated 12.0 default)
+            // Only expose DTE if real fuel economy history already exists (conservative cumulative-anchored model)
             fuelTracker.seedFromProfile(vp)
             values["fuel_remaining"] = vp.estimatedRemainingFuelLiters
-            val estAvg = vp.recentDteKpl?.takeIf { it > 0.5 }
-                ?: if (vp.allTimeTotalFuelLiters > 0.01) (vp.allTimeTotalDistanceKm / vp.allTimeTotalFuelLiters).takeIf { it > 0.5 } else null
-            if (estAvg != null) {
-                values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
+            val allTimeTotalAvg = if (vp.allTimeTotalFuelLiters > 0.01) {
+                (vp.allTimeTotalDistanceKm / vp.allTimeTotalFuelLiters).takeIf { it > 0.5 }
+            } else null
+            val estAvg = FuelEconomyTracker.computeConservativeDteKpl(
+                allTimeTotalAvgKpl = allTimeTotalAvg,
+                recentDteKpl = vp.recentDteKpl,
+                remainingFuelLiters = vp.estimatedRemainingFuelLiters,
+                tankCapacityLiters = vp.tankCapacityLiters
+            )
+            val dteKm = FuelEconomyTracker.computeEstimatedRangeKm(
+                remainingFuelLiters = vp.estimatedRemainingFuelLiters,
+                tankCapacityLiters = vp.tankCapacityLiters,
+                dteKpl = estAvg
+            )
+            if (dteKm != null) {
+                values["range_dte"] = dteKm
             } else {
                 values.remove("range_dte")
             }

@@ -460,7 +460,65 @@ class TelemetryCalculatorTest {
             engineLoadPct = 15.0,
             nowMs = 12_000L
         )
+        // Coast cut in 5th gear
         assertTrue(coastCut.dfcoActive)
         assertEquals(99.9, coastCut.instantKpl, 0.01)
+    }
+
+    @Test
+    fun `1 Hz gps_speed glides smoothly across full interval in LIGHT_DAMPER and snaps quickly to zero on stops`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        session.step(mapOf("gps_speed" to 20.0), dtMs = 16L, nowMs = 1_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        // At +400ms into a 1Hz update, value must still be mid-glide rather than frozen at 28
+        var cur = 20.0
+        for (i in 1..25) {
+            cur = session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L + i * 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["gps_speed"]!!
+        }
+        assertTrue("Expected smooth mid-interval glide (22..26.5), got $cur", cur in 22.0..26.5)
+
+        // Next 1Hz update settles smoothly near 28 and glides toward 36
+        for (i in 26..62) {
+            cur = session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L + i * 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["gps_speed"]!!
+        }
+        assertEquals(28.0, cur, 0.25)
+
+        // Hard stop to 0 km/h clears promptly within ~220ms
+        session.step(mapOf("gps_speed" to 0.0), dtMs = 16L, nowMs = 3_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        val afterStop = session.step(mapOf("gps_speed" to 0.0), dtMs = 220L, nowMs = 3_220L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        assertEquals(0.0, afterStop["gps_speed"]!!, 0.01)
+    }
+
+    @Test
+    fun `Conservative DTE caps high-tank recent spikes to all-time avg and reserves 10 pct safety fuel`() {
+        // Real K3-VE scenario: 45 L tank, 41.48 L left, 11.645 km/L all-time avg, 13.8 km/L stale highway recent
+        val dteKpl = FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = 11.645,
+            recentDteKpl = 13.8,
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0
+        )!!
+        assertEquals(11.645, dteKpl, 0.001)
+
+        val reserve = FuelEconomyTracker.computeReserveLiters(45.0)
+        assertEquals(4.5, reserve, 0.001)
+
+        val estKm = FuelEconomyTracker.computeEstimatedRangeKm(
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0,
+            dteKpl = dteKpl
+        )!!
+        assertEquals((41.48 - 4.5) * 11.645, estKm, 0.1)
+        assertTrue(estKm < 440.0)
+
+        // When recent city traffic runs worse (9.5 km/L), blended DTE pulls range downward cleanly
+        val cityDteKpl = FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = 11.645,
+            recentDteKpl = 9.5,
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0
+        )!!
+        assertTrue(cityDteKpl < 11.645)
     }
 }

@@ -66,6 +66,7 @@ import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
+import com.apexobd.core.protocol.FuelEconomyTracker
 import com.apexobd.core.transport.ObdConnectionType
 import java.io.File
 import java.text.SimpleDateFormat
@@ -103,6 +104,7 @@ fun HomeMenuScreen(
     val bleScannedDevices by viewModel.bleScannedDevices.collectAsStateWithLifecycle()
     val bleScanning by viewModel.bleScanning.collectAsStateWithLifecycle()
     val usbDevices by viewModel.usbDevices.collectAsStateWithLifecycle()
+    val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
     var startAddingNewVehicle by remember { mutableStateOf(false) }
@@ -125,10 +127,23 @@ fun HomeMenuScreen(
     }
 
     val allTimeAvgKpl = activeVehicle?.allTimeAvgKpl() ?: 0.0
-    val dteAvgKpl = activeVehicle?.recentDteKpl?.takeIf { it > 0.1 } ?: allTimeAvgKpl.takeIf { it > 0.1 }
+    val dteAvgKpl = activeVehicle?.let { v ->
+        FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = allTimeAvgKpl.takeIf { it > 0.1 },
+            recentDteKpl = v.recentDteKpl?.takeIf { it > 0.1 },
+            remainingFuelLiters = v.estimatedRemainingFuelLiters,
+            tankCapacityLiters = v.tankCapacityLiters
+        )
+    }
     val (dispAvg, avgSym) = UnitConverter.convertFuelEconomy(allTimeAvgKpl, unitPrefs, fuelType)
     val (dispOdo, distSym) = UnitConverter.convertDistanceKm(activeVehicle?.allTimeOdometerKm ?: 0.0, unitPrefs)
-    val estRangeKm: Double? = dteAvgKpl?.let { kpl -> (activeVehicle?.estimatedRemainingFuelLiters ?: 0.0) * kpl }
+    val estRangeKm: Double? = activeVehicle?.let { v ->
+        FuelEconomyTracker.computeEstimatedRangeKm(
+            remainingFuelLiters = v.estimatedRemainingFuelLiters,
+            tankCapacityLiters = v.tankCapacityLiters,
+            dteKpl = dteAvgKpl
+        )
+    }
     val dispRange: Double? = estRangeKm?.let { UnitConverter.convertDistanceKm(it, unitPrefs).first }
     val (dispRemFuel, volSym) = UnitConverter.convertVolume(activeVehicle?.estimatedRemainingFuelLiters ?: 0.0, unitPrefs, fuelType)
     val (dispCapFuel, _) = UnitConverter.convertVolume(activeVehicle?.tankCapacityLiters ?: 45.0, unitPrefs, fuelType)
@@ -612,6 +627,7 @@ fun HomeMenuScreen(
             fuelType = fuelType,
             onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
             onShareCard = { s -> viewModel.exportSessionShareCard(s) },
+            isPreparingCard = shareCardPreparing,
             onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.OFFLINE_MAPS },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )

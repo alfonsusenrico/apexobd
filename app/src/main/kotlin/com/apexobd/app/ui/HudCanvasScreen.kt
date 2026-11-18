@@ -50,6 +50,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -124,6 +125,8 @@ fun ApexAppRoot(
     var onHudPage by remember { mutableStateOf(false) }
     val pendingSaveTrip by viewModel.pendingSaveTrip.collectAsStateWithLifecycle()
     val shareCardDraft by viewModel.shareCardDraft.collectAsStateWithLifecycle()
+    val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
+    val shareCardExporting by viewModel.shareCardExporting.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
 
@@ -167,12 +170,50 @@ fun ApexAppRoot(
                 ?: FuelType.GASOLINE
             ShareCardComposerDialog(
                 draft = draft,
-                initialMetrics = settings.shareCardMetrics,
+                initialConfig = settings.tripCardConfig,
                 unitPrefs = settings.toUnitPreferences(),
                 fuelType = fuelType,
-                onConfirmShare = { cfg -> viewModel.confirmShareCardExport(cfg) },
+                isExporting = shareCardExporting,
+                onConfigChanged = { cfg -> viewModel.updateSavedTripCardConfig(cfg) },
+                onPickBackgroundPhoto = { uri, cb -> viewModel.copyPickedCardBackgroundPhoto(uri, cb) },
+                onLoadSurroundingRoads = { samples, w, h -> viewModel.loadSurroundingRoadsForCard(samples, w, h) },
+                onConfirmExport = { cfg, action, roadLayer ->
+                    viewModel.confirmShareCardExport(cfg, action, roadLayer)
+                },
                 onDismiss = { viewModel.dismissShareCardComposer() }
             )
+        }
+
+        if (shareCardPreparing) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x99000000))
+                    .zIndex(50f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(TorqueEvoColors.ElevatedDark)
+                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 24.dp, vertical = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier.size(30.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Text(
+                        "Generating route card...",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.TextPrimary
+                    )
+                }
+            }
         }
     }
 }
