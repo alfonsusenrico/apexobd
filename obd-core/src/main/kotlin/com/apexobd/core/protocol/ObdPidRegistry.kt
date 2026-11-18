@@ -56,11 +56,11 @@ data class DecodedReading(
 
 object ObdPidRegistry {
 
-    private val supportPidBlocks = listOf("00", "20", "40", "60", "80", "A0")
+    private val supportPidBlocks = listOf("00", "20", "40", "60", "80", "A0", "C0")
 
     val standardPids: List<PidDefinition> = listOf(
         // Engine & Air
-        pid("04", "engine_load", "Calculated Engine Load", "Load", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+        pid("04", "engine_load", "Calculated Engine Load", "Load", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
         pid("0C", "rpm", "Engine RPM", "RPM", "RPM", 0.0, 8000.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
@@ -69,13 +69,13 @@ object ObdPidRegistry {
         pid("0D", "obd_speed", "Vehicle Speed (OBD)", "OBD Spd", "km/h", 0.0, 260.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.toDouble()
         },
-        pid("0E", "timing_advance", "Timing Advance", "Timing", "°", -64.0, 63.5, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+        pid("0E", "timing_advance", "Timing Advance", "Timing", "°", -64.0, 63.5, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
             b.getOrNull(0)?.let { (it / 2.0) - 64.0 }
         },
         pid("10", "maf", "Intake Air Flow (MAF)", "MAF", "g/s", 0.0, 655.35, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             if (b.size >= 2) ((b[0] * 256) + b[1]) / 100.0 else null
         },
-        pid("11", "throttle", "Throttle Position", "Throttle", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+        pid("11", "throttle", "Throttle Position (Abs)", "Abs Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
         pid("1F", "run_time", "Run Time Since Start", "Run Time", "s", 0.0, 65535.0, PidCategory.ELECTRICAL_STATUS) { b ->
@@ -84,10 +84,16 @@ object ObdPidRegistry {
         pid("43", "abs_load", "Absolute Load Value", "Abs Load", "%", 0.0, 25700.0, PidCategory.ENGINE_AIR) { b ->
             if (b.size >= 2) ((b[0] * 256) + b[1]) * 100.0 / 255.0 else null
         },
-        pid("45", "rel_throttle", "Relative Throttle Pos", "Rel TPS", "%", 0.0, 100.0, PidCategory.ENGINE_AIR) { b ->
+        pid("45", "rel_throttle", "Throttle Position (Relative)", "Rel Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
-        pid("49", "pedal_d", "Accelerator Pedal D", "Pedal D", "%", 0.0, 100.0, PidCategory.ENGINE_AIR) { b ->
+        pid("49", "pedal_d", "Accelerator Pedal D", "Pedal D", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+            b.getOrNull(0)?.let { it * 100.0 / 255.0 }
+        },
+        pid("4A", "pedal_e", "Accelerator Pedal E", "Pedal E", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+            b.getOrNull(0)?.let { it * 100.0 / 255.0 }
+        },
+        pid("4C", "commanded_throttle", "Commanded Throttle Actuator", "Cmd Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
 
@@ -115,7 +121,7 @@ object ObdPidRegistry {
         pid("0A", "fuel_pressure", "Fuel Pressure (Gauge)", "Fuel P", "kPa", 0.0, 765.0, PidCategory.PRESSURE_BOOST) { b ->
             b.getOrNull(0)?.let { it * 3.0 }
         },
-        pid("0B", "map", "Intake Manifold Pressure", "MAP", "kPa", 0.0, 255.0, PidCategory.PRESSURE_BOOST, PollTier.HIGH) { b ->
+        pid("0B", "map", "Intake Manifold Pressure", "MAP", "kPa", 0.0, 255.0, PidCategory.PRESSURE_BOOST, PollTier.MEDIUM) { b ->
             b.getOrNull(0)?.toDouble()
         },
         pid("22", "fuel_rail_rel", "Fuel Rail Pressure (Rel)", "Rail Rel", "kPa", 0.0, 5177.27, PidCategory.PRESSURE_BOOST) { b ->
@@ -132,6 +138,9 @@ object ObdPidRegistry {
         },
 
         // Fuel Trims & Consumption
+        pid("03", "fuel_system_status", "Fuel System Status", "Fuel Sys", "", 0.0, 31.0, PidCategory.FUEL_TRIM, PollTier.MEDIUM) { b ->
+            b.getOrNull(0)?.toDouble()
+        },
         pid("06", "stft_b1", "Short Term Fuel Trim B1", "STFT B1", "%", -100.0, 99.2, PidCategory.FUEL_TRIM) { b ->
             b.getOrNull(0)?.let { (it - 128.0) * 100.0 / 128.0 }
         },
@@ -184,6 +193,12 @@ object ObdPidRegistry {
         pid("15", "o2_b1s2_v", "O2 Sensor 2 Voltage", "O2 B1S2", "V", 0.0, 1.275, PidCategory.EMISSIONS_O2) { b ->
             b.getOrNull(0)?.let { it / 200.0 }
         },
+        pid("24", "o2_b1s1_wr_lambda", "O2 Sensor 1 WR Ratio", "O2 S1 λ", "λ", 0.0, 2.0, PidCategory.EMISSIONS_O2, PollTier.MEDIUM) { b ->
+            if (b.size >= 2) ((b[0] * 256) + b[1]) * 2.0 / 65536.0 else null
+        },
+        pid("34", "o2_b1s1_lambda", "O2 Sensor 1 WR Lambda", "O2 λ", "λ", 0.0, 2.0, PidCategory.EMISSIONS_O2, PollTier.MEDIUM) { b ->
+            if (b.size >= 2) ((b[0] * 256) + b[1]) * 2.0 / 65536.0 else null
+        },
         pid("2C", "commanded_egr", "Commanded EGR", "EGR", "%", 0.0, 100.0, PidCategory.EMISSIONS_O2) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
@@ -206,13 +221,37 @@ object ObdPidRegistry {
     private val byKey: Map<String, PidDefinition> = standardPids.associateBy { it.key }
     private val byPidHexGroup: Map<String, List<PidDefinition>> = standardPids.groupBy { it.pidHex }
 
-    private val twoBytePids = setOf("0C", "10", "1F", "21", "22", "23", "31", "3C", "3E", "42", "43", "44", "4D", "4E", "59", "5E", "63")
-    private val fourBytePids = setOf("A4")
+    private val twoBytePids = setOf("03", "0C", "10", "1F", "21", "22", "23", "31", "3C", "3E", "42", "43", "44", "4D", "4E", "59", "5E", "63")
+    private val fourBytePids = setOf("24", "34", "A4")
 
     fun dataByteLength(pidHex: String): Int = when (pidHex.uppercase()) {
         in fourBytePids -> 4
         in twoBytePids -> 2
         else -> 1
+    }
+
+    /**
+     * Groups CAN Mode 01 PIDs so every response (`0x41` + `[pidHex + data]` entries) fits
+     * within a single 7-byte ISO 15765-4 CAN frame, avoiding slow ISO-TP flow-control handshakes.
+     */
+    fun packSingleFrameCanChunks(pids: List<PidDefinition>): List<List<PidDefinition>> {
+        if (pids.isEmpty()) return emptyList()
+        val out = mutableListOf<List<PidDefinition>>()
+        var cur = mutableListOf<PidDefinition>()
+        var payloadBytes = 1 // 0x41 service byte
+        for (pid in pids) {
+            val itemBytes = 1 + dataByteLength(pid.pidHex)
+            if (cur.isNotEmpty() && payloadBytes + itemBytes > 7) {
+                out += cur
+                cur = mutableListOf(pid)
+                payloadBytes = 1 + itemBytes
+            } else {
+                cur += pid
+                payloadBytes += itemBytes
+            }
+        }
+        if (cur.isNotEmpty()) out += cur
+        return out
     }
 
     fun findByKey(key: String): PidDefinition? = byKey[key]

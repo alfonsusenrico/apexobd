@@ -70,4 +70,40 @@ class ObdPidRegistryTest {
         assertEquals(0.06, readings["o2_b1s1_v"]!!.value, 0.001)
         assertEquals(21.09, readings["o2_b1s1_stft"]!!.value, 0.05)
     }
+
+    @Test
+    fun `packSingleFrameCanChunks keeps every CAN packet within 7 response payload bytes`() {
+        val rpm = ObdPidRegistry.findByKey("rpm")!!
+        val relThr = ObdPidRegistry.findByKey("rel_throttle")!!
+        val spd = ObdPidRegistry.findByKey("obd_speed")!!
+        val maf = ObdPidRegistry.findByKey("maf")!!
+        val chunks = ObdPidRegistry.packSingleFrameCanChunks(listOf(rpm, relThr, spd, maf))
+        assertTrue(chunks.size >= 2)
+        for (chunk in chunks) {
+        val payloadBytes = 1 + chunk.sumOf { 1 + ObdPidRegistry.dataByteLength(it.pidHex) }
+            assertTrue("Expected single-frame <= 7 bytes, got $payloadBytes", payloadBytes <= 7)
+        }
+    }
+
+    @Test
+    fun `decodeMode01Response handles 2-byte 0103 Fuel System Status and 4-byte 0134 WR Lambda`() {
+        assertEquals(2, ObdPidRegistry.dataByteLength("03"))
+        assertEquals(4, ObdPidRegistry.dataByteLength("34"))
+
+        val closedLoop = ObdPidRegistry.decodeMode01Response("03", listOf("41 03 02 00"))
+        assertEquals(2.0, closedLoop!!.value, 0.01)
+
+        val dfcoOpen = ObdPidRegistry.decodeMode01Response("03", listOf("41 03 04 00"))
+        assertEquals(4.0, dfcoOpen!!.value, 0.01)
+
+        val wrLambda = ObdPidRegistry.decodeMode01Response("34", listOf("41 34 80 00 80 00"))
+        assertEquals(1.0, wrLambda!!.value, 0.01)
+
+        assertEquals(4, ObdPidRegistry.dataByteLength("24"))
+        val wrS1Lambda = ObdPidRegistry.decodeMode01Response("24", listOf("41 24 7F CD 69 80"))
+        assertEquals(0.998, wrS1Lambda!!.value, 0.002)
+
+        val cmdThr = ObdPidRegistry.decodeMode01Response("4C", listOf("41 4C 2F"))
+        assertEquals(18.43, cmdThr!!.value, 0.05)
+    }
 }

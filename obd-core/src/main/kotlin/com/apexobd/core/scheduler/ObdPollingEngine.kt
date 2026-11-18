@@ -5,7 +5,9 @@ import com.apexobd.core.elm.ElmHandshakeInfo
 import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.formula.CustomPidDefinition
 import com.apexobd.core.formula.FormulaEvaluator
+import com.apexobd.core.model.FuelCoastingMode
 import com.apexobd.core.model.FuelType
+import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.VehicleProfile
 import com.apexobd.core.protocol.DerivedSensorCatalog
 import com.apexobd.core.protocol.FuelEconomyTracker
@@ -33,7 +35,7 @@ enum class PollingProfile(
     val slowPollEveryNCycles: Int
 ) {
     MAX_PERFORMANCE("Max Speed (0ms delay)", 0L, 18),
-    BALANCED("Balanced (Low Latency + Battery)", 8L, 20),
+    BALANCED("Balanced (Low Latency + Battery)", 0L, 12),
     ECO_BATTERY("Eco Battery (Low Radio Duty)", 100L, 20)
 }
 
@@ -253,6 +255,9 @@ class ObdPollingEngine(
     private var vehicleProfile: VehicleProfile = VehicleProfile()
 
     @Volatile
+    private var fuelCoastingMode: FuelCoastingMode = FuelCoastingMode.REALISTIC_DFCO
+
+    @Volatile
     private var externalGpsSpeedKmh: Double? = null
 
     @Volatile
@@ -284,6 +289,10 @@ class ObdPollingEngine(
         fuelTracker.paused = paused
     }
 
+    fun setFuelCoastingMode(mode: FuelCoastingMode) {
+        fuelCoastingMode = mode
+    }
+
     fun updateExternalGpsSpeed(speedKmh: Double?) {
         externalGpsSpeedKmh = speedKmh
     }
@@ -306,7 +315,7 @@ class ObdPollingEngine(
                         ConnectionState.Reconnecting(attempt, "Reconnecting to ${transport.endpointLabel}")
                     }
                     transport.connect()
-                    val handshake = client.initialize(aggressiveTiming = pollingProfile == PollingProfile.MAX_PERFORMANCE)
+                    val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
                     val discovered = ObdPidRegistry.discoverSupportedPids(client)
                     _supportedPids.value = discovered
                     _availableSensorKeys.value = computeAvailableSensorKeys(discovered)
@@ -360,28 +369,67 @@ class ObdPollingEngine(
 
     private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
         var cycle = 0
+        var slowCursor = 0
         var samplesInSec = 0
         var latencyAccumMs = 0L
         var rttCount = 0
         var windowStart = System.currentTimeMillis()
         var supportsMultiPid = handshake.isCanProtocol
         val values = _liveValues.value.toMutableMap()
+        val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "obd_speed", "engine_load", "map", "maf", "throttle")
 
         while (currentCoroutineContext().isActive && transport.isConnected.value) {
             val profile = pollingProfile
             val requested = activeSensorKeys.ifEmpty {
-                setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "throttle", "maf", "timing_advance")
+                setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "rel_throttle", "maf", "timing_advance")
             }
 
             val expandedKeys = expandDependencies(requested, discovered)
-            val standardTargets = expandedKeys
+            val allAvailableTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
                 .distinctBy { it.pidHex }
                 .filter { discovered.isEmpty() || it.pidHex in discovered }
-                .filter { it.defaultTier == PollTier.HIGH || cycle % profile.slowPollEveryNCycles == 0 }
+
+            val relThrSupported = "45" in discovered || discovered.isEmpty()
+            val promotedFallbackKeys = buildSet {
+                if (!relThrSupported) add("throttle")
+                if ("boost_kpa" in requested || "boost_bar" in requested) add("map")
+            }
+
+            val highTargets = allAvailableTargets
+                .filter { it.defaultTier == PollTier.HIGH || it.key in promotedFallbackKeys }
+                .sortedBy { pid ->
+                    val idx = fastPriorityOrder.indexOf(pid.key)
+                    if (idx >= 0) idx else 100
+                }
+            val slowAll = allAvailableTargets.filter { it.defaultTier != PollTier.HIGH && it.key !in promotedFallbackKeys }
+            // Split visible HUD secondary PIDs vs background fuel helpers so visible dials/bars update frequently without blocking RPM/Throttle.
+            val visibleSecondary = slowAll.filter { it.key in requested }
+            val helperSecondary = slowAll.filter { it.key !in requested }
+            val slowDue = when {
+                slowAll.isEmpty() -> emptyList()
+                cycle == 0 -> slowAll
+                visibleSecondary.isNotEmpty() && cycle % 2 == 1 -> {
+                    val item = visibleSecondary[slowCursor % visibleSecondary.size]
+                    slowCursor++
+                    listOf(item)
+                }
+                helperSecondary.isNotEmpty() && cycle % 6 == 0 -> {
+                    val item = helperSecondary[slowCursor % helperSecondary.size]
+                    slowCursor++
+                    listOf(item)
+                }
+                visibleSecondary.isEmpty() && cycle % 4 == 0 -> {
+                    val item = slowAll[slowCursor % slowAll.size]
+                    slowCursor++
+                    listOf(item)
+                }
+                else -> emptyList()
+            }
+            val standardTargets = (highTargets + slowDue).distinctBy { it.pidHex }
 
             if (supportsMultiPid && standardTargets.size >= 2) {
-                for (chunk in standardTargets.chunked(5)) {
+                for (chunk in ObdPidRegistry.packSingleFrameCanChunks(standardTargets)) {
                     if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
                     if (chunk.size == 1) {
                         val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values)
@@ -482,7 +530,7 @@ class ObdPollingEngine(
 
     private fun expandDependencies(requested: Set<String>, discovered: Set<String>): Set<String> {
         val fuelKeys = setOf(
-            "kpl_instant", "kpl_road_avg", "kpl_trip_avg",
+            "kpl_instant", "kpl_road_avg", "kpl_moving_avg", "kpl_trip_avg",
             "fuel_flow_lph", "fuel_used_l", "fuel_remaining", "range_dte", "efficiency_score"
         )
         return buildSet {
@@ -498,13 +546,19 @@ class ObdPollingEngine(
                 if ("33" in discovered) add("baro")
                 if ("04" in discovered) add("engine_load")
                 if ("05" in discovered) add("coolant")
+                if ("03" in discovered) add("fuel_system_status")
                 if ("06" in discovered) add("stft_b1")
                 if ("07" in discovered) add("ltft_b1")
                 if ("44" in discovered) add("lambda")
+                else if ("34" in discovered) add("o2_b1s1_lambda")
+                else if ("24" in discovered) add("o2_b1s1_wr_lambda")
                 if ("2F" in discovered) add("fuel_level")
             }
             if ("ve_pct" in requested) {
                 add("maf"); add("map"); add("rpm"); add("iat")
+            }
+            if ("trip_range" in requested || "trip_avg_speed" in requested) {
+                if ("0D" in discovered) add("obd_speed")
             }
             if ("hp" in requested || "torque" in requested) {
                 add("rpm"); add("maf"); add("map"); add("obd_speed")
@@ -563,11 +617,12 @@ class ObdPollingEngine(
         val iat = values["iat"]
         val baroKpa = values["baro"] ?: 101.325
         val loadPct = values["engine_load"]
+        val effectiveMapKpa = mapKpa ?: FuelEconomyTracker.inferMapFromEngineLoadKpa(loadPct, baroKpa)
         val maf = values["maf"] ?: FuelEconomyTracker.estimateMafSpeedDensity(
             displacementLiters = vp.displacementLiters,
             vePct = vp.volumetricEfficiencyPct,
             rpm = rpm,
-            mapKpa = mapKpa,
+            mapKpa = effectiveMapKpa,
             iatCelsius = iat,
             baroKpa = baroKpa,
             engineLoadPct = loadPct
@@ -575,11 +630,16 @@ class ObdPollingEngine(
 
         val relThrottle = values["rel_throttle"]
         val absThrottle = values["throttle"]
+        val isManualOrEv = vp.transmission == TransmissionType.MANUAL ||
+            vp.transmission == TransmissionType.SINGLE_SPEED_EV
+        val minDfcoSpeed = if (isManualOrEv) 18.0 else 26.0
+        val minDfcoRpm = if (isManualOrEv) 1500.0 else 1700.0
         val dfcoProbable = vp.fuelType != FuelType.ELECTRIC &&
-            speedKmh > 12.0 &&
-            (rpm ?: 0.0) > 1150.0 &&
-            (if (relThrottle != null) relThrottle <= 1.5 else (absThrottle != null && absThrottle <= 12.0 && (mapKpa == null || mapKpa <= baroKpa * 0.30))) &&
-            (mapKpa == null || mapKpa <= baroKpa * 0.36)
+            fuelCoastingMode == FuelCoastingMode.REALISTIC_DFCO &&
+            speedKmh >= minDfcoSpeed &&
+            (rpm ?: 0.0) >= minDfcoRpm &&
+            (if (relThrottle != null) relThrottle <= 1.5 else (absThrottle != null && absThrottle <= 12.0)) &&
+            (effectiveMapKpa != null && effectiveMapKpa <= baroKpa * 0.28)
 
         val (tq, hp) = PerformanceCalculator.estimatePhysicsTorqueAndHp(
             profile = vp,
@@ -614,6 +674,8 @@ class ObdPollingEngine(
         )?.let { values["ve_pct"] = it }
 
         val ecuFuelRate = values["fuel_rate"]
+        val effectiveLambda = values["lambda"] ?: values["o2_b1s1_lambda"] ?: values["o2_b1s1_wr_lambda"]
+        val fuelStatus = values["fuel_system_status"]
         if (maf != null || ecuFuelRate != null || vp.fuelType == FuelType.ELECTRIC) {
             val wheelKw = hp?.let { it * 0.7457 }
             val fuel = fuelTracker.update(
@@ -623,7 +685,7 @@ class ObdPollingEngine(
                 mafGramsPerSec = values["maf"],
                 mapKpa = mapKpa,
                 iatCelsius = iat,
-                lambda = values["lambda"],
+                lambda = effectiveLambda,
                 throttlePct = absThrottle,
                 relThrottlePct = relThrottle,
                 baroKpa = baroKpa,
@@ -633,19 +695,22 @@ class ObdPollingEngine(
                 ltftPct = averageTrim(values["ltft_b1"], values["ltft_b2"]),
                 ecuFuelRateLph = ecuFuelRate,
                 ecuFuelLevelPct = values["fuel_level"],
-                wheelPowerKw = wheelKw
+                wheelPowerKw = wheelKw,
+                fuelSystemStatus = fuelStatus,
+                fuelCoastingMode = fuelCoastingMode
             )
             values["fuel_flow_lph"] = fuel.fuelFlowLitersPerHour
             values["kpl_instant"] = fuel.instantKpl
             values["kpl_trip_avg"] = fuel.tripAvgKpl
-            values["kpl_road_avg"] = fuel.allTimeRoadAvgKpl.takeIf { it > 0.0 } ?: fuel.roadOnlyAvgKpl
+            values["kpl_road_avg"] = fuel.allTimeTotalAvgKpl.takeIf { it > 0.0 } ?: fuel.tripAvgKpl
+            values["kpl_moving_avg"] = fuel.allTimeRoadAvgKpl.takeIf { it > 0.0 } ?: fuel.roadOnlyAvgKpl
             values["fuel_used_l"] = fuel.totalFuelUsedLiters
             values["fuel_remaining"] = fuel.estimatedRemainingFuelLiters
             val dteKm = fuel.estimatedRangeKm
             if (dteKm != null) values["range_dte"] = dteKm else values.remove("range_dte")
             values["efficiency_score"] = fuelTracker.computeEfficiencyDeltaScore(
                 instantKpl = fuel.instantKpl,
-                baselineAvgKpl = fuel.allTimeRoadAvgKpl.takeIf { it > 1.0 } ?: fuel.roadOnlyAvgKpl,
+                baselineAvgKpl = fuel.allTimeTotalAvgKpl.takeIf { it > 1.0 } ?: fuel.roadOnlyAvgKpl,
                 throttlePct = absThrottle,
                 engineLoadPct = loadPct,
                 speedKmh = speedKmh,
@@ -658,7 +723,7 @@ class ObdPollingEngine(
             fuelTracker.seedFromProfile(vp)
             values["fuel_remaining"] = vp.estimatedRemainingFuelLiters
             val estAvg = vp.recentDteKpl?.takeIf { it > 0.5 }
-                ?: if (vp.allTimeRoadFuelLiters > 0.01) (vp.allTimeRoadDistanceKm / vp.allTimeRoadFuelLiters).takeIf { it > 0.5 } else null
+                ?: if (vp.allTimeTotalFuelLiters > 0.01) (vp.allTimeTotalDistanceKm / vp.allTimeTotalFuelLiters).takeIf { it > 0.5 } else null
             if (estAvg != null) {
                 values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
             } else {

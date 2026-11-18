@@ -56,14 +56,24 @@ class Elm327Client(
         } catch (_: Throwable) {
         }
 
-        val protoName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1500L), "ATDP")
-            .firstOrNull() ?: "Auto"
+        var protoName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1500L), "ATDP")
+            .joinToString(" ").trim().ifBlank { "Auto" }
         val protoCode = cleanLines(transport.sendCommand("ATDPN", timeoutMs = 1500L), "ATDPN")
-            .firstOrNull()?.uppercase() ?: "0"
+            .joinToString(" ").trim().uppercase().ifBlank { "0" }
 
-        val isCan = protoCode.lastOrNull() in listOf('6', '7', '8', '9', 'A', 'B', 'C') ||
-            protoName.contains("CAN", ignoreCase = true) ||
-            protoName.contains("15765", ignoreCase = true)
+        var isCan = detectCanProtocol(protoName, protoCode)
+        if (!isCan && protoName.equals("Auto", ignoreCase = true) && protoCode.contains("AUTO")) {
+            delay(50L)
+            val retryName = cleanLines(transport.sendCommand("ATDP", timeoutMs = 1500L), "ATDP")
+                .joinToString(" ").trim()
+            if (retryName.isNotBlank()) protoName = retryName
+            isCan = detectCanProtocol(protoName, protoCode)
+        }
+
+        // Apply tight 100ms ATST timeout only on CAN buses; keep standard P2 timeout on legacy K-line/KWP2000
+        if (aggressiveTiming && isCan) {
+            runCatching { transport.sendCommand("ATST19", timeoutMs = 1500L) }
+        }
 
         ElmHandshakeInfo(
             adapterVersion = version,
@@ -99,6 +109,15 @@ class Elm327Client(
     }
 
     companion object {
+        private val CAN_PROTOCOL_TOKEN = Regex("""(?:^|[\s,])A?[6-9A-C](?=[\s,]|$)""")
+
+        fun detectCanProtocol(protoName: String, protoCode: String): Boolean {
+            val combined = "$protoName $protoCode"
+            return CAN_PROTOCOL_TOKEN.containsMatchIn(protoCode.uppercase()) ||
+                combined.contains("CAN", ignoreCase = true) ||
+                combined.contains("15765", ignoreCase = true)
+        }
+
         fun cleanLines(raw: String, sentCommand: String? = null): List<String> {
             val trimmedCmd = sentCommand?.trim()
             return raw.replace("\r", "\n")

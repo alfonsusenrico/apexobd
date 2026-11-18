@@ -5,9 +5,46 @@ enum class FuelType(
     val stoichiometricAfr: Double,
     val densityGramsPerLiter: Double
 ) {
-    GASOLINE("Gasoline", 14.7, 745.0),
+    // Retail RON 90-95 gasoline averages ~732 g/L (~725-738 g/L depending on aromatics/temperature)
+    GASOLINE("Gasoline", 14.7, 732.0),
     DIESEL("Diesel", 14.5, 832.0),
     ELECTRIC("Electric", 1.0, 1000.0)
+}
+
+enum class FuelCoastingMode(
+    val label: String,
+    val subtitle: String
+) {
+    REALISTIC_DFCO("ECU DFCO Cut (99.9)", "Cuts fuel only above AT/MT overrun RPM & verified vacuum"),
+    AIRFLOW_CONTINUOUS("Continuous Airflow (20–50)", "Torque-style airflow fuel calculation during coasting")
+}
+
+enum class VehicleBodyType(
+    val label: String,
+    val defaultCdA: Double,
+    val defaultCrr: Double
+) {
+    SEDAN("Sedan", 0.62, 0.012),
+    HATCHBACK("Hatchback", 0.66, 0.012),
+    MPV("MPV", 0.78, 0.013),
+    CROSSOVER("Crossover", 0.74, 0.013),
+    SUV("SUV", 0.88, 0.014),
+    PICKUP("Pickup", 1.05, 0.015),
+    COUPE("Coupe", 0.58, 0.011),
+    WAGON("Wagon", 0.68, 0.012),
+    EV("EV", 0.60, 0.011)
+}
+
+enum class TransmissionType(
+    val label: String,
+    val shortCode: String,
+    val defaultDrivetrainLossPct: Double
+) {
+    MANUAL("Manual (MT)", "MT", 12.0),
+    AUTOMATIC("Automatic (AT)", "AT", 18.0),
+    CVT("CVT", "CVT", 16.0),
+    DCT("Dual-Clutch (DCT)", "DCT", 14.0),
+    SINGLE_SPEED_EV("Single-Speed EV", "EV", 8.0)
 }
 
 enum class SpeedUnit(val symbol: String) { KMH("km/h"), MPH("mph") }
@@ -46,6 +83,11 @@ data class VehicleProfile(
     val id: Long = 1L,
     val name: String = "Avanza 1.3L",
     val displacementLiters: Double = 1.3,
+    val engineCc: Int = (displacementLiters * 1000.0).toInt().coerceAtLeast(100),
+    val carType: VehicleBodyType = VehicleBodyType.MPV,
+    val transmission: TransmissionType = TransmissionType.MANUAL,
+    val modelYear: Int? = null,
+    val photoUri: String? = null,
     val weightKg: Double = 1175.0,
     val fuelType: FuelType = FuelType.GASOLINE,
     val tankCapacityLiters: Double = 45.0,
@@ -60,6 +102,9 @@ data class VehicleProfile(
     val allTimeOdometerKm: Double = 0.0,
     val allTimeRoadDistanceKm: Double = 0.0,
     val allTimeRoadFuelLiters: Double = 0.0,
+    val allTimeTotalDistanceKm: Double = allTimeRoadDistanceKm,
+    val allTimeTotalFuelLiters: Double = allTimeRoadFuelLiters,
+    val fuelUsedSinceFullRefuelLiters: Double = 0.0,
     val recentDteKpl: Double? = null,
     val best0To100Sec: Double? = null
 )
@@ -76,7 +121,8 @@ enum class SensorQuantity {
     FUEL_FLOW_LPH,
     AIRFLOW_GS,
     POWER_HP,
-    TORQUE_NM
+    TORQUE_NM,
+    DURATION_SEC
 }
 
 object UnitConverter {
@@ -149,6 +195,7 @@ object UnitConverter {
                 TorqueUnit.NM -> valueMetric to TorqueUnit.NM.symbol
                 TorqueUnit.LB_FT -> (valueMetric * 0.737562) to TorqueUnit.LB_FT.symbol
             }
+            SensorQuantity.DURATION_SEC -> valueMetric to "mm:ss"
             SensorQuantity.RAW -> valueMetric to ""
         }
     }

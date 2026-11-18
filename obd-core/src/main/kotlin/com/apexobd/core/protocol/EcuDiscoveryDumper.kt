@@ -12,7 +12,10 @@ import com.apexobd.core.transport.ObdTransport
  */
 object EcuDiscoveryDumper {
 
-    suspend fun runFullReadOnlyScan(transport: ObdTransport): String {
+    suspend fun runFullReadOnlyScan(
+        transport: ObdTransport,
+        onProgress: (String) -> Unit = {}
+    ): String {
         val sb = StringBuilder()
         fun log(line: String = "") {
             sb.appendLine(line)
@@ -23,6 +26,7 @@ object EcuDiscoveryDumper {
         log("Endpoint: ${transport.endpointLabel}")
 
         val tStart = System.currentTimeMillis()
+        onProgress("Deep Scan (1/6): Connecting & initializing ELM327...")
         val handshake = client.initialize(aggressiveTiming = false)
         log("Adapter ATZ: ${handshake.adapterVersion}")
         log("Protocol ATDP: ${handshake.protocolName} (ATDPN=${handshake.protocolCode}, isCan=${handshake.isCanProtocol})")
@@ -33,9 +37,10 @@ object EcuDiscoveryDumper {
         }
 
         // Enable headers briefly to discover all responding ECUs on Mode 01 00
-        log("\n--- ECU ADDRESS DISCOVERY (ATH1 + 0100) ---")
+        onProgress("Deep Scan (2/6): Probing CAN headers & Mode 01 bitmasks...")
+        log("\n--- ECU ADDRESS DISCOVERY (ATH1 + 0100..C0) ---")
         client.execute("ATH1")
-        for (block in listOf("00", "20", "40", "60", "80", "A0")) {
+        for (block in listOf("00", "20", "40", "60", "80", "A0", "C0")) {
             val r = client.execute("01$block")
             log("01$block (ATH1) -> ${formatResult(r)}")
         }
@@ -47,8 +52,9 @@ object EcuDiscoveryDumper {
         log("Supported Mode 01 PIDs (${supported.size}): ${supported.joinToString(", ")}")
 
         val skipBlocks = setOf("00", "20", "40", "60", "80", "A0", "C0")
-        for (pidHex in supported) {
-            if (pidHex in skipBlocks) continue
+        val valuePids = supported.filter { it !in skipBlocks }
+        for ((idx, pidHex) in valuePids.withIndex()) {
+            onProgress("Deep Scan (3/6): Sampling Mode 01 ${idx + 1}/${valuePids.size} (01$pidHex)...")
             val cmd = if (handshake.isCanProtocol) "01${pidHex}1" else "01$pidHex"
             val t0 = System.currentTimeMillis()
             val r = client.execute(cmd)
@@ -62,9 +68,18 @@ object EcuDiscoveryDumper {
             log("PID 01$pidHex [$label] (${rtt}ms) -> ${formatResult(r)} | decoded=$valStr")
         }
 
-        // Benchmark CAN multi-PID batching vs single-PID
+        // Benchmark CAN single-frame 2-PID pack, multi-frame 4-PID pack, vs single-PID
+        onProgress("Deep Scan (4/6): Running CAN multi-PID benchmark...")
         log("\n--- PERFORMANCE BENCHMARK ---")
         if (handshake.isCanProtocol) {
+            val tSf0 = System.currentTimeMillis()
+            val sfRes = client.execute("010C451")
+            val rttSf = System.currentTimeMillis() - tSf0
+            val sfDecoded = if (sfRes is ObdCommandResult.Success) {
+                ObdPidRegistry.decodeMultiMode01Response(sfRes.lines)
+            } else emptyList()
+            log("Single-Frame 2-PID 010C451 (${rttSf}ms) -> ${formatResult(sfRes)} | decodedCount=${sfDecoded.size}")
+
             val tMulti0 = System.currentTimeMillis()
             val multiRes = client.execute("010C0D1011")
             val rttMulti = System.currentTimeMillis() - tMulti0
@@ -84,6 +99,7 @@ object EcuDiscoveryDumper {
         log("Single-PID 010C1 (${rttSingle}ms) -> ${formatResult(singleRes)}")
 
         // Mode 02 Freeze Frame
+        onProgress("Deep Scan (5/6): Scanning Modes 02 / 03 / 06 / 09...")
         log("\n--- MODE 02 FREEZE FRAME ---")
         for (cmd in listOf("0200", "0202", "0204", "0205", "0206", "020C", "020D", "020F", "0210", "0211")) {
             val r = client.execute(cmd)
@@ -126,12 +142,13 @@ object EcuDiscoveryDumper {
         log("Parsed VIN -> ${DtcDecoder.readVin(client)}")
 
         // Safe read-only UDS Mode 22 & OEM Mode 21 identification/telemetry probe
+        onProgress("Deep Scan (6/6): Probing extended Mode 21 / UDS PIDs...")
         log("\n--- READ-ONLY MODE 22 & MODE 21 PROBE ---")
         for (did in listOf("22F190", "22F187", "22F40C")) {
             log("$did -> ${formatResult(client.execute(did, timeoutMs = 1200L))}")
         }
         client.execute("ATSH7E0")
-        for (pid21 in listOf("2100", "2101", "2102", "2103", "2104", "2110", "2120", "2130")) {
+        for (pid21 in listOf("2100", "2101", "2102", "2103", "2104", "2105", "2106", "2110", "2120", "2123", "2125", "2126", "212B", "212F", "2130", "2131", "2132", "2134")) {
             log("7E0 $pid21 -> ${formatResult(client.execute(pid21, timeoutMs = 1200L))}")
         }
         client.execute("ATSH7E1")

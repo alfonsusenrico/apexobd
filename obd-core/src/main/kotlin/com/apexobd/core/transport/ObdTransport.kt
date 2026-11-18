@@ -21,6 +21,63 @@ sealed class TransportError(message: String, cause: Throwable? = null) : Excepti
     class Disconnected(reason: String, cause: Throwable? = null) : TransportError(reason, cause)
 }
 
+enum class ObdConnectionType(val label: String, val shortLabel: String) {
+    WIFI_TCP("Wi-Fi (TCP/IP)", "Wi-Fi"),
+    BLUETOOTH_CLASSIC("Bluetooth Classic (SPP)", "BT"),
+    BLUETOOTH_LE("Bluetooth LE (GATT)", "BLE"),
+    USB_SERIAL("USB-Serial (OTG)", "USB")
+}
+
+/**
+ * Shared ASCII ELM327 framing buffer across TCP, Bluetooth Classic, BLE GATT, and USB Serial.
+ * Collects incoming bytes until the ELM327 prompt character '>' arrives.
+ */
+class ElmResponseBuffer {
+    private val sb = StringBuilder(128)
+    private val lock = Any()
+
+    fun reset() {
+        synchronized(lock) { sb.setLength(0) }
+    }
+
+    fun appendByte(b: Int): String? {
+        if (b <= 0) return null
+        synchronized(lock) {
+            val ch = b.toChar()
+            if (ch == '>') {
+                val out = sb.toString()
+                sb.setLength(0)
+                return out
+            }
+            sb.append(ch)
+            return null
+        }
+    }
+
+    fun appendBytes(bytes: ByteArray, length: Int = bytes.size): String? {
+        val count = length.coerceIn(0, bytes.size)
+        synchronized(lock) {
+            for (i in 0 until count) {
+                val raw = bytes[i].toInt() and 0xFF
+                if (raw == 0) continue
+                val ch = raw.toChar()
+                if (ch == '>') {
+                    val out = sb.toString()
+                    sb.setLength(0)
+                    return out
+                }
+                sb.append(ch)
+            }
+            return null
+        }
+    }
+
+    companion object {
+        fun formatCommandBytes(command: String): ByteArray =
+            (command.trim() + "\r").toByteArray(Charsets.US_ASCII)
+    }
+}
+
 interface ObdTransport {
     val isConnected: StateFlow<Boolean>
     val endpointLabel: String
@@ -229,7 +286,10 @@ class SimulatedObdTransport(
                 val mv = 14120 + (sin(t * 0.3) * 140).toInt()
                 listOf((mv shr 8) and 0xFF, mv and 0xFF)
             }
+            "45" -> listOf((((throttle - 8).coerceAtLeast(0)) * 255) / 100)
             "46" -> listOf(30 + 40)
+            "49" -> listOf((((throttle - 8).coerceAtLeast(0)) * 255) / 100)
+            "4A" -> listOf((((throttle - 8).coerceAtLeast(0)) * 255) / 100)
             "5C" -> listOf(96 + 40)
             "62" -> listOf(125 + (throttle * 0.6).toInt())
             "63" -> listOf(0x01, 0x2C)

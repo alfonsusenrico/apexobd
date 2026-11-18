@@ -1,7 +1,9 @@
 package com.apexobd.core.protocol
 
+import com.apexobd.core.model.FuelCoastingMode
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.SensorQuantity
+import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.VehicleProfile
 import kotlin.math.abs
 
@@ -11,6 +13,7 @@ data class FuelMetricsSnapshot(
     val tripAvgKpl: Double,
     val roadOnlyAvgKpl: Double,
     val allTimeRoadAvgKpl: Double,
+    val allTimeTotalAvgKpl: Double,
     val totalFuelUsedLiters: Double,
     val roadFuelUsedLiters: Double,
     val idleFuelUsedLiters: Double,
@@ -18,6 +21,9 @@ data class FuelMetricsSnapshot(
     val roadDistanceKm: Double,
     val allTimeRoadDistanceKm: Double,
     val allTimeRoadFuelLiters: Double,
+    val allTimeTotalDistanceKm: Double,
+    val allTimeTotalFuelLiters: Double,
+    val fuelUsedSinceFullRefuelLiters: Double,
     val allTimeOdometerKm: Double,
     val estimatedRemainingFuelLiters: Double,
     val estimatedRangeKm: Double?,
@@ -41,6 +47,9 @@ class FuelEconomyTracker {
 
     private var allTimeRoadDistKm = 0.0
     private var allTimeRoadFuelL = 0.0
+    private var allTimeTotalDistKm = 0.0
+    private var allTimeTotalFuelL = 0.0
+    private var fuelUsedSinceFullL = 0.0
     private var allTimeOdometerKm = 0.0
     private var estimatedFuelLiters = 0.0
     private var recentDteKpl: Double? = null
@@ -60,18 +69,28 @@ class FuelEconomyTracker {
             seededProfileId = profile.id
             allTimeRoadDistKm = profile.allTimeRoadDistanceKm
             allTimeRoadFuelL = profile.allTimeRoadFuelLiters
+            allTimeTotalDistKm = maxOf(profile.allTimeTotalDistanceKm, profile.allTimeRoadDistanceKm)
+            allTimeTotalFuelL = maxOf(profile.allTimeTotalFuelLiters, profile.allTimeRoadFuelLiters)
+            fuelUsedSinceFullL = profile.fuelUsedSinceFullRefuelLiters.coerceAtLeast(0.0)
             allTimeOdometerKm = profile.allTimeOdometerKm
             estimatedFuelLiters = profile.estimatedRemainingFuelLiters.coerceIn(0.0, profile.tankCapacityLiters)
-            recentDteKpl = profile.recentDteKpl?.takeIf { it > 0.5 }
+            recentDteKpl = profile.recentDteKpl?.takeIf { it in 1.5..28.0 }
             displayedRangeKm = null
             recentSliceDistKm = 0.0
             recentSliceFuelL = 0.0
         }
     }
 
-    fun applyRefuelAdded(addedVolumeLiters: Double, tankCapacityLiters: Double) {
+    fun applyRefuelAdded(addedVolumeLiters: Double, tankCapacityLiters: Double, isFullTank: Boolean = false) {
         if (addedVolumeLiters <= 0.0) return
-        estimatedFuelLiters = (estimatedFuelLiters + addedVolumeLiters).coerceIn(0.0, tankCapacityLiters)
+        estimatedFuelLiters = if (isFullTank) {
+            tankCapacityLiters
+        } else {
+            (estimatedFuelLiters + addedVolumeLiters).coerceIn(0.0, tankCapacityLiters)
+        }
+        if (isFullTank) {
+            fuelUsedSinceFullL = 0.0
+        }
         displayedRangeKm = null
     }
 
@@ -97,6 +116,9 @@ class FuelEconomyTracker {
         resetSession()
         allTimeRoadDistKm = 0.0
         allTimeRoadFuelL = 0.0
+        allTimeTotalDistKm = 0.0
+        allTimeTotalFuelL = 0.0
+        fuelUsedSinceFullL = 0.0
         recentDteKpl = null
     }
 
@@ -118,16 +140,19 @@ class FuelEconomyTracker {
         ecuFuelRateLph: Double? = null,
         ecuFuelLevelPct: Double? = null,
         wheelPowerKw: Double? = null,
+        fuelSystemStatus: Double? = null,
+        fuelCoastingMode: FuelCoastingMode = FuelCoastingMode.REALISTIC_DFCO,
         nowMs: Long = System.currentTimeMillis()
     ): FuelMetricsSnapshot {
         seedFromProfile(profile)
 
         val effectiveBaro = (baroKpa ?: 101.325).coerceIn(60.0, 110.0)
+        val effectiveMapKpa = mapKpa ?: inferMapFromEngineLoadKpa(engineLoadPct, effectiveBaro)
         val effectiveMaf = mafGramsPerSec ?: estimateMafSpeedDensity(
             displacementLiters = profile.displacementLiters,
             vePct = profile.volumetricEfficiencyPct,
             rpm = rpm,
-            mapKpa = mapKpa,
+            mapKpa = effectiveMapKpa,
             iatCelsius = iatCelsius,
             baroKpa = effectiveBaro,
             engineLoadPct = engineLoadPct
@@ -135,15 +160,30 @@ class FuelEconomyTracker {
 
         val isClosedThrottle = when {
             relThrottlePct != null -> relThrottlePct <= 1.5
-            throttlePct != null -> throttlePct <= 12.0 && (mapKpa == null || mapKpa <= effectiveBaro * 0.30)
+            throttlePct != null -> throttlePct <= 12.0 && effectiveMapKpa != null && effectiveMapKpa <= effectiveBaro * 0.28
             else -> false
         }
-        val highVacuum = mapKpa == null || mapKpa <= effectiveBaro * 0.36
+        val highVacuum = effectiveMapKpa != null && effectiveMapKpa <= effectiveBaro * 0.28
+        val isWarmEnough = (coolantCelsius ?: 80.0) >= 65.0
+        val isManualOrEv = profile.transmission == TransmissionType.MANUAL ||
+            profile.transmission == TransmissionType.SINGLE_SPEED_EV
+        val minDfcoSpeed = if (isManualOrEv) 18.0 else 26.0
+        val minDfcoRpm = if (isManualOrEv) 1500.0 else 1700.0
+
+        val sysStatusInt = fuelSystemStatus?.toInt()
+        // SAE 0103 bit 1 (0x02) = closed loop firing; suppress unverified DFCO unless O2 confirms extreme lean cut
+        val ecuClosedLoopFiring = sysStatusInt != null && (sysStatusInt and 0x02) != 0 && (lambda == null || lambda < 1.65)
+        // SAE 0103 bit 2 (0x04) = open-loop load or decel fuel cut; O2 lambda >= 1.75 confirms injector cut
+        val ecuDecelCutConfirmed = (sysStatusInt != null && (sysStatusInt and 0x04) != 0 &&
+            isClosedThrottle && speedKmh > 14.0 && (rpm ?: 0.0) > 1250.0) ||
+            (lambda != null && lambda >= 1.75 && isClosedThrottle && speedKmh > 14.0 && (rpm ?: 0.0) > 1250.0)
+
         val isDfcoCoasting = profile.fuelType != FuelType.ELECTRIC &&
-            speedKmh > 12.0 &&
-            (rpm ?: 0.0) > 1150.0 &&
+            fuelCoastingMode == FuelCoastingMode.REALISTIC_DFCO &&
             isClosedThrottle &&
-            highVacuum
+            isWarmEnough &&
+            !ecuClosedLoopFiring &&
+            (ecuDecelCutConfirmed || (highVacuum && speedKmh >= minDfcoSpeed && (rpm ?: 0.0) >= minDfcoRpm))
 
         val fuelFlowLph = computeFuelFlowLitersPerHour(
             profile = profile,
@@ -181,24 +221,35 @@ class FuelEconomyTracker {
             if (!paused) {
                 totalDistanceKm += dDistKm
                 totalFuelLiters += dFuelL
+                allTimeTotalDistKm += dDistKm
+                allTimeTotalFuelL += dFuelL
+                fuelUsedSinceFullL += dFuelL
+
+                // Update DTE rolling window using BOTH distance & total fuel (idle included, conservative cap 28 km/L)
+                if (dDistKm > 0.0 || dFuelL > 0.0) {
+                    recentSliceDistKm += dDistKm
+                    recentSliceFuelL += dFuelL
+                    val sliceReady = if (recentDteKpl == null) {
+                        recentSliceDistKm >= 0.025 || recentSliceFuelL >= 0.015
+                    } else {
+                        recentSliceDistKm >= 0.12 || recentSliceFuelL >= 0.025
+                    }
+                    if (sliceReady) {
+                        if (recentSliceFuelL > 0.0005) {
+                            val sliceKpl = (recentSliceDistKm / recentSliceFuelL).coerceIn(2.0, 28.0)
+                            val alpha = (recentSliceFuelL / 0.85).coerceIn(0.02, 0.25)
+                            recentDteKpl = recentDteKpl?.let { prev -> alpha * sliceKpl + (1.0 - alpha) * prev } ?: sliceKpl
+                        }
+                        recentSliceDistKm = 0.0
+                        recentSliceFuelL = 0.0
+                    }
+                }
+
                 if (speedKmh > profile.idleSpeedThresholdKmh) {
                     roadDistanceKm += dDistKm
                     roadFuelLiters += dFuelL
                     allTimeRoadDistKm += dDistKm
                     allTimeRoadFuelL += dFuelL
-
-                    // Moving-only Dual-Window EWMA update (~4 km distance constant)
-                    if (dDistKm > 0.0) {
-                        recentSliceDistKm += dDistKm
-                        recentSliceFuelL += dFuelL
-                        if (recentSliceDistKm >= 0.008 && recentSliceFuelL > 0.00005) {
-                            val sliceKpl = (recentSliceDistKm / recentSliceFuelL).coerceIn(1.5, 45.0)
-                            val alpha = (recentSliceDistKm / 4.0).coerceIn(0.01, 0.30)
-                            recentDteKpl = recentDteKpl?.let { prev -> alpha * sliceKpl + (1.0 - alpha) * prev } ?: sliceKpl
-                            recentSliceDistKm = 0.0
-                            recentSliceFuelL = 0.0
-                        }
-                    }
                 } else {
                     idleFuelLiters += dFuelL
                 }
@@ -213,19 +264,20 @@ class FuelEconomyTracker {
         val tripAvg = if (totalFuelLiters > 0.0005) (totalDistanceKm / totalFuelLiters).coerceIn(0.0, 99.9) else 0.0
         val roadAvg = if (roadFuelLiters > 0.0005) (roadDistanceKm / roadFuelLiters).coerceIn(0.0, 99.9) else 0.0
         val allTimeRoadAvg = if (allTimeRoadFuelL > 0.0005) (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.0, 99.9) else roadAvg
+        val allTimeTotalAvg = if (allTimeTotalFuelL > 0.0005) (allTimeTotalDistKm / allTimeTotalFuelL).coerceIn(0.0, 99.9) else tripAvg
 
-        val slowBaseline = if (allTimeRoadFuelL > 0.005) {
-            (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.5, 99.9)
-        } else if (roadFuelLiters > 0.002) {
-            roadAvg.takeIf { it > 0.5 }
+        val slowBaseline = if (allTimeTotalFuelL > 0.005) {
+            (allTimeTotalDistKm / allTimeTotalFuelL).coerceIn(1.5, 40.0)
+        } else if (totalFuelLiters > 0.002) {
+            tripAvg.takeIf { it > 1.0 }
         } else null
-        val fastWindow = recentDteKpl ?: roadAvg.takeIf { roadFuelLiters > 0.002 && it > 0.5 }
+        val fastWindow = recentDteKpl ?: tripAvg.takeIf { totalFuelLiters > 0.002 && it > 1.0 }
 
         val dteKpl: Double? = when {
             fastWindow != null && slowBaseline != null -> {
                 val tankFrac = (estimatedFuelLiters / profile.tankCapacityLiters.coerceAtLeast(1.0)).coerceIn(0.0, 1.0)
-                val wRecent = if (tankFrac <= 0.25) 0.72 else 0.55
-                (wRecent * fastWindow + (1.0 - wRecent) * slowBaseline).coerceIn(0.5, 99.9)
+                val wRecent = if (tankFrac <= 0.25) 0.62 else 0.50
+                (wRecent * fastWindow + (1.0 - wRecent) * slowBaseline).coerceIn(1.5, 35.0)
             }
             fastWindow != null -> fastWindow
             slowBaseline != null -> slowBaseline
@@ -252,6 +304,7 @@ class FuelEconomyTracker {
             tripAvgKpl = tripAvg,
             roadOnlyAvgKpl = roadAvg,
             allTimeRoadAvgKpl = allTimeRoadAvg,
+            allTimeTotalAvgKpl = allTimeTotalAvg,
             totalFuelUsedLiters = totalFuelLiters,
             roadFuelUsedLiters = roadFuelLiters,
             idleFuelUsedLiters = idleFuelLiters,
@@ -259,6 +312,9 @@ class FuelEconomyTracker {
             roadDistanceKm = roadDistanceKm,
             allTimeRoadDistanceKm = allTimeRoadDistKm,
             allTimeRoadFuelLiters = allTimeRoadFuelL,
+            allTimeTotalDistanceKm = allTimeTotalDistKm,
+            allTimeTotalFuelLiters = allTimeTotalFuelL,
+            fuelUsedSinceFullRefuelLiters = fuelUsedSinceFullL,
             allTimeOdometerKm = allTimeOdometerKm,
             estimatedRemainingFuelLiters = estimatedFuelLiters,
             estimatedRangeKm = smoothedRange,
@@ -332,16 +388,18 @@ class FuelEconomyTracker {
             return ((fuelGramsPerSec / profile.fuelType.densityGramsPerLiter) * 3600.0).coerceAtLeast(0.0)
         }
 
+        val load = engineLoadPct ?: 0.0
         val wotLambda = when {
             lambda != null -> lambda.coerceIn(0.65, 1.5)
-            (engineLoadPct ?: 0.0) > 80.0 || (relThrottlePct ?: 0.0) > 70.0 || (throttlePct ?: 0.0) > 78.0 -> 0.84
+            load > 82.0 || (relThrottlePct ?: 0.0) > 72.0 || (throttlePct ?: 0.0) > 78.0 -> 0.84
+            load > 70.0 -> 1.0 - ((load - 70.0) / 12.0) * 0.14
             else -> 1.0
         }
 
         val trimSumPct = (stftPct ?: 0.0) + (ltftPct ?: 0.0)
         val trimFactor = if (lambda == null) (1.0 + trimSumPct / 100.0).coerceIn(0.75, 1.35) else 1.0
 
-        val coldFactor = if (coolantCelsius != null && coolantCelsius < 70.0 && trimSumPct in -2.0..2.0) {
+        val coldFactor = if (coolantCelsius != null && coolantCelsius < 70.0 && trimSumPct > -3.0) {
             1.0 + (0.18 * ((70.0 - coolantCelsius) / 70.0)).coerceIn(0.0, 0.22)
         } else {
             1.0
@@ -356,6 +414,16 @@ class FuelEconomyTracker {
         private const val SPECIFIC_GAS_CONSTANT_AIR = 0.287058 // kJ/(kg*K)
 
         /**
+         * Infers intake manifold absolute pressure (kPa) from SAE J1979 Engine Load (`0104`) and Baro
+         * on naturally aspirated engines when `010B MAP` is not exposed by the ECU.
+         */
+        fun inferMapFromEngineLoadKpa(engineLoadPct: Double?, baroKpa: Double = 101.325): Double? {
+            val load = engineLoadPct ?: return null
+            val safeBaro = baroKpa.coerceIn(60.0, 110.0)
+            return (safeBaro * ((load.coerceIn(0.0, 100.0) / 100.0) * 0.94 + 0.04)).coerceIn(15.0, safeBaro * 1.02)
+        }
+
+        /**
          * Physics Speed-Density fallback with manifold pressure pumping factor + load awareness.
          */
         fun estimateMafSpeedDensity(
@@ -367,9 +435,10 @@ class FuelEconomyTracker {
             baroKpa: Double = 101.325,
             engineLoadPct: Double? = null
         ): Double? {
-            if (rpm == null || mapKpa == null || rpm < 100.0) return null
+            val resolvedMap = mapKpa ?: inferMapFromEngineLoadKpa(engineLoadPct, baroKpa)
+            if (rpm == null || resolvedMap == null || rpm < 100.0) return null
             val tempK = (iatCelsius ?: 35.0) + 273.15
-            val pressureRatio = (mapKpa / baroKpa.coerceAtLeast(60.0)).coerceIn(0.2, 2.5)
+            val pressureRatio = (resolvedMap / baroKpa.coerceAtLeast(60.0)).coerceIn(0.2, 2.5)
             val pumpingVeScale = (0.82 + 0.18 * pressureRatio.coerceAtMost(1.0))
             val dynamicVe = if (engineLoadPct != null && pressureRatio < 1.05) {
                 val baseVe = vePct * pumpingVeScale
@@ -377,7 +446,7 @@ class FuelEconomyTracker {
             } else {
                 vePct * pumpingVeScale
             }
-            val airDensityGramsPerLiter = mapKpa / (SPECIFIC_GAS_CONSTANT_AIR * tempK)
+            val airDensityGramsPerLiter = resolvedMap / (SPECIFIC_GAS_CONSTANT_AIR * tempK)
             return airDensityGramsPerLiter * displacementLiters * (rpm / 120.0) * (dynamicVe / 100.0)
         }
 
@@ -412,6 +481,23 @@ class FuelEconomyTracker {
             val tpsPenalty = ((throttlePct ?: 20.0) / 100.0) * 20.0
             val loadPenalty = ((engineLoadPct ?: 30.0) / 100.0) * 20.0
             return (40.0 + kplFactor - tpsPenalty - loadPenalty).coerceIn(0.0, 100.0)
+        }
+
+        /**
+         * Bounded full-tank pump calibration for `mafTrimPct` (`75%..135%`).
+         * Blends 40% toward `currentTrimPct * (actualPumpLiters / obdFuelUsedSinceFullLiters)`
+         * only when meaningful fuel (`>= 5.0 L`) was tracked since the previous full fill.
+         */
+        fun computeCalibratedTrimPct(
+            currentTrimPct: Double,
+            actualPumpLiters: Double,
+            obdFuelUsedSinceFullLiters: Double
+        ): Double {
+            val clampedCurrent = currentTrimPct.coerceIn(75.0, 135.0)
+            if (actualPumpLiters < 3.0 || obdFuelUsedSinceFullLiters < 5.0) return clampedCurrent
+            val ratio = (actualPumpLiters / obdFuelUsedSinceFullLiters).coerceIn(0.80, 1.25)
+            val targetTrim = (clampedCurrent * ratio).coerceIn(75.0, 135.0)
+            return ((0.40 * targetTrim) + (0.60 * clampedCurrent)).coerceIn(75.0, 135.0)
         }
     }
 }
@@ -464,35 +550,46 @@ object DerivedSensorCatalog {
         DerivedSensorSpec(
             key = "kpl_instant",
             name = "Instant Fuel Economy",
-            shortName = "KPL Inst",
+            shortName = "KPL · INST",
             sourceLabel = "FUSED (MAF/SD/TRIM)",
             defaultUnit = "km/L",
             quantity = SensorQuantity.FUEL_ECONOMY_KPL,
             minValue = 0.0,
             maxValue = 40.0,
-            requiredAnyOfPidGroups = listOf(setOf("10", "0D"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10", "0D"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
         ),
         DerivedSensorSpec(
             key = "kpl_road_avg",
-            name = "All Time Avg (Road)",
-            shortName = "KPL",
+            name = "All Time Avg (Total w/ Idle)",
+            shortName = "KPL · AVG",
+            sourceLabel = "ALL-TIME (Incl. Idle)",
+            defaultUnit = "km/L",
+            quantity = SensorQuantity.FUEL_ECONOMY_KPL,
+            minValue = 0.0,
+            maxValue = 40.0,
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
+        ),
+        DerivedSensorSpec(
+            key = "kpl_moving_avg",
+            name = "Moving Avg (Road Only)",
+            shortName = "KPL · MOVE",
             sourceLabel = "ALL-TIME (No Idle)",
             defaultUnit = "km/L",
             quantity = SensorQuantity.FUEL_ECONOMY_KPL,
             minValue = 0.0,
             maxValue = 40.0,
-            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
         ),
         DerivedSensorSpec(
             key = "kpl_trip_avg",
-            name = "Trip Fuel Avg",
-            shortName = "KPL Trip",
-            sourceLabel = "PER-RUN TRIP",
+            name = "Trip KPL",
+            shortName = "KPL · TRIP",
+            sourceLabel = "REC RUN TRIP",
             defaultUnit = "km/L",
             quantity = SensorQuantity.FUEL_ECONOMY_KPL,
             minValue = 0.0,
             maxValue = 40.0,
-            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
         ),
         DerivedSensorSpec(
             key = "fuel_flow_lph",
@@ -503,18 +600,48 @@ object DerivedSensorCatalog {
             quantity = SensorQuantity.FUEL_FLOW_LPH,
             minValue = 0.0,
             maxValue = 50.0,
-            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
         ),
         DerivedSensorSpec(
             key = "fuel_used_l",
             name = "Trip Fuel Used",
-            shortName = "Fuel Used",
-            sourceLabel = "PER-RUN",
+            shortName = "Trip Fuel",
+            sourceLabel = "REC RUN",
             defaultUnit = "L",
             quantity = SensorQuantity.VOLUME_L,
             minValue = 0.0,
             maxValue = 80.0,
-            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
+        ),
+        DerivedSensorSpec(
+            key = "trip_range",
+            name = "Trip Range",
+            shortName = "Trip Range",
+            sourceLabel = "REC RUN",
+            defaultUnit = "km",
+            quantity = SensorQuantity.DISTANCE_KM,
+            minValue = 0.0,
+            maxValue = 500.0
+        ),
+        DerivedSensorSpec(
+            key = "trip_time",
+            name = "Trip Time",
+            shortName = "Trip Time",
+            sourceLabel = "REC RUN",
+            defaultUnit = "mm:ss",
+            quantity = SensorQuantity.DURATION_SEC,
+            minValue = 0.0,
+            maxValue = 10800.0
+        ),
+        DerivedSensorSpec(
+            key = "trip_avg_speed",
+            name = "Trip Avg Speed",
+            shortName = "Trip Spd",
+            sourceLabel = "REC RUN",
+            defaultUnit = "km/h",
+            quantity = SensorQuantity.SPEED,
+            minValue = 0.0,
+            maxValue = 200.0
         ),
         DerivedSensorSpec(
             key = "fuel_remaining",
@@ -556,7 +683,7 @@ object DerivedSensorCatalog {
             quantity = SensorQuantity.POWER_HP,
             minValue = 0.0,
             maxValue = 350.0,
-            requiredAnyOfPidGroups = listOf(setOf("0C", "10"), setOf("0C", "0B"), setOf("62", "63"))
+            requiredAnyOfPidGroups = listOf(setOf("0C", "10"), setOf("0C", "0B"), setOf("0C", "04"), setOf("62", "63"))
         ),
         DerivedSensorSpec(
             key = "torque",
@@ -567,7 +694,7 @@ object DerivedSensorCatalog {
             quantity = SensorQuantity.TORQUE_NM,
             minValue = 0.0,
             maxValue = 500.0,
-            requiredAnyOfPidGroups = listOf(setOf("0C", "10"), setOf("0C", "0B"), setOf("62", "63"))
+            requiredAnyOfPidGroups = listOf(setOf("0C", "10"), setOf("0C", "0B"), setOf("0C", "04"), setOf("62", "63"))
         ),
         DerivedSensorSpec(
             key = "efficiency_score",
@@ -578,12 +705,261 @@ object DerivedSensorCatalog {
             quantity = SensorQuantity.RAW,
             minValue = 0.0,
             maxValue = 100.0,
-            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("5E"))
+            requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
         )
     )
 
     fun isAvailable(spec: DerivedSensorSpec, supportedMode01Pids: Set<String>): Boolean {
         if (spec.requiredAnyOfPidGroups.isEmpty() || supportedMode01Pids.isEmpty()) return true
         return spec.requiredAnyOfPidGroups.any { group -> group.all { it in supportedMode01Pids } }
+    }
+}
+
+/**
+ * Centralized run-record-triggered snapshot for the 5 trip metrics (`kpl_trip_avg`,
+ * `fuel_used_l`, `trip_range`, `trip_time`, `trip_avg_speed`). Remains idle until the user
+ * triggers Run Recording via the Map/Logger control.
+ */
+data class TripRunMetrics(
+    val activeOrCompleted: Boolean = false,
+    val isRecording: Boolean = false,
+    val isPaused: Boolean = false,
+    val distanceKm: Double = 0.0,
+    val fuelUsedLiters: Double = 0.0,
+    val elapsedSec: Long = 0L,
+    val avgKpl: Double? = null,
+    val avgSpeedKmh: Double? = null
+)
+
+object TripRunCalculator {
+    val TRIP_SENSOR_KEYS = setOf(
+        "kpl_trip_avg",
+        "fuel_used_l",
+        "trip_range",
+        "trip_time",
+        "trip_avg_speed"
+    )
+
+    fun computeStep(
+        previousDistanceKm: Double,
+        gpsDeltaKm: Double?,
+        gpsHasRealFix: Boolean,
+        msSinceLastGpsMovement: Long,
+        useSimulator: Boolean,
+        speedKmh: Double,
+        dtMs: Long,
+        elapsedMs: Long,
+        fuelDeltaLiters: Double
+    ): TripRunMetrics {
+        val dtSafe = dtMs.coerceIn(0L, 5_000L)
+        val distInc = when {
+            !useSimulator && gpsHasRealFix -> {
+                when {
+                    gpsDeltaKm != null && gpsDeltaKm in 0.001..0.35 && speedKmh >= 1.0 -> gpsDeltaKm
+                    msSinceLastGpsMovement >= 2_500L && speedKmh >= 2.5 -> speedKmh * (dtSafe / 3_600_000.0)
+                    else -> 0.0
+                }
+            }
+            speedKmh >= 0.8 -> speedKmh * (dtSafe / 3_600_000.0)
+            else -> 0.0
+        }
+        val nextDist = (previousDistanceKm + distInc).coerceAtLeast(0.0)
+        val nextFuel = fuelDeltaLiters.coerceAtLeast(0.0)
+        val safeElapsedMs = elapsedMs.coerceAtLeast(0L)
+        val elapsedHours = safeElapsedMs / 3_600_000.0
+        val avgSpd = if (safeElapsedMs >= 1_000L) {
+            (nextDist / elapsedHours.coerceAtLeast(1e-6)).coerceIn(0.0, 400.0)
+        } else {
+            0.0
+        }
+        val avgKpl = if (nextFuel > 0.002) {
+            (nextDist / nextFuel).coerceIn(0.0, 99.9)
+        } else {
+            null
+        }
+        return TripRunMetrics(
+            activeOrCompleted = true,
+            isRecording = true,
+            distanceKm = nextDist,
+            fuelUsedLiters = nextFuel,
+            elapsedSec = safeElapsedMs / 1_000L,
+            avgKpl = avgKpl,
+            avgSpeedKmh = avgSpd
+        )
+    }
+
+    fun applyToLiveValues(base: Map<String, Double>, trip: TripRunMetrics): Map<String, Double> {
+        val out = base.toMutableMap()
+        if (!trip.activeOrCompleted) {
+            out.remove("kpl_trip_avg")
+            out.remove("fuel_used_l")
+            out.remove("trip_range")
+            out.remove("trip_avg_speed")
+            out["trip_time"] = 0.0
+            return out
+        }
+        out["trip_range"] = trip.distanceKm
+        out["fuel_used_l"] = trip.fuelUsedLiters
+        out["trip_time"] = trip.elapsedSec.toDouble()
+        trip.avgSpeedKmh?.let { out["trip_avg_speed"] = it } ?: out.remove("trip_avg_speed")
+        trip.avgKpl?.let { out["kpl_trip_avg"] = it } ?: out.remove("kpl_trip_avg")
+        return out
+    }
+
+    fun formatDurationClock(totalSeconds: Long): String {
+        val sec = totalSeconds.coerceAtLeast(0L)
+        val h = sec / 3_600L
+        val m = (sec % 3_600L) / 60L
+        val s = sec % 60L
+        return if (h > 0L) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+    }
+}
+
+enum class GaugeSmoothingMode(
+    val label: String,
+    val tauMs: Double
+) {
+    RAW_INSTANT("Raw Instant (0ms)", 0.0),
+    LIGHT_DAMPER("Light Damper (40ms)", 40.0),
+    ADAPTIVE_GLIDE("Adaptive Glide", 95.0)
+}
+
+/**
+ * UI-only visual smoothing/interpolation for rapid telemetry channels (`rpm`, throttle, boost,
+ * speed, power) so dial needles and fast numbers transition smoothly between OBD samples
+ * WITHOUT modifying the underlying raw [TelemetrySampleEntity] logs or KPL/trip math.
+ */
+object TelemetryDisplaySmoother {
+    val SMOOTHED_KEYS = setOf(
+        "rpm",
+        "obd_speed",
+        "gps_speed",
+        "maf",
+        "map",
+        "boost_kpa",
+        "boost_bar",
+        "rel_throttle",
+        "throttle",
+        "pedal_d",
+        "pedal_e",
+        "engine_load",
+        "hp",
+        "torque",
+        "kpl_instant",
+        "accel_g"
+    )
+
+    private data class ChannelRamp(
+        var startVal: Double,
+        var targetVal: Double,
+        var elapsedMs: Double,
+        var durationMs: Double,
+        var lastTargetAtMs: Long,
+        var avgPeriodMs: Double
+    )
+
+    class AdaptiveSession {
+        private val tracks = HashMap<String, ChannelRamp>(16)
+
+        fun reset() {
+            tracks.clear()
+        }
+
+        fun step(
+            rawTargets: Map<String, Double>,
+            dtMs: Long,
+            nowMs: Long,
+            mode: GaugeSmoothingMode
+        ): Map<String, Double> {
+            if (rawTargets.isEmpty()) return emptyMap()
+            if (mode == GaugeSmoothingMode.RAW_INSTANT) return rawTargets
+            val safeDt = dtMs.coerceIn(1L, 500L).toDouble()
+            val out = LinkedHashMap<String, Double>(rawTargets.size)
+            for ((k, raw) in rawTargets) {
+                if (k !in SMOOTHED_KEYS || !raw.isFinite()) {
+                    out[k] = raw
+                    continue
+                }
+                val track = tracks[k]
+                if (track == null || !track.targetVal.isFinite()) {
+                    tracks[k] = ChannelRamp(
+                        startVal = raw,
+                        targetVal = raw,
+                        elapsedMs = 160.0,
+                        durationMs = 160.0,
+                        lastTargetAtMs = nowMs,
+                        avgPeriodMs = 160.0
+                    )
+                    out[k] = raw
+                    continue
+                }
+                val curVisual = currentTrackValue(track)
+                if (mode == GaugeSmoothingMode.LIGHT_DAMPER) {
+                    val alpha = (1.0 - kotlin.math.exp(-safeDt / mode.tauMs)).coerceIn(0.08, 1.0)
+                    val delta = raw - curVisual
+                    val next = if (abs(delta) < 0.05 && abs(raw) < 20.0 || abs(delta) < 0.5 && abs(raw) >= 200.0) {
+                        raw
+                    } else {
+                        curVisual + delta * alpha
+                    }
+                    track.startVal = next
+                    track.targetVal = next
+                    track.elapsedMs = 1.0
+                    track.durationMs = 1.0
+                    out[k] = next
+                } else {
+                    if (abs(raw - track.targetVal) > 1e-4) {
+                        val measured = (nowMs - track.lastTargetAtMs).coerceIn(55L, 550L).toDouble()
+                        track.avgPeriodMs = (track.avgPeriodMs * 0.65) + (measured * 0.35)
+                        track.lastTargetAtMs = nowMs
+                        track.startVal = curVisual
+                        track.targetVal = raw
+                        track.elapsedMs = 0.0
+                        track.durationMs = (track.avgPeriodMs * 1.02).coerceIn(75.0, 480.0)
+                    } else {
+                        track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
+                    }
+                    out[k] = currentTrackValue(track)
+                }
+            }
+            return out
+        }
+
+        private fun currentTrackValue(t: ChannelRamp): Double {
+            if (t.elapsedMs >= t.durationMs || t.durationMs <= 1.0) return t.targetVal
+            val u = (t.elapsedMs / t.durationMs).coerceIn(0.0, 1.0)
+            return t.startVal + (t.targetVal - t.startVal) * u
+        }
+    }
+
+    fun step(
+        currentDisplay: Map<String, Double>,
+        rawTargets: Map<String, Double>,
+        dtMs: Long,
+        tauMs: Double = 40.0
+    ): Map<String, Double> {
+        if (rawTargets.isEmpty()) return emptyMap()
+        if (tauMs <= 0.0) return rawTargets
+        val safeDt = dtMs.coerceIn(1L, 500L).toDouble()
+        val alpha = (1.0 - kotlin.math.exp(-safeDt / tauMs.coerceAtLeast(10.0))).coerceIn(0.05, 1.0)
+        val out = LinkedHashMap<String, Double>(rawTargets.size)
+        for ((k, raw) in rawTargets) {
+            if (k !in SMOOTHED_KEYS) {
+                out[k] = raw
+            } else {
+                val prev = currentDisplay[k]
+                if (prev == null || !prev.isFinite()) {
+                    out[k] = raw
+                } else {
+                    val delta = raw - prev
+                    out[k] = if (abs(delta) < 0.05 && abs(raw) < 20.0 || abs(delta) < 0.5 && abs(raw) >= 200.0) {
+                        raw
+                    } else {
+                        prev + delta * alpha
+                    }
+                }
+            }
+        }
+        return out
     }
 }

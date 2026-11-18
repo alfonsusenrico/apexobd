@@ -4,9 +4,13 @@ import com.apexobd.core.elm.Elm327Client
 import com.apexobd.core.elm.ObdCommandResult
 import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.ObdPidRegistry
+import com.apexobd.core.transport.ObdTransport
 import com.apexobd.core.transport.SimulatedObdTransport
 import com.apexobd.core.transport.WifiTcpTransport
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -142,5 +146,37 @@ class EngineAndPerformanceTest {
             assertEquals(ConnectionState.Disconnected, engine.connectionState.value)
             engineScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         }
+    }
+
+    @Test
+    fun `Elm327Client detects CAN when clone adapter reports ATDP Auto and ATDPN AUTO ISO 15765-4 CAN`() = runTest {
+        assertTrue(Elm327Client.detectCanProtocol("Auto", "AUTO, ISO 15765-4 (CAN 11/500)"))
+        assertTrue(Elm327Client.detectCanProtocol("ISO 15765-4 (CAN 11/500)", "A6"))
+        assertTrue(Elm327Client.detectCanProtocol("AUTO", "6"))
+        assertFalse(Elm327Client.detectCanProtocol("ISO 9141-2", "3"))
+        assertFalse(Elm327Client.detectCanProtocol("ISO 14230-4 (KWP fast)", "5"))
+
+        val commandsSeen = mutableListOf<String>()
+        val cloneTransport = object : ObdTransport {
+            private val _connected = MutableStateFlow(true)
+            override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+            override val endpointLabel: String = "clone-test"
+            override suspend fun connect() { _connected.value = true }
+            override suspend fun disconnect() { _connected.value = false }
+            override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                val cmd = command.trim()
+                commandsSeen += cmd
+                return when (cmd) {
+                    "ATZ" -> "ELM327 v1.5\r"
+                    "0100" -> "4100BE1EA813\r"
+                    "ATDP" -> "Auto\r"
+                    "ATDPN" -> "AUTO, ISO 15765-4 (CAN 11/500)\r"
+                    else -> "OK\r"
+                }
+            }
+        }
+        val handshake = Elm327Client(cloneTransport).initialize(aggressiveTiming = true)
+        assertTrue(handshake.isCanProtocol)
+        assertTrue("ATST19" in commandsSeen)
     }
 }
