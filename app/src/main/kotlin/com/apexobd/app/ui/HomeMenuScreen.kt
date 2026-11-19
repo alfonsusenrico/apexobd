@@ -13,14 +13,18 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.mandatorySystemGestures
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -59,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.apexobd.app.platform.TripCardRenderer
 import com.apexobd.app.platform.TripExporter
 import com.apexobd.app.ui.components.ApexBrandLogo
 import com.apexobd.app.ui.components.DualMapCanvas
@@ -118,9 +123,7 @@ fun HomeMenuScreen(
     LaunchedEffect(latestTrip?.id) {
         if (latestTrip != null) {
             val samples = viewModel.getSamplesForSession(latestTrip.id)
-            lastTripTrail = samples.mapNotNull { s ->
-                if (s.latitude != null && s.longitude != null) s.latitude to s.longitude else null
-            }
+            lastTripTrail = TripCardRenderer.extractValidGpsPoints(samples)
         } else {
             lastTripTrail = emptyList()
         }
@@ -168,7 +171,9 @@ fun HomeMenuScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(TorqueEvoColors.HomeBg)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.union(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+            )
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         val isLandscape = maxWidth > maxHeight
@@ -692,6 +697,7 @@ fun HomeMenuScreen(
             onOpenAdapterConnection = { activeSheet = ActiveHomeSheet.ADAPTER },
             onSelectPolling = { viewModel.setPollingProfile(it) },
             onSelectGaugeSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+            onToggleLiveMicroMotion = { viewModel.setLiveMicroMotion(!settings.liveMicroMotion) },
             onSelectFuelCoasting = { viewModel.setFuelCoastingMode(it) },
             onSelectGridScale = { viewModel.setHudGridScale(it) },
             onSelectMapStylePreset = { viewModel.setMapStylePreset(it) },

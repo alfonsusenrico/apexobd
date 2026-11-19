@@ -39,14 +39,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.coroutines.resume
+import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
 
 /**
  * Generates high-resolution Strava-style PNG route cards overlaying GPS track,
- * optional surrounding map road network (60% opacity), telemetry metrics, and vehicle identity
- * across `1:1`, `4:3`, and `9:16` layouts.
+ * optional surrounding map road network with seamless fade and adjustable opacity,
+ * telemetry metrics, and vehicle identity across `1:1`, `4:3`, and `9:16` layouts.
  */
 object TripCardRenderer {
 
@@ -54,7 +56,8 @@ object TripCardRenderer {
         val roadsAlphaBitmap: Bitmap,
         val projectedPoints: List<Pair<Float, Float>>,
         val boxWidth: Int,
-        val boxHeight: Int
+        val boxHeight: Int,
+        val mainRoadsOnly: Boolean = true
     )
 
     private data class CardBox(
@@ -131,7 +134,8 @@ object TripCardRenderer {
         samples: List<TelemetrySampleEntity>,
         boxWidth: Int,
         boxHeight: Int,
-        activePmtilesPath: String?
+        activePmtilesPath: String?,
+        mainRoadsOnly: Boolean = true
     ): RoadContextLayer? {
         val allPts = extractValidGpsPoints(samples)
         if (allPts.size < 2 || boxWidth < 120 || boxHeight < 120) return null
@@ -144,14 +148,14 @@ object TripCardRenderer {
 
         val latSpan = (maxLat - minLat).coerceAtLeast(0.0028)
         val lonSpan = (maxLon - minLon).coerceAtLeast(0.0028)
-        val latPad = latSpan * 0.16
-        val lonPad = lonSpan * 0.16
+        val latPad = latSpan * 0.20
+        val lonPad = lonSpan * 0.20
         val bounds = LatLngBounds.Builder()
             .include(LatLng((minLat - latPad).coerceIn(-85.0, 85.0), (minLon - lonPad).coerceIn(-180.0, 180.0)))
             .include(LatLng((maxLat + latPad).coerceIn(-85.0, 85.0), (maxLon + lonPad).coerceIn(-180.0, 180.0)))
             .build()
 
-        val styleJson = OfflineMapManager.buildRoadsMaskStyleJson(activePmtilesPath)
+        val styleJson = OfflineMapManager.buildRoadsMaskStyleJson(activePmtilesPath, mainRoadsOnly = mainRoadsOnly)
 
         val rawCapture = withTimeoutOrNull(4500L) {
             withContext(Dispatchers.Main) {
@@ -201,7 +205,8 @@ object TripCardRenderer {
                 roadsAlphaBitmap = alphaBmp,
                 projectedPoints = projectedPts,
                 boxWidth = alphaBmp.width,
-                boxHeight = alphaBmp.height
+                boxHeight = alphaBmp.height,
+                mainRoadsOnly = mainRoadsOnly
             )
         }
     }
@@ -212,10 +217,10 @@ object TripCardRenderer {
         val pixels = IntArray(w * h)
         src.getPixels(pixels, 0, w, 0, 0, w, h)
 
-        val fadeX = (w * 0.08f).coerceAtLeast(16f)
-        val fadeY = (h * 0.08f).coerceAtLeast(16f)
+        val cx = (w - 1) * 0.5f
+        val cy = (h - 1) * 0.5f
         for (y in 0 until h) {
-            val edgeY = min(y / fadeY, (h - 1 - y) / fadeY).coerceIn(0f, 1f)
+            val ny = if (cy > 0f) abs(y - cy) / cy else 0f
             val rowOff = y * w
             for (x in 0 until w) {
                 val c = pixels[rowOff + x]
@@ -226,10 +231,13 @@ object TripCardRenderer {
                 if (luma <= 10) {
                     pixels[rowOff + x] = 0
                 } else {
-                    val edgeX = min(x / fadeX, (w - 1 - x) / fadeX).coerceIn(0f, 1f)
-                    val edgeMask = edgeX * edgeY
-                    // Strictly 60% maximum road opacity (alpha <= 153) fading smoothly near edges
-                    val alpha = ((luma / 255f) * 0.60f * edgeMask * 255f).toInt().coerceIn(0, 153)
+                    val nx = if (cx > 0f) abs(x - cx) / cx else 0f
+                    val radial = hypot(nx, ny)
+                    val t = ((radial - 0.34f) / (0.96f - 0.34f)).coerceIn(0f, 1f)
+                    val smoothFade = 1f - (t * t * (3f - 2f * t))
+                    val vignette = smoothFade * smoothFade
+                    // Full 0..255 luma mask with totally seamless elliptical vignette; user opacity scales at draw time
+                    val alpha = ((luma / 255f) * vignette * 255f).toInt().coerceIn(0, 255)
                     pixels[rowOff + x] = Color.argb(alpha, r, g, b)
                 }
             }
@@ -539,7 +547,11 @@ object TripCardRenderer {
             roadContextLayer.boxHeight > 0
 
         if (config.showSurroundingRoads && roadContextLayer != null && !roadContextLayer.roadsAlphaBitmap.isRecycled) {
-            canvas.drawBitmap(roadContextLayer.roadsAlphaBitmap, null, box.toRectF(), Paint(Paint.FILTER_BITMAP_FLAG))
+            val roadAlpha = ((config.surroundingRoadsOpacityPct.coerceIn(10, 60) / 100f) * 255f)
+                .toInt()
+                .coerceIn(25, 160)
+            val roadPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = roadAlpha }
+            canvas.drawBitmap(roadContextLayer.roadsAlphaBitmap, null, box.toRectF(), roadPaint)
         }
 
         val screenPoints: List<Pair<Float, Float>> = if (useContextCoords) {
@@ -682,12 +694,49 @@ object TripCardRenderer {
         }
     }
 
-    internal fun extractValidGpsPoints(samples: List<TelemetrySampleEntity>): List<Pair<Double, Double>> =
-        samples.mapNotNull { s ->
-            if (s.latitude != null && s.longitude != null && s.latitude != 0.0 && s.longitude != 0.0) {
-                s.latitude to s.longitude
+    fun extractValidGpsPoints(samples: List<TelemetrySampleEntity>): List<Pair<Double, Double>> {
+        val raw = samples.mapNotNull { s ->
+            val lat = s.latitude
+            val lon = s.longitude
+            if (lat != null && lon != null && (abs(lat) > 1e-4 || abs(lon) > 1e-4)) {
+                lat to lon
             } else null
         }
+        if (raw.isEmpty()) return emptyList()
+
+        // Strip legacy unfixed fallback sentinel coordinates (-6.2088, 106.8456) whenever real fixes exist elsewhere
+        val hasRemoteFixes = raw.any { (lat, lon) ->
+            abs(lat - (-6.2088)) > 0.05 || abs(lon - 106.8456) > 0.05
+        }
+        val withoutSentinel = if (hasRemoteFixes) {
+            raw.filterNot { (lat, lon) ->
+                abs(lat - (-6.2088)) < 1e-3 && abs(lon - 106.8456) < 1e-3
+            }
+        } else raw
+
+        if (withoutSentinel.size < 20) return withoutSentinel
+
+        // Guard against impossible cross-region GPS jumps (>0.15 deg) leaving minority unfixed/stale clusters
+        val clusters = ArrayList<MutableList<Pair<Double, Double>>>()
+        var current = mutableListOf(withoutSentinel.first())
+        for (i in 1 until withoutSentinel.size) {
+            val prev = withoutSentinel[i - 1]
+            val cur = withoutSentinel[i]
+            if (abs(cur.first - prev.first) > 0.15 || abs(cur.second - prev.second) > 0.15) {
+                clusters += current
+                current = mutableListOf(cur)
+            } else {
+                current += cur
+            }
+        }
+        clusters += current
+        if (clusters.size <= 1) return withoutSentinel
+
+        val primary = clusters.maxByOrNull { seg ->
+            seg.map { ((it.first * 10000).toInt() to (it.second * 10000).toInt()) }.toSet().size
+        } ?: withoutSentinel
+        return primary
+    }
 
     internal fun downsamplePoints(pts: List<Pair<Double, Double>>, maxPoints: Int = 900): List<Pair<Double, Double>> {
         if (pts.size <= maxPoints || maxPoints < 2) return pts

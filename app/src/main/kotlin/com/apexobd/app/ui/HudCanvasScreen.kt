@@ -1,6 +1,22 @@
 package com.apexobd.app.ui
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.apexobd.app.ui.components.formatTelemetryValue
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.LocationServices
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -176,7 +192,7 @@ fun ApexAppRoot(
                 isExporting = shareCardExporting,
                 onConfigChanged = { cfg -> viewModel.updateSavedTripCardConfig(cfg) },
                 onPickBackgroundPhoto = { uri, cb -> viewModel.copyPickedCardBackgroundPhoto(uri, cb) },
-                onLoadSurroundingRoads = { samples, w, h -> viewModel.loadSurroundingRoadsForCard(samples, w, h) },
+                onLoadSurroundingRoads = { samples, w, h, mainOnly -> viewModel.loadSurroundingRoadsForCard(samples, w, h, mainOnly) },
                 onConfirmExport = { cfg, action, roadLayer ->
                     viewModel.confirmShareCardExport(cfg, action, roadLayer)
                 },
@@ -236,6 +252,86 @@ fun HudCanvasScreen(
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+    val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    fun hasLocPerm(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    var hasLocationPermission by remember { mutableStateOf(hasLocPerm()) }
+    var dismissGpsPrompt by remember { mutableStateOf(false) }
+
+    val locationSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) {
+        hasLocationPermission = hasLocPerm()
+        if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+            viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        hasLocationPermission = hasLocPerm()
+        if (hasLocationPermission) {
+            viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+        }
+    }
+
+    val enableGpsAction: () -> Unit = {
+        if (!hasLocPerm()) {
+            locationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        } else {
+            val req = viewModel.locationTracker.buildHighAccuracySettingsRequest()
+            LocationServices.getSettingsClient(context)
+                .checkLocationSettings(req)
+                .addOnSuccessListener {
+                    viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+                }
+                .addOnFailureListener { ex ->
+                    if (ex is ResolvableApiException) {
+                        runCatching {
+                            locationSettingsLauncher.launch(IntentSenderRequest.Builder(ex.resolution).build())
+                        }.onFailure {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                        }
+                    } else {
+                        runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                    }
+                }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        hasLocationPermission = hasLocPerm()
+        if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+            viewModel.locationTracker.requestImmediateFix()
+        }
+    }
+
+    LaunchedEffect(isGpsEnabled, hasLocationPermission) {
+        if (isGpsEnabled && hasLocationPermission) {
+            dismissGpsPrompt = false
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasLocationPermission = hasLocPerm()
+                if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+                    viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     var showConnectedToast by remember { mutableStateOf(false) }
     var wasNotConnected by remember { mutableStateOf(true) }
@@ -344,7 +440,8 @@ fun HudCanvasScreen(
                     },
                     renderContextExtras = Triple(gps, diagReport, timer0100),
                     extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0)),
-                    isRecordingPaused = isRecordingPaused
+                    isRecordingPaused = isRecordingPaused,
+                    onEnableGps = enableGpsAction
                 )
             }
         }
@@ -655,9 +752,66 @@ fun HudCanvasScreen(
                     onSelectGridScale = { viewModel.setHudGridScale(it) },
                     selectedSmoothing = settings.gaugeSmoothingMode,
                     onSelectSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+                    liveMicroMotion = settings.liveMicroMotion,
+                    onToggleLiveMicroMotion = { viewModel.setLiveMicroMotion(!settings.liveMicroMotion) },
                     hudMirror = settings.hudMirror,
                     onToggleHudMirror = { viewModel.toggleHudMirror() }
                 )
+            }
+        }
+    }
+
+    if ((!isGpsEnabled || !hasLocationPermission) && !dismissGpsPrompt) {
+        Dialog(onDismissRequest = { dismissGpsPrompt = true }) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 420.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xF50E1219))
+                    .border(1.5.dp, TorqueEvoColors.WarnAmber, RoundedCornerShape(16.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = if (!hasLocationPermission) "Location Permission Required" else "GPS Location Is Turned Off",
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.WarnAmber
+                )
+                Text(
+                    text = if (!hasLocationPermission) {
+                        "ApexOBD needs Location access to read GPS speed, show the live map, and record your driving route."
+                    } else {
+                        "Turn on GPS so speed, live navigation map, and route tracking update properly."
+                    },
+                    fontSize = 12.5.sp,
+                    color = TorqueEvoColors.TextPrimary
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { dismissGpsPrompt = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Later", color = TorqueEvoColors.TextSecondary)
+                    }
+                    Button(
+                        onClick = enableGpsAction,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = TorqueEvoColors.WarnAmber,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier.weight(1.4f)
+                    ) {
+                        Text(
+                            if (!hasLocationPermission) "Allow Location" else "Enable GPS",
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
             }
         }
     }
@@ -827,7 +981,8 @@ private fun ProportionalHudPageCanvas(
     onUpdateFreeformPos: (HudWidgetEntity, Float, Float, Float, Float) -> Unit,
     renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
     extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>,
-    isRecordingPaused: Boolean = false
+    isRecordingPaused: Boolean = false,
+    onEnableGps: (() -> Unit)? = null
 ) {
     val density = LocalDensity.current
     var snapPreview by remember { mutableStateOf<SnapDragPreview?>(null) }
@@ -1075,7 +1230,8 @@ private fun ProportionalHudPageCanvas(
                             onTogglePauseResume = onTogglePauseResume,
                             onToggleFuelPause = onToggleFuelPause,
                             onScanDtc = onScanDtc,
-                            onReset0100 = onReset0100
+                            onReset0100 = onReset0100,
+                            onEnableGps = onEnableGps
                         )
                     }
                 }
@@ -1141,7 +1297,8 @@ private fun RenderWidgetContent(
     onTogglePauseResume: (() -> Unit)? = null,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
-    onReset0100: () -> Unit
+    onReset0100: () -> Unit,
+    onEnableGps: (() -> Unit)? = null
 ) {
     val type = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
 
@@ -1171,7 +1328,9 @@ private fun RenderWidgetContent(
                 isPaused = isRecordingPaused,
                 recordingStatusLabel = recLabel,
                 onToggleRecord = onToggleRecord,
-                onTogglePauseResume = onTogglePauseResume
+                onTogglePauseResume = onTogglePauseResume,
+                isGpsEnabled = viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle().value,
+                onEnableGps = onEnableGps
             )
         }
         "fuel_ctrl" -> {
@@ -1206,17 +1365,17 @@ private fun RenderWidgetContent(
             val critConv = widget.critThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
 
             when (type) {
-                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
                 WidgetDisplayType.CHART -> {
                     val hist = (historyBuffers[widget.sensorKey] ?: emptyList()).map {
                         viewModel.convertForDisplay(it, meta.quantity, meta.unit).first ?: it
                     }
-                    SparklineChartWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, hist)
+                    SparklineChartWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, hist, sensorKey = widget.sensorKey)
                 }
-                else -> DigitalReadoutWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
+                else -> DigitalReadoutWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
             }
         }
     }
@@ -1728,11 +1887,7 @@ private fun FullscreenComponentPickerDialog(
                                 item.quantity == SensorQuantity.DURATION_SEC ->
                                     TripRunCalculator.formatDurationClock((dispVal ?: 0.0).roundToLong())
                                 dispVal != null -> {
-                                    val numTxt = when {
-                                        item.maxValue - item.minValue <= 5.0 -> "%.2f".format(dispVal)
-                                        item.maxValue >= 200.0 && item.unit == "RPM" -> "%.0f".format(dispVal)
-                                        else -> "%.1f".format(dispVal)
-                                    }
+                                    val numTxt = formatTelemetryValue(dispVal, item.minValue, item.maxValue, unit = dispUnit, sensorKey = item.key)
                                     if (dispUnit.isNotBlank()) "$numTxt $dispUnit" else numTxt
                                 }
                                 dispUnit.isNotBlank() -> "— $dispUnit"

@@ -462,11 +462,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     val nowMs = System.currentTimeMillis()
                     val dtMs = (nowMs - lastFrameMs).coerceAtLeast(12L)
                     lastFrameMs = nowMs
+                    val curSettings = settings.value
                     _displayValues.value = smootherSession.step(
                         rawTargets = _liveValues.value,
                         dtMs = dtMs,
                         nowMs = nowMs,
-                        mode = settings.value.gaugeSmoothingMode
+                        mode = curSettings.gaugeSmoothingMode,
+                        liveMicroMotion = curSettings.liveMicroMotion
                     )
                     delay(16L)
                 }
@@ -949,8 +951,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     batch += TelemetrySampleEntity(
                         sessionId = sessionId,
                         timestampMs = nowMs,
-                        latitude = gps.latitude,
-                        longitude = gps.longitude,
+                        latitude = if (gps.hasRealFix) gps.latitude else null,
+                        longitude = if (gps.hasRealFix) gps.longitude else null,
                         gpsSpeedKmh = speed,
                         payloadJson = TripExporter.encodePayload(vals)
                     )
@@ -1110,13 +1112,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun loadSurroundingRoadsForCard(
         samples: List<TelemetrySampleEntity>,
         boxWidth: Int,
-        boxHeight: Int
+        boxHeight: Int,
+        mainRoadsOnly: Boolean = true
     ): TripCardRenderer.RoadContextLayer? = TripCardRenderer.captureSurroundingRoadsLayer(
         context = getApplication(),
         samples = samples,
         boxWidth = boxWidth,
         boxHeight = boxHeight,
-        activePmtilesPath = settings.value.activePmtilesPath
+        activePmtilesPath = settings.value.activePmtilesPath,
+        mainRoadsOnly = mainRoadsOnly
     )
 
     fun confirmShareCardExport(
@@ -1137,7 +1141,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     val matchesExisting = roadContextLayer != null &&
                         !roadContextLayer.roadsAlphaBitmap.isRecycled &&
                         roadContextLayer.boxWidth == reqW &&
-                        roadContextLayer.boxHeight == reqH
+                        roadContextLayer.boxHeight == reqH &&
+                        roadContextLayer.mainRoadsOnly == config.surroundingRoadsMainOnly
                     if (matchesExisting) {
                         roadContextLayer
                     } else {
@@ -1146,7 +1151,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                             samples = draft.samples,
                             boxWidth = reqW,
                             boxHeight = reqH,
-                            activePmtilesPath = st.activePmtilesPath
+                            activePmtilesPath = st.activePmtilesPath,
+                            mainRoadsOnly = config.surroundingRoadsMainOnly
                         )
                     }
                 } else null
@@ -1700,6 +1706,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { prefs.setGaugeSmoothingMode(mode) }
     }
 
+    fun setLiveMicroMotion(enabled: Boolean) {
+        viewModelScope.launch { prefs.setLiveMicroMotion(enabled) }
+    }
+
     fun setFuelCoastingMode(mode: FuelCoastingMode) {
         viewModelScope.launch {
             prefs.setFuelCoastingMode(mode)
@@ -1909,7 +1919,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         accelTracker.stop()
-        locationTracker.stopUpdates()
+        locationTracker.dispose()
         wifiBinder.unregister()
         viewModelScope.launch {
             flushActiveVehicleStats()

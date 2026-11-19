@@ -898,11 +898,13 @@ object TelemetryDisplaySmoother {
         "hp",
         "torque",
         "kpl_instant",
+        "kpl_road_avg",
         "accel_g"
     )
 
     private val GPS_ROLLING_KEYS = setOf("gps_speed")
     private val OBD_SPEED_KEYS = setOf("obd_speed")
+    private val MICRO_SHIMMER_KEYS = setOf("rpm", "engine_load", "rel_throttle", "throttle", "pedal_d", "pedal_e", "kpl_instant", "kpl_road_avg")
 
     private data class ChannelRamp(
         var startVal: Double,
@@ -928,45 +930,45 @@ object TelemetryDisplaySmoother {
 
     private fun specForKey(key: String): ChannelTimingSpec = when (key) {
         in GPS_ROLLING_KEYS -> ChannelTimingSpec(
-            initialPeriodMs = 920.0,
+            initialPeriodMs = 960.0,
             minPeriodMs = 300L,
-            maxPeriodMs = 1080L,
+            maxPeriodMs = 1150L,
             plateauResetMs = 2400L,
             wakePeriodMs = 240.0,
             stopSnapMs = 200.0,
-            lightScale = 0.84,
-            adaptiveScale = 0.94,
-            minDurationMs = 180.0,
-            maxDurationMs = 980.0
+            lightScale = 1.02,
+            adaptiveScale = 1.08,
+            minDurationMs = 220.0,
+            maxDurationMs = 1220.0
         )
         in OBD_SPEED_KEYS -> ChannelTimingSpec(
             initialPeriodMs = 260.0,
-            minPeriodMs = 120L,
-            maxPeriodMs = 880L,
-            plateauResetMs = 2000L,
+            minPeriodMs = 140L,
+            maxPeriodMs = 950L,
+            plateauResetMs = 1800L,
             wakePeriodMs = 175.0,
             stopSnapMs = 180.0,
-            lightScale = 0.78,
-            adaptiveScale = 0.90,
-            minDurationMs = 110.0,
-            maxDurationMs = 780.0
+            lightScale = 1.00,
+            adaptiveScale = 1.08,
+            minDurationMs = 140.0,
+            maxDurationMs = 960.0
         )
         else -> ChannelTimingSpec(
-            initialPeriodMs = 140.0,
-            minPeriodMs = 45L,
-            maxPeriodMs = 520L,
-            plateauResetMs = 1150L,
-            wakePeriodMs = 100.0,
-            stopSnapMs = 110.0,
-            lightScale = 0.68,
-            adaptiveScale = 0.86,
-            minDurationMs = 55.0,
-            maxDurationMs = 440.0
+            initialPeriodMs = 240.0,
+            minPeriodMs = 95L,
+            maxPeriodMs = 1100L,
+            plateauResetMs = 1750L,
+            wakePeriodMs = 152.0,
+            stopSnapMs = 120.0,
+            lightScale = 1.04,
+            adaptiveScale = 1.12,
+            minDurationMs = 95.0,
+            maxDurationMs = 1120.0
         )
     }
 
     class AdaptiveSession {
-        private val tracks = HashMap<String, ChannelRamp>(16)
+        private val tracks = HashMap<String, ChannelRamp>(18)
 
         fun reset() {
             tracks.clear()
@@ -976,59 +978,83 @@ object TelemetryDisplaySmoother {
             rawTargets: Map<String, Double>,
             dtMs: Long,
             nowMs: Long,
-            mode: GaugeSmoothingMode
+            mode: GaugeSmoothingMode,
+            liveMicroMotion: Boolean = false
         ): Map<String, Double> {
             if (rawTargets.isEmpty()) return emptyMap()
-            if (mode == GaugeSmoothingMode.RAW_INSTANT) return rawTargets
-            val safeDt = dtMs.coerceIn(1L, 500L).toDouble()
-            val out = LinkedHashMap<String, Double>(rawTargets.size)
-            for ((k, raw) in rawTargets) {
-                if (k !in SMOOTHED_KEYS || !raw.isFinite()) {
-                    out[k] = raw
-                    continue
-                }
-                val spec = specForKey(k)
-                val track = tracks[k]
-                if (track == null || !track.targetVal.isFinite()) {
-                    tracks[k] = ChannelRamp(
-                        startVal = raw,
-                        targetVal = raw,
-                        elapsedMs = spec.initialPeriodMs,
-                        durationMs = spec.initialPeriodMs,
-                        lastTargetAtMs = nowMs,
-                        avgPeriodMs = spec.initialPeriodMs
-                    )
-                    out[k] = raw
-                    continue
-                }
-                val curVisual = currentTrackValue(track)
-                if (abs(raw - track.targetVal) > 1e-4) {
-                    val gapMs = (nowMs - track.lastTargetAtMs).coerceAtLeast(1L)
-                    val isStopping = k in rollingSpeedKeys && raw < 0.8 && track.targetVal > 1.5
-                    val measured = if (gapMs > spec.plateauResetMs) {
-                        spec.wakePeriodMs
-                    } else {
-                        gapMs.coerceIn(spec.minPeriodMs, spec.maxPeriodMs).toDouble()
+            val out = if (mode == GaugeSmoothingMode.RAW_INSTANT) {
+                rawTargets.toMutableMap()
+            } else {
+                val safeDt = dtMs.coerceIn(1L, 500L).toDouble()
+                val res = LinkedHashMap<String, Double>(rawTargets.size)
+                for ((k, raw) in rawTargets) {
+                    if (k !in SMOOTHED_KEYS || !raw.isFinite()) {
+                        res[k] = raw
+                        continue
                     }
-                    track.avgPeriodMs = if (gapMs > spec.plateauResetMs) {
-                        measured
-                    } else {
-                        (track.avgPeriodMs * 0.60) + (measured * 0.40)
+                    val spec = specForKey(k)
+                    val track = tracks[k]
+                    if (track == null || !track.targetVal.isFinite()) {
+                        tracks[k] = ChannelRamp(
+                            startVal = raw,
+                            targetVal = raw,
+                            elapsedMs = spec.initialPeriodMs,
+                            durationMs = spec.initialPeriodMs,
+                            lastTargetAtMs = nowMs,
+                            avgPeriodMs = spec.initialPeriodMs
+                        )
+                        res[k] = raw
+                        continue
                     }
-                    track.lastTargetAtMs = nowMs
-                    track.startVal = curVisual
-                    track.targetVal = raw
-                    track.elapsedMs = 0.0
-                    val modeScale = if (mode == GaugeSmoothingMode.LIGHT_DAMPER) spec.lightScale else spec.adaptiveScale
-                    track.durationMs = if (isStopping) {
-                        spec.stopSnapMs
+                    val curVisual = currentTrackValue(track)
+                    if (abs(raw - track.targetVal) > 1e-4) {
+                        val gapMs = (nowMs - track.lastTargetAtMs).coerceAtLeast(1L)
+                        val isStopping = k in rollingSpeedKeys && raw < 0.8 && track.targetVal > 1.5
+                        val measured = if (gapMs > spec.plateauResetMs) {
+                            spec.wakePeriodMs
+                        } else {
+                            gapMs.coerceIn(spec.minPeriodMs, spec.maxPeriodMs).toDouble()
+                        }
+                        track.avgPeriodMs = when {
+                            gapMs > spec.plateauResetMs -> measured
+                            measured > track.avgPeriodMs -> (track.avgPeriodMs * 0.35) + (measured * 0.65)
+                            else -> (track.avgPeriodMs * 0.55) + (measured * 0.45)
+                        }
+                        track.lastTargetAtMs = nowMs
+                        track.startVal = curVisual
+                        track.targetVal = raw
+                        track.elapsedMs = 0.0
+                        val modeScale = if (mode == GaugeSmoothingMode.LIGHT_DAMPER) spec.lightScale else spec.adaptiveScale
+                        track.durationMs = if (isStopping) {
+                            spec.stopSnapMs
+                        } else {
+                            (track.avgPeriodMs * modeScale).coerceIn(spec.minDurationMs, spec.maxDurationMs)
+                        }
                     } else {
-                        (track.avgPeriodMs * modeScale).coerceIn(spec.minDurationMs, spec.maxDurationMs)
+                        track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
                     }
-                } else {
-                    track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
+                    res[k] = currentTrackValue(track)
                 }
-                out[k] = currentTrackValue(track)
+                res
+            }
+
+            if (liveMicroMotion && (rawTargets["rpm"] ?: 0.0) > 300.0) {
+                val tSec = (nowMs % 600_000L) / 1000.0
+                for ((k, v) in out) {
+                    if (k in MICRO_SHIMMER_KEYS && v.isFinite() && v > 0.05) {
+                        val phase = (k.hashCode() and 0xFF) * 0.13
+                        val wave = (kotlin.math.sin(tSec * 9.5 + phase) * 0.65) +
+                            (kotlin.math.sin(tSec * 21.7 + phase * 1.9) * 0.35)
+                        val amp = when (k) {
+                            "rpm" -> 4.0
+                            "kpl_instant", "kpl_road_avg" -> 0.04
+                            else -> 0.14
+                        }
+                        val minClamp = if (k == "kpl_instant" || k == "kpl_road_avg") 0.01 else 0.0
+                        val maxClamp = if (k in setOf("engine_load", "rel_throttle", "throttle", "pedal_d", "pedal_e")) 100.0 else Double.MAX_VALUE
+                        out[k] = (v + wave * amp).coerceIn(minClamp, maxClamp)
+                    }
+                }
             }
             return out
         }
@@ -1038,7 +1064,9 @@ object TelemetryDisplaySmoother {
         private fun currentTrackValue(t: ChannelRamp): Double {
             if (t.elapsedMs >= t.durationMs || t.durationMs <= 1.0) return t.targetVal
             val u = (t.elapsedMs / t.durationMs).coerceIn(0.0, 1.0)
-            return t.startVal + (t.targetVal - t.startVal) * u
+            // Hermite smoothstep eliminates hard corner freezes at handoff boundaries
+            val eased = u * u * (3.0 - 2.0 * u)
+            return t.startVal + (t.targetVal - t.startVal) * eased
         }
     }
 

@@ -521,4 +521,35 @@ class TelemetryCalculatorTest {
         )!!
         assertTrue(cityDteKpl < 11.645)
     }
+
+    @Test
+    fun `500ms engine_load and kpl_road_avg glide continuously through 400ms without early freeze and liveMicroMotion stays bounded`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        // Seed 500ms ECU cadence
+        session.step(mapOf("rpm" to 2000.0, "engine_load" to 30.0, "kpl_road_avg" to 11.0), dtMs = 16L, nowMs = 1_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("rpm" to 2100.0, "engine_load" to 35.0, "kpl_road_avg" to 11.2), dtMs = 16L, nowMs = 1_500L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("rpm" to 2200.0, "engine_load" to 42.0, "kpl_road_avg" to 11.5), dtMs = 16L, nowMs = 2_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        var snap400 = emptyMap<String, Double>()
+        for (i in 1..25) {
+            snap400 = session.step(
+                mapOf("rpm" to 2200.0, "engine_load" to 42.0, "kpl_road_avg" to 11.5),
+                dtMs = 16L,
+                nowMs = 2_000L + i * 16L,
+                mode = GaugeSmoothingMode.LIGHT_DAMPER
+            )
+        }
+        // At +400ms into a 500ms poll cycle, engine_load and kpl_road_avg must still be actively gliding toward targets
+        assertTrue("Expected engine_load < 41.8 while gliding at 400ms, got ${snap400["engine_load"]}", snap400["engine_load"]!! in 36.0..41.8)
+        assertTrue("Expected kpl_road_avg < 11.48 while gliding at 400ms, got ${snap400["kpl_road_avg"]}", snap400["kpl_road_avg"]!! in 11.21..11.49)
+
+        // Optional UI micro-motion pulses cleanly without exceeding bounds or mutating input
+        val steadyRaw = mapOf("rpm" to 2200.0, "engine_load" to 100.0, "rel_throttle" to 0.0, "kpl_road_avg" to 11.5)
+        val pulseA = session.step(steadyRaw, dtMs = 16L, nowMs = 5_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER, liveMicroMotion = true)
+        val pulseB = session.step(steadyRaw, dtMs = 16L, nowMs = 5_064L, mode = GaugeSmoothingMode.LIGHT_DAMPER, liveMicroMotion = true)
+        assertTrue(pulseA["engine_load"]!! <= 100.0)
+        assertEquals(0.0, pulseA["rel_throttle"]!!, 0.001)
+        assertTrue(kotlin.math.abs(pulseA["kpl_road_avg"]!! - pulseB["kpl_road_avg"]!!) > 0.0)
+        assertEquals(11.5, steadyRaw["kpl_road_avg"]!!, 0.0001)
+    }
 }

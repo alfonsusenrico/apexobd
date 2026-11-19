@@ -2,6 +2,7 @@ package com.apexobd.app
 
 import androidx.compose.ui.graphics.Color
 import com.apexobd.app.data.prefs.HudThemePreset
+import com.apexobd.app.ui.components.formatTelemetryValue
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
 import com.apexobd.app.ui.theme.resolveHudVisualPalette
@@ -47,5 +48,17 @@ class HudWidgetStyleTest {
         assertEquals(1.0f, segmentedBoxFillFraction(0.125f, 0, 12), 0.001f)
         assertEquals(0.5f, segmentedBoxFillFraction(0.125f, 1, 12), 0.001f)
         assertEquals(0.0f, segmentedBoxFillFraction(0.125f, 2, 12), 0.001f)
+    }
+
+    @Test
+    fun `formatTelemetryValue truncates gps_speed to integers and keeps 2 decimals on dynamic percentages and KPL`() {
+        assertEquals("42", formatTelemetryValue(42.99, 0.0, 220.0, unit = "km/h", sensorKey = "gps_speed"))
+        assertEquals("0", formatTelemetryValue(0.95, 0.0, 220.0, unit = "km/h", sensorKey = "gps_speed"))
+        assertEquals("99", formatTelemetryValue(99.84, 0.0, 220.0, unit = "km/h", sensorKey = "obd_speed"))
+
+        assertEquals("24.15", formatTelemetryValue(24.154, 0.0, 100.0, unit = "%", sensorKey = "engine_load"))
+        assertEquals("1.46", formatTelemetryValue(1.462, 0.0, 100.0, unit = "%", sensorKey = "rel_throttle"))
+        assertEquals("11.65", formatTelemetryValue(11.648, 0.0, 30.0, unit = "km/L", sensorKey = "kpl_road_avg"))
+        assertEquals("2259", formatTelemetryValue(2258.6, 0.0, 8000.0, unit = "RPM", sensorKey = "rpm"))
     }
 }

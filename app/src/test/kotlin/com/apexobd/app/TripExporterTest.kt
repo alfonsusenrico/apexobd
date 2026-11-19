@@ -183,6 +183,17 @@ class TripExporterTest {
             allTimeTotalDistanceKm = 100.0,
             allTimeTotalFuelLiters = 10.0 // 10.0 incl. idle
         )
-        org.junit.Assert.assertEquals(10.0, totalWithIdle.allTimeAvgKpl(), 0.01)
+        assertTrue(totalWithIdle.allTimeAvgKpl() in 9.99..10.01)
+    }
+
+    @Test
+    fun `OfflineMapManager buildRoadsMaskStyleJson generates valid JSON for main-only and all-streets modes`() {
+        val mainOnlyJson = com.apexobd.app.platform.OfflineMapManager.buildRoadsMaskStyleJson(null, mainRoadsOnly = true)
+        org.junit.Assert.assertFalse(mainOnlyJson.contains("\"roads-minor\""))
+        assertTrue(mainOnlyJson.contains("\"roads-major\""))
+        assertTrue(mainOnlyJson.contains("\"roads-secondary\""))
+
+        val allStreetsJson = com.apexobd.app.platform.OfflineMapManager.buildRoadsMaskStyleJson(null, mainRoadsOnly = false)
+        assertTrue(allStreetsJson.contains("\"roads-minor\""))
     }
 }

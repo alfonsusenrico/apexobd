@@ -58,14 +58,32 @@ import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.scheduler.Timer0100State
 import kotlin.math.PI
 import kotlin.math.cos
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 import kotlin.math.sin
 
-fun formatTelemetryValue(value: Double?, min: Double, max: Double): String {
+fun formatTelemetryValue(
+    value: Double?,
+    min: Double,
+    max: Double,
+    unit: String = "",
+    sensorKey: String = ""
+): String {
     if (value == null) return "—"
+    val isSpeed = sensorKey in setOf("gps_speed", "obd_speed") || unit in setOf("km/h", "mph")
+    if (isSpeed) {
+        return floor(maxOf(0.0, value)).toInt().toString()
+    }
+    val isRpm = sensorKey == "rpm" || unit == "RPM" || max >= 500.0
+    if (isRpm) {
+        return "${value.roundToInt()}"
+    }
+    val isFractionalDynamic = (unit == "%" && max <= 100.0) ||
+        sensorKey.startsWith("kpl") ||
+        unit in setOf("km/L", "L/100km", "mpg", "mi/kWh", "kWh/100km")
     return when {
-        max - min <= 5.0 -> "%.2f".format(value)
+        max - min <= 5.0 || isFractionalDynamic -> "%.2f".format(value)
         max <= 30.0 -> "%.1f".format(value)
         value >= 100.0 || value == value.roundToInt().toDouble() -> "${value.roundToInt()}"
         else -> "%.1f".format(value)
@@ -76,12 +94,13 @@ fun formatTelemetryValueAndUnit(
     value: Double?,
     unit: String,
     min: Double,
-    max: Double
+    max: Double,
+    sensorKey: String = ""
 ): Pair<String, String> {
     if (unit == "mm:ss") {
         return TripRunCalculator.formatDurationClock((value ?: 0.0).roundToLong()) to ""
     }
-    return formatTelemetryValue(value, min, max) to unit
+    return formatTelemetryValue(value, min, max, unit = unit, sensorKey = sensorKey) to unit
 }
 
 internal fun fitDigitsFontSizeSp(
@@ -181,13 +200,14 @@ fun AnalogDialWidget(
     max: Double,
     warnThreshold: Double?,
     critThreshold: Double?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -328,13 +348,14 @@ fun SemiDigitalArcWidget(
     max: Double,
     warnThreshold: Double?,
     critThreshold: Double?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     Box(
         modifier = modifier
@@ -423,13 +444,14 @@ fun DigitalReadoutWidget(
     max: Double,
     warnThreshold: Double?,
     critThreshold: Double?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -528,13 +550,14 @@ fun BarGaugeWidget(
     max: Double,
     warnThreshold: Double?,
     critThreshold: Double?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
     val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
     val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -682,7 +705,8 @@ fun SegmentedBarGaugeWidget(
     max: Double,
     warnThreshold: Double?,
     critThreshold: Double?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -693,7 +717,7 @@ fun SegmentedBarGaugeWidget(
     } else {
         thresholdColor(value, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
     }
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -828,10 +852,11 @@ fun SparklineChartWidget(
     min: Double,
     max: Double,
     history: List<Double>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max)
+    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
     val span = (max - min).coerceAtLeast(1.0)
     Column(
         modifier = modifier
@@ -934,7 +959,9 @@ fun MiniMapWidget(
     recordingStatusLabel: String? = null,
     onToggleRecord: () -> Unit,
     onTogglePauseResume: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isGpsEnabled: Boolean = true,
+    onEnableGps: (() -> Unit)? = null
 ) {
     val palette = LocalHudVisualStyle.current
     val baseMod = modifier
@@ -969,16 +996,33 @@ fun MiniMapWidget(
                 .clip(RoundedCornerShape(6.dp))
                 .background(
                     when {
+                        !isGpsEnabled -> Color(0xE8381E05)
                         isRecording && isPaused -> Color(0xDC261704)
                         isRecording -> Color(0xCC1A0808)
                         else -> Color(0xBF000000)
+                    }
+                )
+                .then(
+                    if (!isGpsEnabled && onEnableGps != null) {
+                        Modifier
+                            .border(1.dp, TorqueEvoColors.WarnAmber, RoundedCornerShape(6.dp))
+                            .clickable { onEnableGps() }
+                    } else {
+                        Modifier
                     }
                 )
                 .padding(horizontal = 8.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (isRecording) {
+            if (!isGpsEnabled) {
+                Box(
+                    modifier = Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(TorqueEvoColors.WarnAmber)
+                )
+            } else if (isRecording) {
                 Box(
                     modifier = Modifier
                         .size(7.dp)
@@ -987,10 +1031,16 @@ fun MiniMapWidget(
                 )
             }
             Text(
-                text = if (isRecording) (recordingStatusLabel ?: if (isPaused) "PAUSED" else "REC") else "Live GPS",
+                text = when {
+                    !isGpsEnabled -> if (onEnableGps != null) "GPS OFF · Tap to Enable" else "GPS OFF"
+                    isRecording -> recordingStatusLabel ?: if (isPaused) "PAUSED" else "REC"
+                    !gps.hasRealFix -> "Searching GPS..."
+                    else -> "Live GPS"
+                },
                 fontSize = 10.5.sp,
                 fontWeight = FontWeight.Bold,
                 color = when {
+                    !isGpsEnabled -> TorqueEvoColors.WarnAmber
                     isRecording && isPaused -> Color(0xFFFCD34D)
                     isRecording -> Color(0xFFFCA5A5)
                     else -> TorqueEvoColors.TextPrimary
@@ -1105,7 +1155,7 @@ fun FuelControlWidget(
         val btnSize = if (compact) 30.dp else 36.dp
         val btnGap = 6.dp
         val textMaxW = (maxWidth.value - padH.value * 2f - btnSize.value - btnGap.value).coerceAtLeast(44f)
-        val kplText = formatTelemetryValue(kplValue, 0.0, 30.0)
+        val kplText = formatTelemetryValue(kplValue, 0.0, 30.0, unit = kplUnit, sensorKey = "kpl_road_avg")
         val labelSpVal = fitLabelFontSizeSp(textMaxW, "KPL · AVG", minSp = 8.5f, maxSp = if (compact) 10.5f else 12f)
         val unitSpVal = if (compact) 8.5.sp else 10.5.sp
         val heightBoundMaxSp = ((maxHeight.value - padV.value * 2f - labelSpVal * 1.3f) * 0.72f)
