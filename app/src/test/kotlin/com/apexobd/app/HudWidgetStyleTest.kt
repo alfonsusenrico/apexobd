@@ -2,6 +2,7 @@ package com.apexobd.app
 
 import androidx.compose.ui.graphics.Color
 import com.apexobd.app.data.prefs.HudThemePreset
+import com.apexobd.app.ui.HudLiveValueStore
 import com.apexobd.app.ui.components.formatTelemetryValue
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
@@ -60,5 +61,32 @@ class HudWidgetStyleTest {
         assertEquals("1.46", formatTelemetryValue(1.462, 0.0, 100.0, unit = "%", sensorKey = "rel_throttle"))
         assertEquals("11.65", formatTelemetryValue(11.648, 0.0, 30.0, unit = "km/L", sensorKey = "kpl_road_avg"))
         assertEquals("2259", formatTelemetryValue(2258.6, 0.0, 8000.0, unit = "RPM", sensorKey = "rpm"))
+    }
+
+    @Test
+    fun `HudLiveValueStore isolates channel state slots and preserves unchanged refs`() {
+        val store = HudLiveValueStore()
+        val rpmState = store.valueStateFor("rpm")
+        val coolantState = store.valueStateFor("coolant")
+        val coolantHistState = store.historyStateFor("coolant")
+
+        store.updateValuesFrom(mapOf("rpm" to 1200.0, "coolant" to 86.0))
+        assertEquals(1200.0, rpmState.value!!, 0.001)
+        assertEquals(86.0, coolantState.value!!, 0.001)
+
+        // Updating rpm alone leaves coolant untouched and clears omitted keys cleanly
+        store.updateValuesFrom(mapOf("rpm" to 1450.5, "coolant" to 86.0))
+        assertEquals(1450.5, rpmState.value!!, 0.001)
+        assertEquals(86.0, coolantState.value!!, 0.001)
+
+        store.updateValuesFrom(mapOf("rpm" to 1500.0))
+        assertEquals(1500.0, rpmState.value!!, 0.001)
+        assertEquals(null, coolantState.value)
+
+        val h1 = listOf(84.0, 85.0, 86.0)
+        store.updateHistoryFrom(mapOf("coolant" to h1))
+        assertEquals(h1, coolantHistState.value)
+        store.updateHistoryFrom(emptyMap())
+        assertTrue(coolantHistState.value.isEmpty())
     }
 }

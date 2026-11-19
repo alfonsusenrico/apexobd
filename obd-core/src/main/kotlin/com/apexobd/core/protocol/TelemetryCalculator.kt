@@ -904,71 +904,102 @@ object TelemetryDisplaySmoother {
 
     private val GPS_ROLLING_KEYS = setOf("gps_speed")
     private val OBD_SPEED_KEYS = setOf("obd_speed")
+    private val KPL_INSTANT_KEYS = setOf("kpl_instant")
+    private val KPL_AVG_KEYS = setOf("kpl_road_avg")
     private val MICRO_SHIMMER_KEYS = setOf("rpm", "engine_load", "rel_throttle", "throttle", "pedal_d", "pedal_e", "kpl_instant", "kpl_road_avg")
 
-    private data class ChannelRamp(
-        var startVal: Double,
-        var targetVal: Double,
-        var elapsedMs: Double,
-        var durationMs: Double,
+    private data class ChannelSpring(
+        var pos: Double,
+        var vel: Double,
+        var target: Double,
         var lastTargetAtMs: Long,
-        var avgPeriodMs: Double
+        var avgPeriodSec: Double,
+        var activeStopSnap: Boolean = false,
+        var wakeBoosted: Boolean = false
     )
 
     private data class ChannelTimingSpec(
-        val initialPeriodMs: Double,
-        val minPeriodMs: Long,
-        val maxPeriodMs: Long,
+        val initialPeriodSec: Double,
+        val minPeriodSec: Double,
+        val maxPeriodSec: Double,
         val plateauResetMs: Long,
-        val wakePeriodMs: Double,
-        val stopSnapMs: Double,
+        val wakePeriodSec: Double,
         val lightScale: Double,
         val adaptiveScale: Double,
-        val minDurationMs: Double,
-        val maxDurationMs: Double
+        val minSmoothSec: Double,
+        val maxSmoothSec: Double,
+        val stopSmoothSec: Double
     )
 
     private fun specForKey(key: String): ChannelTimingSpec = when (key) {
         in GPS_ROLLING_KEYS -> ChannelTimingSpec(
-            initialPeriodMs = 960.0,
-            minPeriodMs = 300L,
-            maxPeriodMs = 1150L,
+            initialPeriodSec = 0.96,
+            minPeriodSec = 0.25,
+            maxPeriodSec = 1.25,
             plateauResetMs = 2400L,
-            wakePeriodMs = 240.0,
-            stopSnapMs = 200.0,
-            lightScale = 1.02,
-            adaptiveScale = 1.08,
-            minDurationMs = 220.0,
-            maxDurationMs = 1220.0
+            wakePeriodSec = 0.24,
+            lightScale = 0.36,
+            adaptiveScale = 0.44,
+            minSmoothSec = 0.14,
+            maxSmoothSec = 0.48,
+            stopSmoothSec = 0.038
         )
         in OBD_SPEED_KEYS -> ChannelTimingSpec(
-            initialPeriodMs = 260.0,
-            minPeriodMs = 140L,
-            maxPeriodMs = 950L,
+            initialPeriodSec = 0.24,
+            minPeriodSec = 0.08,
+            maxPeriodSec = 1.00,
             plateauResetMs = 1800L,
-            wakePeriodMs = 175.0,
-            stopSnapMs = 180.0,
-            lightScale = 1.00,
-            adaptiveScale = 1.08,
-            minDurationMs = 140.0,
-            maxDurationMs = 960.0
+            wakePeriodSec = 0.16,
+            lightScale = 0.48,
+            adaptiveScale = 0.62,
+            minSmoothSec = 0.10,
+            maxSmoothSec = 0.42,
+            stopSmoothSec = 0.038
+        )
+        in KPL_INSTANT_KEYS -> ChannelTimingSpec(
+            initialPeriodSec = 0.28,
+            minPeriodSec = 0.08,
+            maxPeriodSec = 1.10,
+            plateauResetMs = 1800L,
+            wakePeriodSec = 0.28,
+            lightScale = 0.95,
+            adaptiveScale = 1.15,
+            minSmoothSec = 0.28,
+            maxSmoothSec = 0.55,
+            stopSmoothSec = 0.22
+        )
+        in KPL_AVG_KEYS -> ChannelTimingSpec(
+            initialPeriodSec = 0.25,
+            minPeriodSec = 0.08,
+            maxPeriodSec = 1.10,
+            plateauResetMs = 1800L,
+            wakePeriodSec = 0.25,
+            lightScale = 0.56,
+            adaptiveScale = 0.72,
+            minSmoothSec = 0.18,
+            maxSmoothSec = 0.48,
+            stopSmoothSec = 0.18
         )
         else -> ChannelTimingSpec(
-            initialPeriodMs = 240.0,
-            minPeriodMs = 95L,
-            maxPeriodMs = 1100L,
+            initialPeriodSec = 0.22,
+            minPeriodSec = 0.05,
+            maxPeriodSec = 1.10,
             plateauResetMs = 1750L,
-            wakePeriodMs = 152.0,
-            stopSnapMs = 120.0,
-            lightScale = 1.04,
-            adaptiveScale = 1.12,
-            minDurationMs = 95.0,
-            maxDurationMs = 1120.0
+            wakePeriodSec = 0.14,
+            lightScale = 0.56,
+            adaptiveScale = 0.76,
+            minSmoothSec = 0.11,
+            maxSmoothSec = 0.46,
+            stopSmoothSec = 0.11
         )
     }
 
+    /**
+     * C1 critically damped 2nd-order spring (`SmoothDamp`, Game Programming Gems 4)
+     * that preserves momentum across variable-cadence CAN/GPS arrivals without Hermite endpoint braking.
+     */
     class AdaptiveSession {
-        private val tracks = HashMap<String, ChannelRamp>(18)
+        private val tracks = HashMap<String, ChannelSpring>(20)
 
         fun reset() {
             tracks.clear()
@@ -985,7 +1016,7 @@ object TelemetryDisplaySmoother {
             val out = if (mode == GaugeSmoothingMode.RAW_INSTANT) {
                 rawTargets.toMutableMap()
             } else {
-                val safeDt = dtMs.coerceIn(1L, 500L).toDouble()
+                val dtSec = (dtMs.coerceIn(1L, 500L)) / 1000.0
                 val res = LinkedHashMap<String, Double>(rawTargets.size)
                 for ((k, raw) in rawTargets) {
                     if (k !in SMOOTHED_KEYS || !raw.isFinite()) {
@@ -993,47 +1024,77 @@ object TelemetryDisplaySmoother {
                         continue
                     }
                     val spec = specForKey(k)
-                    val track = tracks[k]
-                    if (track == null || !track.targetVal.isFinite()) {
-                        tracks[k] = ChannelRamp(
-                            startVal = raw,
-                            targetVal = raw,
-                            elapsedMs = spec.initialPeriodMs,
-                            durationMs = spec.initialPeriodMs,
+                    val spring = tracks[k]
+                    if (spring == null || !spring.target.isFinite()) {
+                        tracks[k] = ChannelSpring(
+                            pos = raw,
+                            vel = 0.0,
+                            target = raw,
                             lastTargetAtMs = nowMs,
-                            avgPeriodMs = spec.initialPeriodMs
+                            avgPeriodSec = spec.initialPeriodSec
                         )
                         res[k] = raw
                         continue
                     }
-                    val curVisual = currentTrackValue(track)
-                    if (abs(raw - track.targetVal) > 1e-4) {
-                        val gapMs = (nowMs - track.lastTargetAtMs).coerceAtLeast(1L)
-                        val isStopping = k in rollingSpeedKeys && raw < 0.8 && track.targetVal > 1.5
-                        val measured = if (gapMs > spec.plateauResetMs) {
-                            spec.wakePeriodMs
+
+                    if (abs(raw - spring.target) > 1e-4) {
+                        val gapMs = (nowMs - spring.lastTargetAtMs).coerceAtLeast(1L)
+                        val isStopping = k in rollingSpeedKeys && raw < 0.8 && spring.pos > 1.5
+                        val measuredSec = if (gapMs > spec.plateauResetMs) {
+                            spec.wakePeriodSec
                         } else {
-                            gapMs.coerceIn(spec.minPeriodMs, spec.maxPeriodMs).toDouble()
+                            (gapMs / 1000.0).coerceIn(spec.minPeriodSec, spec.maxPeriodSec)
                         }
-                        track.avgPeriodMs = when {
-                            gapMs > spec.plateauResetMs -> measured
-                            measured > track.avgPeriodMs -> (track.avgPeriodMs * 0.35) + (measured * 0.65)
-                            else -> (track.avgPeriodMs * 0.55) + (measured * 0.45)
+                        spring.avgPeriodSec = when {
+                            gapMs > spec.plateauResetMs -> measuredSec
+                            measuredSec > spring.avgPeriodSec -> (spring.avgPeriodSec * 0.40) + (measuredSec * 0.60)
+                            else -> (spring.avgPeriodSec * 0.55) + (measuredSec * 0.45)
                         }
-                        track.lastTargetAtMs = nowMs
-                        track.startVal = curVisual
-                        track.targetVal = raw
-                        track.elapsedMs = 0.0
-                        val modeScale = if (mode == GaugeSmoothingMode.LIGHT_DAMPER) spec.lightScale else spec.adaptiveScale
-                        track.durationMs = if (isStopping) {
-                            spec.stopSnapMs
-                        } else {
-                            (track.avgPeriodMs * modeScale).coerceIn(spec.minDurationMs, spec.maxDurationMs)
-                        }
-                    } else {
-                        track.elapsedMs = (track.elapsedMs + safeDt).coerceAtMost(track.durationMs)
+                        spring.lastTargetAtMs = nowMs
+                        spring.target = raw
+                        spring.activeStopSnap = isStopping
+                        spring.wakeBoosted = gapMs > spec.plateauResetMs
                     }
-                    res[k] = currentTrackValue(track)
+
+                    if (abs(spring.target - spring.pos) < 1e-6 && abs(spring.vel) < 1e-6) {
+                        spring.pos = spring.target
+                        spring.vel = 0.0
+                        spring.activeStopSnap = false
+                        spring.wakeBoosted = false
+                        res[k] = spring.pos
+                        continue
+                    }
+
+                    val smoothSec = if (spring.activeStopSnap) {
+                        spec.stopSmoothSec
+                    } else if (spring.wakeBoosted) {
+                        minOf(spec.minSmoothSec, 0.085)
+                    } else {
+                        val modeScale = if (mode == GaugeSmoothingMode.LIGHT_DAMPER) spec.lightScale else spec.adaptiveScale
+                        (spring.avgPeriodSec * modeScale).coerceIn(spec.minSmoothSec, spec.maxSmoothSec)
+                    }
+                    val omega = 2.0 / smoothSec.coerceAtLeast(0.01)
+                    val x = omega * dtSec
+                    val expFactor = kotlin.math.exp(-x)
+                    val change = spring.pos - spring.target
+                    val temp = (spring.vel + omega * change) * dtSec
+                    var nextVel = (spring.vel - omega * temp) * expFactor
+                    var nextPos = spring.target + (change + temp) * expFactor
+
+                    val origDelta = spring.target - spring.pos
+                    val outDelta = nextPos - spring.target
+                    if ((origDelta > 0.0 && outDelta > 0.0) || (origDelta < 0.0 && outDelta < 0.0)) {
+                        nextPos = spring.target
+                        nextVel = 0.0
+                    }
+                    if (spring.activeStopSnap && abs(nextPos) < 0.01 && spring.target < 0.05) {
+                        nextPos = spring.target
+                        nextVel = 0.0
+                        spring.activeStopSnap = false
+                    }
+                    spring.pos = nextPos
+                    spring.vel = nextVel
+                    res[k] = nextPos
                 }
                 res
             }
@@ -1060,14 +1121,6 @@ object TelemetryDisplaySmoother {
         }
 
         private val rollingSpeedKeys = setOf("gps_speed", "obd_speed")
-
-        private fun currentTrackValue(t: ChannelRamp): Double {
-            if (t.elapsedMs >= t.durationMs || t.durationMs <= 1.0) return t.targetVal
-            val u = (t.elapsedMs / t.durationMs).coerceIn(0.0, 1.0)
-            // Hermite smoothstep eliminates hard corner freezes at handoff boundaries
-            val eased = u * u * (3.0 - 2.0 * u)
-            return t.startVal + (t.targetVal - t.startVal) * eased
-        }
     }
 
     fun step(

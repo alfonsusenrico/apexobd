@@ -81,6 +81,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -243,18 +245,21 @@ fun HudCanvasScreen(
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
-    val liveValues by viewModel.displayValues.collectAsStateWithLifecycle()
-    val historyBuffers by viewModel.historyBuffers.collectAsStateWithLifecycle()
-    val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
-    val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
-    val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
     val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
-    val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
     val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Drive C1 SmoothDamp animation strictly on display VSync frames
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            withFrameNanos { frameNanos ->
+                viewModel.stepVisualDisplayFrame(frameNanos / 1_000_000L)
+            }
+        }
+    }
 
     fun hasLocPerm(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -420,8 +425,6 @@ fun HudCanvasScreen(
                     gridScale = settings.hudGridScale,
                     pageIndex = pageIdx,
                     viewModel = viewModel,
-                    liveValues = liveValues,
-                    historyBuffers = historyBuffers,
                     onLongPressCanvas = { showContextMenu = true },
                     onHoldWidget = { w ->
                         selectedWidgetId = w.id
@@ -438,8 +441,9 @@ fun HudCanvasScreen(
                     onUpdateFreeformPos = { w, xf, yf, mxf, myf ->
                         viewModel.updateWidgetFreeformPosition(w, xf, yf, mxf, myf)
                     },
-                    renderContextExtras = Triple(gps, diagReport, timer0100),
-                    extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0)),
+                    mapProvider = settings.mapProvider,
+                    fuelPaused = settings.pauseFuelCalculation,
+                    isRecording = isRecording,
                     isRecordingPaused = isRecordingPaused,
                     onEnableGps = enableGpsAction
                 )
@@ -570,15 +574,9 @@ fun HudCanvasScreen(
                 FullscreenComponentPickerDialog(
                     viewModel = viewModel,
                     gridScale = settings.hudGridScale,
-                    liveValues = liveValues,
-                    historyBuffers = historyBuffers,
-                    gps = gps,
-                    diagReport = diagReport,
-                    timer0100 = timer0100,
                     mapProvider = settings.mapProvider,
                     fuelPaused = settings.pauseFuelCalculation,
                     isRecording = isRecording,
-                    sampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
                     onToggleRecord = { viewModel.toggleRecording() },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
@@ -966,8 +964,6 @@ private fun ProportionalHudPageCanvas(
     gridScale: HudGridScale,
     pageIndex: Int,
     viewModel: HudViewModel,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
     onLongPressCanvas: () -> Unit,
     onHoldWidget: (HudWidgetEntity) -> Unit,
     onSelectWidget: (HudWidgetEntity) -> Unit,
@@ -979,8 +975,9 @@ private fun ProportionalHudPageCanvas(
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
     onUpdateFreeformPos: (HudWidgetEntity, Float, Float, Float, Float) -> Unit,
-    renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
-    extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>,
+    mapProvider: com.apexobd.app.data.prefs.MapProvider,
+    fuelPaused: Boolean,
+    isRecording: Boolean,
     isRecordingPaused: Boolean = false,
     onEnableGps: (() -> Unit)? = null
 ) {
@@ -1216,16 +1213,10 @@ private fun ProportionalHudPageCanvas(
                         RenderWidgetContent(
                             widget = w,
                             viewModel = viewModel,
-                            liveValues = liveValues,
-                            historyBuffers = historyBuffers,
-                            gps = renderContextExtras.first,
-                            diagReport = renderContextExtras.second,
-                            timer0100 = renderContextExtras.third,
-                            mapProvider = extraFlags.first,
-                            fuelPaused = extraFlags.second,
-                            isRecording = extraFlags.third.first,
+                            mapProvider = mapProvider,
+                            fuelPaused = fuelPaused,
+                            isRecording = isRecording,
                             isRecordingPaused = isRecordingPaused,
-                            sampleCount = extraFlags.third.second,
                             onToggleRecord = onToggleRecord,
                             onTogglePauseResume = onTogglePauseResume,
                             onToggleFuelPause = onToggleFuelPause,
@@ -1283,16 +1274,10 @@ private fun HudWidgetSlotWrapper(
 private fun RenderWidgetContent(
     widget: HudWidgetEntity,
     viewModel: HudViewModel,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
-    gps: com.apexobd.app.platform.GpsSnapshot,
-    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
-    timer0100: com.apexobd.core.scheduler.Timer0100State,
     mapProvider: com.apexobd.app.data.prefs.MapProvider,
     fuelPaused: Boolean,
     isRecording: Boolean,
     isRecordingPaused: Boolean = false,
-    sampleCount: Int,
     onToggleRecord: () -> Unit,
     onTogglePauseResume: (() -> Unit)? = null,
     onToggleFuelPause: () -> Unit,
@@ -1305,7 +1290,9 @@ private fun RenderWidgetContent(
     when (widget.sensorKey) {
         "minimap" -> {
             val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
             val tripState by viewModel.tripRunMetrics.collectAsStateWithLifecycle()
+            val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
             val recLabel = if (isRecording) {
                 val clock = TripRunCalculator.formatDurationClock(tripState.elapsedSec)
                 val (dVal, dUnit) = viewModel.convertForDisplay(
@@ -1329,53 +1316,96 @@ private fun RenderWidgetContent(
                 recordingStatusLabel = recLabel,
                 onToggleRecord = onToggleRecord,
                 onTogglePauseResume = onTogglePauseResume,
-                isGpsEnabled = viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle().value,
+                isGpsEnabled = isGpsEnabled,
                 onEnableGps = onEnableGps
             )
         }
         "fuel_ctrl" -> {
-            val (kplVal, kplSym) = viewModel.convertForDisplay(
-                liveValues["kpl_road_avg"],
-                com.apexobd.core.model.SensorQuantity.FUEL_ECONOMY_KPL,
-                "km/L"
-            )
-            val (dteVal, dteSym) = viewModel.convertForDisplay(
-                liveValues["range_dte"],
-                com.apexobd.core.model.SensorQuantity.DISTANCE_KM,
-                "km"
-            )
+            val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
+            val unitPrefs = remember(activeSettings) { activeSettings.toUnitPreferences() }
+            val fuelType = remember(activeVehicle?.fuelType) {
+                activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            }
+            val (_, kplSym) = remember(unitPrefs, fuelType) {
+                com.apexobd.core.model.UnitConverter.convert(0.0, SensorQuantity.FUEL_ECONOMY_KPL, unitPrefs, fuelType)
+            }
+            val kplState = viewModel.hudLiveValues.valueStateFor("kpl_road_avg")
+            val kplProvider: () -> Double? = remember(kplState, unitPrefs, fuelType) {
+                { viewModel.convertValueOnly(kplState.value, SensorQuantity.FUEL_ECONOMY_KPL, unitPrefs, fuelType) }
+            }
             FuelControlWidget(
-                kplValue = kplVal,
+                kplProvider = kplProvider,
                 kplUnit = kplSym,
-                estRangeValue = dteVal,
-                estRangeUnit = dteSym,
                 paused = fuelPaused,
                 onTogglePause = onToggleFuelPause
             )
         }
-        "dtc_checker" -> DtcCheckerWidget(report = diagReport, onScan = onScanDtc)
-        "timer_0100" -> PerfTimerWidget(timer = timer0100, onReset = onReset0100)
-        "data_logger" -> DataLoggerWidget(isRecording = isRecording, latestSampleCount = sampleCount, onToggleRecord = onToggleRecord)
+        "dtc_checker" -> {
+            val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
+            DtcCheckerWidget(report = diagReport, onScan = onScanDtc)
+        }
+        "timer_0100" -> {
+            val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
+            PerfTimerWidget(timer = timer0100, onReset = onReset0100)
+        }
+        "data_logger" -> {
+            val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+            DataLoggerWidget(
+                isRecording = isRecording,
+                latestSampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
+                onToggleRecord = onToggleRecord
+            )
+        }
         else -> {
-            val meta = viewModel.catalogItemFor(widget.sensorKey)
-            val rawVal = liveValues[widget.sensorKey]
-            val (dispVal, dispUnit) = viewModel.convertForDisplay(rawVal, meta.quantity, meta.unit)
-            val (cMin, cMax) = viewModel.convertBounds(meta.minValue, meta.maxValue, meta.quantity)
-            val warnConv = widget.warnThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
-            val critConv = widget.critThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
+            val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
+            val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
+            val customPids by viewModel.customPids.collectAsStateWithLifecycle()
+
+            val meta = remember(widget.sensorKey, supportedPids, customPids) {
+                viewModel.catalogItemFor(widget.sensorKey)
+            }
+            val unitPrefs = remember(activeSettings) { activeSettings.toUnitPreferences() }
+            val fuelType = remember(activeVehicle?.fuelType) {
+                activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            }
+            val dispUnit = remember(meta.quantity, meta.unit, unitPrefs, fuelType) {
+                if (meta.quantity == SensorQuantity.RAW) meta.unit
+                else com.apexobd.core.model.UnitConverter.convert(0.0, meta.quantity, unitPrefs, fuelType).second
+            }
+            val (cMin, cMax) = remember(meta.minValue, meta.maxValue, meta.quantity, unitPrefs, fuelType) {
+                viewModel.convertBounds(meta.minValue, meta.maxValue, meta.quantity)
+            }
+            val warnConv = remember(widget.warnThreshold, meta.quantity, unitPrefs, fuelType) {
+                widget.warnThreshold?.let { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) }
+            }
+            val critConv = remember(widget.critThreshold, meta.quantity, unitPrefs, fuelType) {
+                widget.critThreshold?.let { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) }
+            }
+            val rawState = viewModel.hudLiveValues.valueStateFor(widget.sensorKey)
+            val valueProvider: () -> Double? = remember(rawState, meta.quantity, unitPrefs, fuelType) {
+                { viewModel.convertValueOnly(rawState.value, meta.quantity, unitPrefs, fuelType) }
+            }
 
             when (type) {
-                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
                 WidgetDisplayType.CHART -> {
-                    val hist = (historyBuffers[widget.sensorKey] ?: emptyList()).map {
-                        viewModel.convertForDisplay(it, meta.quantity, meta.unit).first ?: it
+                    val histState = viewModel.hudLiveValues.historyStateFor(widget.sensorKey)
+                    val convertedHist = remember(histState, meta.quantity, unitPrefs, fuelType) {
+                        androidx.compose.runtime.derivedStateOf {
+                            val list = histState.value
+                            if (meta.quantity == SensorQuantity.RAW) list
+                            else list.map { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) ?: it }
+                        }
                     }
-                    SparklineChartWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, hist, sensorKey = widget.sensorKey)
+                    val historyProvider: () -> List<Double> = remember(convertedHist) { { convertedHist.value } }
+                    SparklineChartWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, historyProvider, sensorKey = widget.sensorKey)
                 }
-                else -> DigitalReadoutWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
+                else -> DigitalReadoutWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
             }
         }
     }
@@ -1741,15 +1771,9 @@ private fun ComponentEditDialog(
 private fun FullscreenComponentPickerDialog(
     viewModel: HudViewModel,
     gridScale: HudGridScale,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
-    gps: com.apexobd.app.platform.GpsSnapshot,
-    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
-    timer0100: com.apexobd.core.scheduler.Timer0100State,
     mapProvider: com.apexobd.app.data.prefs.MapProvider,
     fuelPaused: Boolean,
     isRecording: Boolean,
-    sampleCount: Int,
     onToggleRecord: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
@@ -1878,7 +1902,7 @@ private fun FullscreenComponentPickerDialog(
                             val item = opt.item
                             val isSelected = item.key == selectedItem.key
                             val enabled = opt.available
-                            val rawLive = liveValues[item.key]
+                            val rawLive = viewModel.hudLiveValues.valueStateFor(item.key).value
                             val (dispVal, dispUnit) = viewModel.convertForDisplay(rawLive, item.quantity, item.unit)
 
                             val valueStr = when {
@@ -2029,15 +2053,9 @@ private fun FullscreenComponentPickerDialog(
                             RenderWidgetContent(
                                 widget = previewWidget,
                                 viewModel = viewModel,
-                                liveValues = liveValues,
-                                historyBuffers = historyBuffers,
-                                gps = gps,
-                                diagReport = diagReport,
-                                timer0100 = timer0100,
                                 mapProvider = mapProvider,
                                 fuelPaused = fuelPaused,
                                 isRecording = isRecording,
-                                sampleCount = sampleCount,
                                 onToggleRecord = onToggleRecord,
                                 onToggleFuelPause = onToggleFuelPause,
                                 onScanDtc = onScanDtc,

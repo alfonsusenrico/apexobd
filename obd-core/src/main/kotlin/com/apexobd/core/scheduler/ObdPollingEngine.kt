@@ -374,19 +374,55 @@ class ObdPollingEngine(
         return out
     }
 
+    private fun slowCooldownMs(key: String, isVisible: Boolean): Long = when (key) {
+        "voltage" -> if (isVisible) 2200L else 4000L
+        "lambda", "o2_b1s1_lambda", "o2_b1s1_wr_lambda", "o2_b1s1_v", "o2_b1s2_v" ->
+            if (isVisible) 850L else 1200L
+        "fuel_system_status", "stft_b1", "ltft_b1", "stft_b2", "ltft_b2", "throttle" ->
+            if (isVisible) 700L else 1200L
+        "timing_advance", "fuel_pressure" -> if (isVisible) 450L else 1500L
+        else -> if (isVisible) 1800L else 2800L
+    }
+
+    private fun selectNextDueSecondary(
+        slowAll: List<PidDefinition>,
+        requested: Set<String>,
+        lastPollMs: Map<String, Long>,
+        nowMs: Long
+    ): PidDefinition? {
+        var best: PidDefinition? = null
+        var bestScore = Long.MIN_VALUE
+        for (pid in slowAll) {
+            val isVisible = pid.key in requested
+            val cooldown = slowCooldownMs(pid.key, isVisible)
+            val last = lastPollMs[pid.key] ?: 0L
+            val elapsed = nowMs - last
+            if (last == 0L || elapsed >= cooldown) {
+                val overdue = if (last == 0L) 10_000L else (elapsed - cooldown).coerceAtMost(9_000L)
+                val tierBonus = if (isVisible) 20_000L else 0L
+                val unpolledBonus = if (last == 0L) 5_000L else 0L
+                val speedPriority = if (cooldown <= 900L) 500L else 0L
+                val score = tierBonus + unpolledBonus + speedPriority + overdue
+                if (score > bestScore) {
+                    bestScore = score
+                    best = pid
+                }
+            }
+        }
+        return best
+    }
+
     private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
         var cycle = 0
-        var dynamicSecCursor = 0
-        var slowThermalCursor = 0
-        var helperCursor = 0
         var samplesInSec = 0
         var latencyAccumMs = 0L
         var rttCount = 0
         var windowStart = System.currentTimeMillis()
-        var supportsMultiPid = handshake.isCanProtocol
+        var multiPidFailStreak = 0
+        var multiPidRetryAtMs = 0L
+        val lastSlowPollMs = HashMap<String, Long>(24)
         val values = _liveValues.value.toMutableMap()
-        val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "obd_speed", "engine_load", "map", "maf", "throttle")
-        val dynamicSecondaryKeys = setOf("timing_advance", "voltage", "fuel_pressure", "o2_b1s1_wr_lambda", "o2_b1s1_lambda")
+        val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "engine_load", "obd_speed", "map", "maf", "throttle")
 
         while (currentCoroutineContext().isActive && transport.isConnected.value) {
             val profile = pollingProfile
@@ -421,40 +457,16 @@ class ObdPollingEngine(
                     if (idx >= 0) idx else 100
                 }
             val slowAll = allAvailableTargets.filterNot(isHighTarget)
-            val visibleSecondary = slowAll.filter { it.key in requested }
-            val visibleDynamic = visibleSecondary.filter { it.key in dynamicSecondaryKeys }
-            val visibleThermal = visibleSecondary.filter { it.key !in dynamicSecondaryKeys }
-            val helperSecondary = slowAll.filter { it.key !in requested }
-            val fuelStatusPid = helperSecondary.firstOrNull { it.key == "fuel_system_status" }
-            val otherHelpers = helperSecondary.filter { it.key != "fuel_system_status" }
-            val slowDue = buildList {
-                if (cycle == 0) {
-                    addAll(slowAll)
-                } else {
-                    if (visibleDynamic.isNotEmpty()) {
-                        add(visibleDynamic[dynamicSecCursor % visibleDynamic.size])
-                        dynamicSecCursor++
-                    }
-                    if (visibleThermal.isNotEmpty() && (visibleDynamic.isEmpty() || cycle % 3 == 1)) {
-                        add(visibleThermal[slowThermalCursor % visibleThermal.size])
-                        slowThermalCursor++
-                    }
-                    if (fuelStatusPid != null && cycle % 2 == 0) {
-                        add(fuelStatusPid)
-                    }
-                    if (otherHelpers.isNotEmpty()) {
-                        val helperStride = if (background.isNotEmpty()) 2 else 6
-                        if (cycle % helperStride == 0) {
-                            add(otherHelpers[helperCursor % otherHelpers.size])
-                            helperCursor++
-                        }
-                    }
-                }
-            }.distinctBy { it.pidHex }
-            val standardTargets = (highTargets + slowDue).distinctBy { it.pidHex }
+            val loopNowMs = System.currentTimeMillis()
+            val dueSlowPid = selectNextDueSecondary(slowAll, requested, lastSlowPollMs, loopNowMs)
 
-            if (supportsMultiPid && standardTargets.size >= 2) {
-                for (chunk in ObdPidRegistry.packSingleFrameCanChunks(standardTargets)) {
+            if (multiPidFailStreak >= 3 && loopNowMs >= multiPidRetryAtMs) {
+                multiPidFailStreak = 0
+            }
+            val canUseMultiPid = handshake.isCanProtocol && multiPidFailStreak < 3
+
+            if (canUseMultiPid && highTargets.size >= 2) {
+                for (chunk in ObdPidRegistry.packSingleFrameCanChunks(highTargets)) {
                     if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
                     if (chunk.size == 1) {
                         val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values)
@@ -462,7 +474,8 @@ class ObdPollingEngine(
                         latencyAccumMs += rtt
                         rttCount++
                     } else {
-                        val cmd = "01" + chunk.joinToString("") { it.pidHex }
+                        // Trailing '1' instructs ELM327 CAN to return immediately after 1 frame (~40ms vs ~100ms ATST wait)
+                        val cmd = "01" + chunk.joinToString("") { it.pidHex } + "1"
                         val t0 = System.currentTimeMillis()
                         val res = client.execute(cmd)
                         latencyAccumMs += (System.currentTimeMillis() - t0)
@@ -473,7 +486,10 @@ class ObdPollingEngine(
                         } else emptyList()
 
                         if (decodedList.isEmpty()) {
-                            supportsMultiPid = false
+                            multiPidFailStreak++
+                            if (multiPidFailStreak >= 3) {
+                                multiPidRetryAtMs = System.currentTimeMillis() + 15_000L
+                            }
                             for (pid in chunk) {
                                 val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
                                 if (ok) samplesInSec++
@@ -481,17 +497,28 @@ class ObdPollingEngine(
                                 rttCount++
                             }
                         } else {
+                            multiPidFailStreak = 0
+                            val decodedHexes = HashSet<String>(chunk.size)
                             for (item in decodedList) {
                                 values[item.key] = item.value
+                                decodedHexes += item.pidHex
                                 samplesInSec++
                             }
                             emitDerivedAndSnapshot(values)
+                            for (pid in chunk) {
+                                if (pid.pidHex !in decodedHexes) {
+                                    val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
+                                    if (ok) samplesInSec++
+                                    latencyAccumMs += rtt
+                                    rttCount++
+                                }
+                            }
                         }
                     }
                 }
             } else {
-                val rpmPid = standardTargets.firstOrNull { it.key == "rpm" }
-                val others = standardTargets.filter { it.key != "rpm" }
+                val rpmPid = highTargets.firstOrNull { it.key == "rpm" }
+                val others = highTargets.filter { it.key != "rpm" }
 
                 if (others.isEmpty() && rpmPid != null) {
                     val (ok, rtt) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
@@ -499,7 +526,7 @@ class ObdPollingEngine(
                     latencyAccumMs += rtt
                     rttCount++
                 } else {
-                    val midRpmIndex = if (others.size >= 3) others.size / 2 else -1
+                    val midRpmIndex = if (others.size >= 4) others.size / 2 else -1
                     if (rpmPid != null) {
                         val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
                         if (okRpm) samplesInSec++
@@ -520,6 +547,14 @@ class ObdPollingEngine(
                         rttCount++
                     }
                 }
+            }
+
+            if (dueSlowPid != null && currentCoroutineContext().isActive && transport.isConnected.value) {
+                lastSlowPollMs[dueSlowPid.key] = System.currentTimeMillis()
+                val (ok, rtt) = pollSingleAndEmit(dueSlowPid, handshake.isCanProtocol, values)
+                if (ok) samplesInSec++
+                latencyAccumMs += rtt
+                rttCount++
             }
 
             val customTargets = expandedKeys

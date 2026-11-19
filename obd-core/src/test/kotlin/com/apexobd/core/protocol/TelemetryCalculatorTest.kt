@@ -273,7 +273,7 @@ class TelemetryCalculatorTest {
         // Confirm raw input map wasn't mutated
         assertEquals(3200.0, rawSpike["rpm"]!!, 0.001)
 
-        // AdaptiveSession modes: RAW_INSTANT returns target immediately; ADAPTIVE_GLIDE ramps continuously across period
+        // AdaptiveSession modes: RAW_INSTANT returns target immediately; ADAPTIVE_GLIDE glides smoothly without entry freeze
         val session = TelemetryDisplaySmoother.AdaptiveSession()
         val rawPass = session.step(rawSpike, dtMs = 16L, nowMs = 1000L, mode = GaugeSmoothingMode.RAW_INSTANT)
         assertEquals(3200.0, rawPass["rpm"]!!, 0.001)
@@ -283,21 +283,21 @@ class TelemetryCalculatorTest {
         val firstStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 16L, nowMs = 1200L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         val midStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 80L, nowMs = 1280L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         val endStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 300L, nowMs = 1580L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
-        assertEquals(40.0, firstStep["obd_speed"]!!, 0.01)
+        assertTrue("Expected smooth immediate entry without stalling at 40.0, got ${firstStep["obd_speed"]}", firstStep["obd_speed"]!! in 38.0..39.95)
         assertTrue(midStep["obd_speed"]!! in 32.0..38.0)
-        assertEquals(30.0, endStep["obd_speed"]!!, 0.01)
+        assertEquals(30.0, endStep["obd_speed"]!!, 0.3)
 
         // Long steady hold on throttle/load/speed (2000ms without change) must not inflate subsequent glide duration
         session.reset()
         session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 1000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 3000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         val snapStart = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 16L, nowMs = 3016L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
-        assertEquals(10.0, snapStart["throttle"]!!, 0.5)
+        assertTrue("Expected smooth wake start near 10..20, got ${snapStart["throttle"]}", snapStart["throttle"]!! in 10.0..20.0)
         val fastFollow = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 110L, nowMs = 3126L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         assertTrue("Expected rapid >65% climb by 110ms, got ${fastFollow["throttle"]}", fastFollow["throttle"]!! > 65.0)
         val settled = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 60L, nowMs = 3186L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
-        assertEquals(90.0, settled["throttle"]!!, 0.01)
-        assertEquals(85.0, settled["engine_load"]!!, 0.01)
+        assertTrue("Expected continuous settle >=83 on throttle, got ${settled["throttle"]}", settled["throttle"]!! >= 83.0)
+        assertTrue("Expected continuous settle >=78 on engine_load, got ${settled["engine_load"]}", settled["engine_load"]!! >= 78.0)
     }
 
     @Test
@@ -551,5 +551,33 @@ class TelemetryCalculatorTest {
         assertEquals(0.0, pulseA["rel_throttle"]!!, 0.001)
         assertTrue(kotlin.math.abs(pulseA["kpl_road_avg"]!! - pulseB["kpl_road_avg"]!!) > 0.0)
         assertEquals(11.5, steadyRaw["kpl_road_avg"]!!, 0.0001)
+    }
+
+    @Test
+    fun `C1 SmoothDamp carries nonzero handoff velocity across packet boundaries and calms kpl_instant swings`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        var curMs = 1_000L
+        session.step(mapOf("engine_load" to 20.0, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        // Ramp load every 160ms across 10 frames each
+        for (targetLoad in listOf(24.0, 28.0, 32.0)) {
+            val beforeArrival = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs + 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+            val afterArrival = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs + 32L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+            assertTrue("Expected nonzero handoff velocity into $targetLoad ($beforeArrival -> $afterArrival)", afterArrival - beforeArrival > 0.15)
+            curMs += 32L
+            repeat(8) {
+                curMs += 16L
+                val v = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+                assertTrue("Expected no overshoot above $targetLoad, got $v", v <= targetLoad + 1e-6)
+            }
+        }
+
+        // Sharp KPL swing damps smoothly over ~0.35s instead of hard-snapping inside 96ms
+        var kpl96 = 10.5
+        for (i in 1..6) {
+            curMs += 16L
+            kpl96 = session.step(mapOf("engine_load" to 32.0, "kpl_instant" to 4.6), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)["kpl_instant"]!!
+        }
+        assertTrue("Expected kpl_instant calm glide (> 6.0) at 96ms, got $kpl96", kpl96 in 6.0..10.1)
     }
 }

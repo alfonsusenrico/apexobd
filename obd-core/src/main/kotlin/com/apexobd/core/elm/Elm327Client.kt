@@ -37,11 +37,12 @@ class Elm327Client(
         delay(300L)
 
         val initCommands = listOf(
-            "ATE0",  // Echo off
-            "ATL0",  // Linefeeds off
-            "ATS0",  // Spaces off (cuts Wi-Fi/UART payload bytes)
+            "ATE0",   // Echo off
+            "ATL0",   // Linefeeds off
+            "ATS0",   // Spaces off (cuts Wi-Fi/UART payload bytes)
+            "ATCAF1", // Guarantee ISO-TP CAN automatic formatting stays enabled
             if (aggressiveTiming) "ATAT2" else "ATAT1",
-            "ATSP0"  // Auto-detect vehicle protocol
+            "ATSP0"   // Auto-detect vehicle protocol
         )
         for (at in initCommands) {
             transport.sendCommand(at, timeoutMs = 2000L)

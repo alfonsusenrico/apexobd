@@ -292,4 +292,73 @@ class EngineAndPerformanceTest {
             assertTrue("Expected visible dynamic secondary 42 (voltage) in $polledPids", "42" in polledPids)
         }
     }
+
+    @Test
+    fun `CAN multi-PID recovers from single transient failure, sends trailing 1, and isolates slow 0142 voltage`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            var droppedOnce = false
+            val canTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "can-multipid-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    return when {
+                        cmd == "ATZ" -> "ELM327 v1.5\r"
+                        cmd.startsWith("AT") && cmd != "ATDP" && cmd != "ATDPN" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        cmd == "0100" -> "41 00 18 18 80 01\r" // 04, 05, 0C, 0D, 11, 20
+                        cmd == "0120" -> "41 20 00 00 00 01\r" // 40
+                        cmd == "0140" -> "41 40 48 00 00 00\r" // 42 (voltage), 45 (rel_throttle)
+                        cmd == "010C451" -> {
+                            if (!droppedOnce) {
+                                droppedOnce = true
+                                "NO DATA\r"
+                            } else {
+                                "410C0D3E4528\r"
+                            }
+                        }
+                        cmd == "01040D1" -> "4104590D3C\r"
+                        cmd.startsWith("010C") -> "41 0C 0D 3E\r"
+                        cmd.startsWith("0145") -> "41 45 28\r"
+                        cmd.startsWith("0104") -> "41 04 59\r"
+                        cmd.startsWith("010D") -> "41 0D 3C\r"
+                        cmd.startsWith("0142") -> "41 42 37 15\r"
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(canTransport, scope)
+            engine.setPollingProfile(PollingProfile.MAX_PERFORMANCE)
+            engine.setActiveSensors(setOf("rpm", "engine_load", "obd_speed", "rel_throttle", "voltage"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(160L)
+            val snap = engine.liveValues.value
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            assertTrue("Expected ATCAF1 during init in $cmds", "ATCAF1" in cmds)
+            val pack1Count = cmds.count { it == "010C451" }
+            val pack2Count = cmds.count { it == "01040D1" }
+            val voltCount = cmds.count { it == "01421" }
+            assertTrue("Expected CAN multi-PID recovery after transient drop, got 010C451=$pack1Count", pack1Count >= 4)
+            assertTrue("Expected CAN load+speed pack 01040D1=$pack2Count", pack2Count >= 4)
+            assertEquals("Expected slow 0142 polled once during 160ms cooldown window", 1, voltCount)
+            assertTrue((snap["rpm"] ?: 0.0) > 500.0)
+            assertTrue((snap["engine_load"] ?: 0.0) > 20.0)
+            assertTrue((snap["voltage"] ?: 0.0) > 12.0)
+        }
+    }
 }

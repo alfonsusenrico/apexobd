@@ -3,6 +3,10 @@ package com.apexobd.app.ui
 import android.app.Application
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
 import com.apexobd.app.data.prefs.MapCursorStyle
 import com.apexobd.app.data.prefs.ShareCardAspectRatio
 import com.apexobd.app.data.prefs.ShareCardBackgroundMode
@@ -130,6 +134,42 @@ data class PickerSensorOption(
     val available: Boolean
 )
 
+/**
+ * Per-channel Compose [State] holder updated strictly on display VSync so rapid telemetry
+ * updates invalidate only matching leaf digits/Canvas gauges rather than the entire HUD tree.
+ */
+@Stable
+class HudLiveValueStore {
+    private val valueStates = HashMap<String, MutableState<Double?>>(32)
+    private val historyStates = HashMap<String, MutableState<List<Double>>>(8)
+
+    fun valueStateFor(key: String): State<Double?> =
+        valueStates.getOrPut(key) { mutableStateOf(null) }
+
+    fun historyStateFor(key: String): State<List<Double>> =
+        historyStates.getOrPut(key) { mutableStateOf(emptyList()) }
+
+    fun updateValuesFrom(values: Map<String, Double>) {
+        for ((k, v) in values) {
+            val slot = valueStates.getOrPut(k) { mutableStateOf(v) }
+            if (slot.value != v) slot.value = v
+        }
+        for ((k, slot) in valueStates) {
+            if (k !in values && slot.value != null) slot.value = null
+        }
+    }
+
+    fun updateHistoryFrom(history: Map<String, List<Double>>) {
+        for ((k, list) in history) {
+            val slot = historyStates.getOrPut(k) { mutableStateOf(list) }
+            if (slot.value != list) slot.value = list
+        }
+        for ((k, slot) in historyStates) {
+            if (k !in history && slot.value.isNotEmpty()) slot.value = emptyList()
+        }
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class HudViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -201,6 +241,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _visiblePageIndex = MutableStateFlow(0)
     private val _chartKeys = MutableStateFlow<Set<String>>(emptySet())
+    @Volatile
+    private var hasVisibleTimer0100 = false
+    @Volatile
+    private var cachedCatalogLookup: Map<String, SensorCatalogItem> = buildAllKnownCatalogLookup(emptyList())
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -214,10 +258,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _liveValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
     val liveValues: StateFlow<Map<String, Double>> = _liveValues.asStateFlow()
 
-    // Visual-only smoothed display values for smooth HUD gauge needle & numeric transitions;
+    // Per-sensor UI display store driven on hardware VSync via `stepVisualDisplayFrame`;
     // raw telemetry logging (`telemetry_samples`) and trip math strictly read `_liveValues`.
-    private val _displayValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
-    val displayValues: StateFlow<Map<String, Double>> = _displayValues.asStateFlow()
+    val hudLiveValues = HudLiveValueStore()
+    private var lastVisualFrameMs = 0L
+    private var lastPublishedHistoryRef: Map<String, List<Double>>? = null
 
     private val _tripRunMetrics = MutableStateFlow(TripRunMetrics())
     val tripRunMetrics: StateFlow<TripRunMetrics> = _tripRunMetrics.asStateFlow()
@@ -403,6 +448,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        viewModelScope.launch {
+            customPids.collect { list ->
+                cachedCatalogLookup = buildAllKnownCatalogLookup(list)
+            }
+        }
+
         // Visible page only polling set; background Run Recording uses separate non-blocking logger queue
         viewModelScope.launch {
             combine(pagesWithWidgets, _visiblePageIndex, _isRecording, settings, _onHudScreen) { pages, pageIdx, recording, st, onHud ->
@@ -411,6 +462,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     .filter { it.displayType == WidgetDisplayType.CHART.name }
                     .map { it.sensorKey }
                     .toSet()
+                hasVisibleTimer0100 = visibleWidgets.any { it.sensorKey == "timer_0100" }
 
                 val visibleKeys = buildSet {
                     visibleWidgets.forEach { widget ->
@@ -449,30 +501,39 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // UI-only 60Hz display pipeline active while HUD Canvas is visible (Raw Instant / Light Damper / Adaptive Glide)
+        // Reset C1 spring track state whenever the HUD exits
         viewModelScope.launch {
             _onHudScreen.collectLatest { onHud ->
                 if (!onHud) {
+                    lastVisualFrameMs = 0L
+                    lastPublishedHistoryRef = null
                     smootherSession.reset()
-                    _displayValues.value = _liveValues.value
-                    return@collectLatest
-                }
-                var lastFrameMs = System.currentTimeMillis()
-                while (currentCoroutineContext().isActive && _onHudScreen.value) {
-                    val nowMs = System.currentTimeMillis()
-                    val dtMs = (nowMs - lastFrameMs).coerceAtLeast(12L)
-                    lastFrameMs = nowMs
-                    val curSettings = settings.value
-                    _displayValues.value = smootherSession.step(
-                        rawTargets = _liveValues.value,
-                        dtMs = dtMs,
-                        nowMs = nowMs,
-                        mode = curSettings.gaugeSmoothingMode,
-                        liveMicroMotion = curSettings.liveMicroMotion
-                    )
-                    delay(16L)
+                    hudLiveValues.updateValuesFrom(_liveValues.value)
                 }
             }
+        }
+    }
+
+    /**
+     * Driven directly by Compose `withFrameNanos` on the Main thread so visual gauges advance
+     * strictly in phase with hardware display VSync without allocating or waking background loops.
+     */
+    fun stepVisualDisplayFrame(frameTimeMs: Long) {
+        val dtMs = if (lastVisualFrameMs <= 0L) 16L else (frameTimeMs - lastVisualFrameMs).coerceIn(1L, 120L)
+        lastVisualFrameMs = frameTimeMs
+        val curSettings = settings.value
+        val smoothed = smootherSession.step(
+            rawTargets = _liveValues.value,
+            dtMs = dtMs,
+            nowMs = frameTimeMs,
+            mode = curSettings.gaugeSmoothingMode,
+            liveMicroMotion = curSettings.liveMicroMotion
+        )
+        hudLiveValues.updateValuesFrom(smoothed)
+        val hist = _historyBuffers.value
+        if (hist !== lastPublishedHistoryRef) {
+            lastPublishedHistoryRef = hist
+            hudLiveValues.updateHistoryFrom(hist)
         }
     }
 
@@ -706,7 +767,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     _ecuExplorerValues.value = withCentralTrip
                     appendChartHistoryOnly(withCentralTrip)
 
-                    if ("timer_0100" in pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty().map { it.sensorKey } || _isRecording.value) {
+                    if (hasVisibleTimer0100 || _isRecording.value) {
                         val nextTimer = timer0100Tracker.onSpeedSample(if (obdSpd > 0.5) obdSpd else speedGps)
                         _timer0100.value = nextTimer
                         updateBest0100IfBetter(nextTimer.bestRunSec)
@@ -1869,15 +1930,43 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun com.apexobd.core.protocol.DerivedSensorSpec.shortLabelForCatalog() = this.shortName
 
+    private fun buildAllKnownCatalogLookup(customList: List<CustomPidEntity>): Map<String, SensorCatalogItem> {
+        val map = HashMap<String, SensorCatalogItem>(80)
+        ObdPidRegistry.standardPids.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
+        }
+        DerivedSensorCatalog.all.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortLabelForCatalog(), it.sourceLabel, it.defaultUnit, it.quantity, it.minValue, it.maxValue)
+        }
+        map["gps_speed"] = SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 220.0)
+        map["accel_g"] = SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5)
+        map["minimap"] = SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        map["fuel_ctrl"] = SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true)
+        map["dtc_checker"] = SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        map["timer_0100"] = SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true)
+        map["data_logger"] = SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        customList.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortName, it.modeAndPidHex, it.unit, SensorQuantity.RAW, it.minValue, it.maxValue)
+        }
+        return map
+    }
+
     fun catalogItemFor(key: String): SensorCatalogItem {
-        return availableGroupedCatalog().firstOrNull { it.item.key == key }?.item
-            ?: ObdPidRegistry.findByKey(key)?.let {
-                SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
-            }
-            ?: DerivedSensorCatalog.all.firstOrNull { it.key == key }?.let {
-                SensorCatalogItem(it.key, it.name, it.shortName, it.sourceLabel, it.defaultUnit, it.quantity, it.minValue, it.maxValue)
-            }
+        return cachedCatalogLookup[key]
             ?: SensorCatalogItem(key, key.uppercase(), key.uppercase(), "PID", "", SensorQuantity.RAW, 0.0, 100.0)
+    }
+
+    fun activeFuelType(): FuelType =
+        activeVehicle.value?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+
+    fun convertValueOnly(
+        valueMetric: Double?,
+        quantity: SensorQuantity,
+        prefs: UnitPreferences,
+        fuelType: FuelType
+    ): Double? {
+        if (valueMetric == null || quantity == SensorQuantity.RAW) return valueMetric
+        return UnitConverter.convert(valueMetric, quantity, prefs, fuelType).first
     }
 
     fun convertForDisplay(valueMetric: Double?, quantity: SensorQuantity, rawFallbackUnit: String): Pair<Double?, String> {

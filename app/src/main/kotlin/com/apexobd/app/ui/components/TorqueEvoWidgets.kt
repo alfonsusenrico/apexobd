@@ -17,11 +17,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +38,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -192,9 +196,86 @@ private fun Modifier.hudTelemetryCardChrome(
 }
 
 @Composable
+private fun LiveDigitsRow(
+    valueProvider: () -> Double?,
+    unit: String,
+    min: Double,
+    max: Double,
+    sensorKey: String,
+    availWidthDp: Float,
+    unitSp: Float,
+    minSp: Float,
+    maxSp: Float,
+    primaryColor: Color,
+    secondaryColor: Color,
+    warnThreshold: Double? = null,
+    critThreshold: Double? = null,
+    tintRedOnCritical: Boolean = false,
+    fixedDigitsSp: Float? = null,
+    unitBottomPadding: Dp = 1.dp,
+    gapDp: Dp = 2.5.dp,
+    modifier: Modifier = Modifier
+) {
+    val span = (max - min).coerceAtLeast(1.0)
+    val displayUnit = remember(unit, sensorKey) { if (unit == "mm:ss") "" else unit }
+    val displayVal by remember(valueProvider, unit, min, max, sensorKey) {
+        derivedStateOf {
+            formatTelemetryValueAndUnit(valueProvider(), unit, min, max, sensorKey).first
+        }
+    }
+    val isCritical by remember(valueProvider, warnThreshold, critThreshold, min, span, tintRedOnCritical) {
+        derivedStateOf {
+            if (!tintRedOnCritical) false
+            else {
+                val v = valueProvider()
+                val pct = v?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                thresholdColor(v, warnThreshold, critThreshold, pct, TorqueEvoColors.ElectricBlue) == TorqueEvoColors.CriticalRed
+            }
+        }
+    }
+    val valSp = fixedDigitsSp?.sp ?: remember(availWidthDp, displayVal, displayUnit, unitSp, minSp, maxSp) {
+        fitDigitsFontSizeSp(
+            availWidthDp = availWidthDp,
+            text = displayVal,
+            unit = displayUnit,
+            unitSp = unitSp,
+            minSp = minSp,
+            maxSp = maxSp
+        ).sp
+    }
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.Bottom,
+        horizontalArrangement = Arrangement.spacedBy(gapDp)
+    ) {
+        Text(
+            text = displayVal,
+            fontSize = valSp,
+            fontWeight = FontWeight.Bold,
+            color = if (isCritical) TorqueEvoColors.CriticalRed else primaryColor,
+            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+            maxLines = 1,
+            softWrap = false
+        )
+        if (displayUnit.isNotBlank()) {
+            Text(
+                text = displayUnit,
+                fontSize = unitSp.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = secondaryColor,
+                modifier = Modifier.padding(bottom = unitBottomPadding),
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+@Composable
 fun AnalogDialWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
@@ -205,9 +286,9 @@ fun AnalogDialWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
+    val tickBaseCol = remember { Color(0x30FFFFFF) }
+    val tickRedCol = remember { Color(0x66EF4444) }
+    val redZoneCol = remember { Color(0x45EF4444) }
 
     BoxWithConstraints(
         modifier = modifier
@@ -223,16 +304,13 @@ fun AnalogDialWidget(
         val cyDp = 4.dp + (availH * 0.5f) + (rDp * 0.20f)
         val labelSp = (dialD.value * 0.080f).coerceIn(10f, 15.5f).sp
         val unitSpVal = (dialD.value * 0.056f).coerceIn(9f, 12.5f)
-        val valSp = fitDigitsFontSizeSp(
-            availWidthDp = (dialD * 0.68f).value,
-            text = displayVal,
-            unit = displayUnit,
-            unitSp = unitSpVal,
-            minSp = 13f,
-            maxSp = (dialD.value * 0.145f).coerceIn(15f, 28f)
-        ).sp
+        val maxValSp = (dialD.value * 0.145f).coerceIn(15f, 28f)
 
         Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+            val curVal = valueProvider()
+            val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+
             val r = minOf(size.width / 2.12f, size.height / 1.72f)
             val c = Offset(size.width / 2f, size.height * 0.5f + r * 0.20f)
             val arcTopLeft = Offset(c.x - r, c.y - r)
@@ -244,9 +322,8 @@ fun AnalogDialWidget(
                 val rad = deg * PI / 180.0
                 val innerR = if (i % 4 == 0) r * 0.90f else r * 0.95f
                 val outerR = r * 1.04f
-                val tickCol = if (i >= 20) Color(0x66EF4444) else Color(0x30FFFFFF)
                 drawLine(
-                    color = tickCol,
+                    color = if (i >= 20) tickRedCol else tickBaseCol,
                     start = Offset(c.x + (innerR * cos(rad)).toFloat(), c.y + (innerR * sin(rad)).toFloat()),
                     end = Offset(c.x + (outerR * cos(rad)).toFloat(), c.y + (outerR * sin(rad)).toFloat()),
                     strokeWidth = if (i % 4 == 0) 2.2f else 1.2f,
@@ -265,7 +342,7 @@ fun AnalogDialWidget(
                 style = Stroke(width = 7f, cap = StrokeCap.Round)
             )
             drawArc(
-                color = Color(0x45EF4444),
+                color = redZoneCol,
                 startAngle = 350f,
                 sweepAngle = 45f,
                 useCenter = false,
@@ -308,41 +385,31 @@ fun AnalogDialWidget(
                 .offset(y = (cyDp - rDp * 0.56f).coerceAtLeast(6.dp))
         )
 
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        LiveDigitsRow(
+            valueProvider = valueProvider,
+            unit = unit,
+            min = min,
+            max = max,
+            sensorKey = sensorKey,
+            availWidthDp = (dialD * 0.68f).value,
+            unitSp = unitSpVal,
+            minSp = 13f,
+            maxSp = maxValSp,
+            primaryColor = palette.textPrimary,
+            secondaryColor = palette.textSecondary,
+            unitBottomPadding = 2.dp,
+            gapDp = 3.dp,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .offset(y = (cyDp + rDp * 0.34f))
-        ) {
-            Text(
-                text = displayVal,
-                fontSize = valSp,
-                fontWeight = FontWeight.Bold,
-                color = palette.textPrimary,
-                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                maxLines = 1,
-                softWrap = false
-            )
-            if (displayUnit.isNotBlank()) {
-                Text(
-                    text = displayUnit,
-                    fontSize = unitSpVal.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.textSecondary,
-                    modifier = Modifier.padding(bottom = 2.dp),
-                    maxLines = 1,
-                    softWrap = false
-                )
-            }
-        }
+        )
     }
 }
 
 @Composable
 fun SemiDigitalArcWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
@@ -353,9 +420,6 @@ fun SemiDigitalArcWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     Box(
         modifier = modifier
@@ -373,6 +437,10 @@ fun SemiDigitalArcWidget(
             modifier = Modifier.align(Alignment.TopCenter)
         )
         Canvas(modifier = Modifier.fillMaxSize().padding(top = 12.dp, bottom = 10.dp)) {
+            val curVal = valueProvider()
+            val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+
             val d = minOf(size.width * 0.88f, size.height * 1.25f)
             val r = d / 2f
             val cx = size.width / 2f
@@ -401,30 +469,23 @@ fun SemiDigitalArcWidget(
                 )
             }
         }
-        Row(
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        LiveDigitsRow(
+            valueProvider = valueProvider,
+            unit = unit,
+            min = min,
+            max = max,
+            sensorKey = sensorKey,
+            availWidthDp = 120f,
+            unitSp = 10f,
+            minSp = 18f,
+            maxSp = 23f,
+            fixedDigitsSp = 23f,
+            primaryColor = palette.textPrimary,
+            secondaryColor = palette.textSecondary,
+            unitBottomPadding = 3.dp,
+            gapDp = 3.dp,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
-        ) {
-            Text(
-                text = displayVal,
-                fontSize = 23.sp,
-                fontWeight = FontWeight.Bold,
-                color = palette.textPrimary,
-                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                maxLines = 1
-            )
-            if (displayUnit.isNotBlank()) {
-                Text(
-                    text = displayUnit,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = palette.textSecondary,
-                    modifier = Modifier.padding(bottom = 3.dp),
-                    maxLines = 1
-                )
-            }
-        }
+        )
         Row(
             modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter).padding(horizontal = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -438,7 +499,7 @@ fun SemiDigitalArcWidget(
 @Composable
 fun DigitalReadoutWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
@@ -449,9 +510,6 @@ fun DigitalReadoutWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -469,15 +527,8 @@ fun DigitalReadoutWidget(
             minSp = 7.5f,
             maxSp = if (compact) 12f else 13f
         ).sp
-        val unitSpVal = if (compact) 8.5.sp else 11.5.sp
-        val valSp = fitDigitsFontSizeSp(
-            availWidthDp = availInnerW,
-            text = displayVal,
-            unit = displayUnit,
-            unitSp = unitSpVal.value,
-            minSp = 13f,
-            maxSp = if (maxWidth > 165.dp && maxHeight > 74.dp) 32f else if (compact) 23f else 28f
-        ).sp
+        val unitSpVal = if (compact) 8.5f else 11.5f
+        val maxValSp = if (maxWidth > 165.dp && maxHeight > 74.dp) 32f else if (compact) 23f else 28f
 
         Column(
             modifier = Modifier
@@ -505,36 +556,33 @@ fun DigitalReadoutWidget(
                     modifier = Modifier
                         .size(if (compact) 4.dp else 5.dp)
                         .clip(CircleShape)
-                        .background(accent)
+                        .drawBehind {
+                            val curVal = valueProvider()
+                            val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                            drawCircle(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent))
+                        }
                 )
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)
-            ) {
-                Text(
-                    text = displayVal,
-                    fontSize = valSp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (accent == TorqueEvoColors.CriticalRed) TorqueEvoColors.CriticalRed else palette.textPrimary,
-                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                    maxLines = 1,
-                    softWrap = false
-                )
-                if (displayUnit.isNotBlank()) {
-                    Text(
-                        text = displayUnit,
-                        fontSize = unitSpVal,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.textSecondary,
-                        modifier = Modifier.padding(bottom = 2.dp),
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
-            }
+            LiveDigitsRow(
+                valueProvider = valueProvider,
+                unit = unit,
+                min = min,
+                max = max,
+                sensorKey = sensorKey,
+                availWidthDp = availInnerW,
+                unitSp = unitSpVal,
+                minSp = 13f,
+                maxSp = maxValSp,
+                primaryColor = palette.textPrimary,
+                secondaryColor = palette.textSecondary,
+                warnThreshold = warnThreshold,
+                critThreshold = critThreshold,
+                tintRedOnCritical = true,
+                unitBottomPadding = 2.dp,
+                gapDp = if (compact) 2.dp else 4.dp,
+                modifier = Modifier.fillMaxWidth()
+            )
             Spacer(Modifier.height(1.dp))
         }
     }
@@ -544,7 +592,7 @@ fun DigitalReadoutWidget(
 @Composable
 fun BarGaugeWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
@@ -555,9 +603,6 @@ fun BarGaugeWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val accent = thresholdColor(value, warnThreshold, critThreshold, pct, palette.accent)
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
 
     BoxWithConstraints(
         modifier = modifier
@@ -567,19 +612,20 @@ fun BarGaugeWidget(
         val compact = maxWidth < 145.dp
         val padH = if (compact) 6.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
-        val unitSpVal = if (compact) 9.sp else 10.5.sp
-        val compactValSp = fitDigitsFontSizeSp(
-            availWidthDp = innerW,
-            text = displayVal,
-            unit = displayUnit,
-            unitSp = unitSpVal.value,
-            minSp = 12.5f,
-            maxSp = 21f
-        ).sp
+        val unitSpVal = if (compact) 9f else 10.5f
         val wideLabelSp = 12.sp
 
         Row(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.fillMaxHeight().size(width = 3.dp, height = 100.dp).background(accent))
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(3.dp)
+                    .drawBehind {
+                        val curVal = valueProvider()
+                        val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                        drawRect(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent))
+                    }
+            )
             Column(
                 modifier = Modifier.fillMaxSize().padding(horizontal = padH, vertical = if (compact) 4.dp else 6.dp),
                 verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Center
@@ -596,20 +642,21 @@ fun BarGaugeWidget(
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = displayVal,
-                            fontSize = compactValSp,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.textPrimary,
-                            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        if (displayUnit.isNotBlank()) {
-                            Text(displayUnit, fontSize = unitSpVal, color = palette.textSecondary, modifier = Modifier.padding(bottom = 1.dp), maxLines = 1, softWrap = false)
-                        }
-                    }
+                    LiveDigitsRow(
+                        valueProvider = valueProvider,
+                        unit = unit,
+                        min = min,
+                        max = max,
+                        sensorKey = sensorKey,
+                        availWidthDp = innerW,
+                        unitSp = unitSpVal,
+                        minSp = 12.5f,
+                        maxSp = 21f,
+                        primaryColor = palette.textPrimary,
+                        secondaryColor = palette.textSecondary,
+                        unitBottomPadding = 1.dp,
+                        gapDp = 2.dp
+                    )
                 } else {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -627,41 +674,48 @@ fun BarGaugeWidget(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f).padding(end = 6.dp)
                         )
-                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Text(
-                                text = displayVal,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.textPrimary,
-                                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                            if (displayUnit.isNotBlank()) {
-                                Text(displayUnit, fontSize = unitSpVal, color = palette.textSecondary, modifier = Modifier.padding(bottom = 2.dp), maxLines = 1, softWrap = false)
-                            }
-                        }
+                        LiveDigitsRow(
+                            valueProvider = valueProvider,
+                            unit = unit,
+                            min = min,
+                            max = max,
+                            sensorKey = sensorKey,
+                            availWidthDp = innerW * 0.45f,
+                            unitSp = unitSpVal,
+                            minSp = 20f,
+                            maxSp = 20f,
+                            fixedDigitsSp = 20f,
+                            primaryColor = palette.textPrimary,
+                            secondaryColor = palette.textSecondary,
+                            unitBottomPadding = 2.dp,
+                            gapDp = 3.dp
+                        )
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                Box(
+                Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(5.dp)
                         .clip(RoundedCornerShape(3.dp))
-                        .background(palette.dialTrack)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(pct)
-                            .fillMaxHeight()
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(
-                                Brush.horizontalGradient(
-                                    listOf(accent.copy(alpha = 0.7f), accent)
-                                )
-                            )
-                    )
+                    val corner = CornerRadius(size.height / 2f, size.height / 2f)
+                    drawRoundRect(color = palette.dialTrack, cornerRadius = corner)
+                    val curVal = valueProvider()
+                    val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                    if (pct > 0f) {
+                        val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+                        val fillW = size.width * pct
+                        drawRoundRect(
+                            brush = Brush.horizontalGradient(
+                                colors = listOf(accent.copy(alpha = 0.7f), accent),
+                                startX = 0f,
+                                endX = fillW.coerceAtLeast(1f)
+                            ),
+                            size = Size(fillW, size.height),
+                            cornerRadius = corner
+                        )
+                    }
                 }
             }
         }
@@ -699,7 +753,7 @@ internal fun segmentedBoxFillFraction(
 @Composable
 fun SegmentedBarGaugeWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
@@ -710,14 +764,8 @@ fun SegmentedBarGaugeWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
-    val pct = value?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-    val hasActiveFill = value != null && pct > 0.002f
-    val activeAccent = if (!hasActiveFill) {
-        palette.dialTrack
-    } else {
-        thresholdColor(value, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
-    }
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
+    val segEmptyBg = remember { Color(0x14FFFFFF) }
+    val segEmptyBorder = remember { Color(0x1EFFFFFF) }
 
     BoxWithConstraints(
         modifier = modifier
@@ -726,27 +774,45 @@ fun SegmentedBarGaugeWidget(
     ) {
         val compact = maxWidth < 145.dp
         val segments = if (compact) 12 else 18
+        val paletteColors = remember(segments) {
+            val lastIdx = (segments - 1).coerceAtLeast(1)
+            Array(segments) { idx -> segmentedSpectrumColor(idx.toFloat() / lastIdx.toFloat()) }
+        }
         val padH = if (compact) 5.5.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
-        val unitSpVal = if (compact) 8.5.sp else 10.sp
-        val fittedValSp = fitDigitsFontSizeSp(
-            availWidthDp = if (compact) innerW * 0.54f else innerW * 0.44f,
-            text = displayVal,
-            unit = displayUnit,
-            unitSp = unitSpVal.value,
-            minSp = 12f,
-            maxSp = if (compact) 16f else 19f
-        ).sp
+        val unitSpVal = if (compact) 8.5f else 10f
+        val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.50f else 0.56f), shortLabel, minSp = 7.5f, maxSp = 12.5f).sp
+        val isHighRedMax by remember(valueProvider, min, span) {
+            derivedStateOf {
+                val v = valueProvider()
+                val pct = v?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                v != null && pct > 0.85f
+            }
+        }
 
         Row(modifier = Modifier.fillMaxSize()) {
-            Box(modifier = Modifier.fillMaxHeight().size(width = 3.dp, height = 100.dp).background(activeAccent))
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(3.dp)
+                    .drawBehind {
+                        val curVal = valueProvider()
+                        val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                        val active = curVal != null && pct > 0.002f
+                        val stripColor = if (!active) {
+                            palette.dialTrack
+                        } else {
+                            thresholdColor(curVal, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
+                        }
+                        drawRect(stripColor)
+                    }
+            )
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = padH, vertical = if (compact) 4.dp else 6.dp),
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.50f else 0.56f), shortLabel, minSp = 7.5f, maxSp = 12.5f).sp
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -763,60 +829,73 @@ fun SegmentedBarGaugeWidget(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f).padding(end = 4.dp)
                     )
-                    Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(
-                            text = displayVal,
-                            fontSize = fittedValSp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (activeAccent == TorqueEvoColors.CriticalRed && hasActiveFill) TorqueEvoColors.CriticalRed else palette.textPrimary,
-                            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                        if (displayUnit.isNotBlank()) {
-                            Text(displayUnit, fontSize = unitSpVal, color = palette.textSecondary, modifier = Modifier.padding(bottom = 1.dp), maxLines = 1, softWrap = false)
-                        }
-                    }
+                    LiveDigitsRow(
+                        valueProvider = valueProvider,
+                        unit = unit,
+                        min = min,
+                        max = max,
+                        sensorKey = sensorKey,
+                        availWidthDp = if (compact) innerW * 0.54f else innerW * 0.44f,
+                        unitSp = unitSpVal,
+                        minSp = 12f,
+                        maxSp = if (compact) 16f else 19f,
+                        primaryColor = palette.textPrimary,
+                        secondaryColor = palette.textSecondary,
+                        warnThreshold = warnThreshold,
+                        critThreshold = critThreshold,
+                        tintRedOnCritical = true,
+                        unitBottomPadding = 1.dp,
+                        gapDp = 2.dp
+                    )
                 }
 
-                Row(
+                Canvas(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(if (compact) 10.dp else 13.dp),
-                    horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 3.dp)
+                        .height(if (compact) 10.dp else 13.dp)
                 ) {
-                    val lastIdx = (segments - 1).coerceAtLeast(1)
+                    val gapPx = (if (compact) 2.dp else 3.dp).toPx()
+                    val segW = ((size.width - gapPx * (segments - 1)) / segments.toFloat()).coerceAtLeast(1f)
+                    val segH = size.height
+                    val cornerPx = 2.5.dp.toPx()
+                    val corner = CornerRadius(cornerPx, cornerPx)
+                    val borderPx = 0.6.dp.toPx()
+
+                    val curVal = valueProvider()
+                    val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
                     for (idx in 0 until segments) {
-                        val boxFill = if (value == null) 0f else segmentedBoxFillFraction(pct, idx, segments)
-                        val frac = idx.toFloat() / lastIdx.toFloat()
-                        val litColor = segmentedSpectrumColor(frac)
-                        val boxShape = RoundedCornerShape(2.5.dp)
-                        val boxMod = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(boxShape)
-                        when {
-                            boxFill >= 0.99f -> {
-                                Box(modifier = boxMod.background(litColor))
-                            }
-                            boxFill <= 0.01f -> {
-                                Box(
-                                    modifier = boxMod
-                                        .background(Color(0x14FFFFFF))
-                                        .border(0.6.dp, Color(0x1EFFFFFF), boxShape)
-                                )
-                            }
-                            else -> {
-                                Box(
-                                    modifier = boxMod
-                                        .background(Color(0x14FFFFFF))
-                                        .border(0.6.dp, Color(0x1EFFFFFF), boxShape)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxHeight()
-                                            .fillMaxWidth(boxFill)
-                                            .background(litColor)
+                        val left = idx * (segW + gapPx)
+                        val boxFill = if (curVal == null) 0f else segmentedBoxFillFraction(pct, idx, segments)
+                        val topLeft = Offset(left, 0f)
+                        val segSize = Size(segW, segH)
+                        if (boxFill >= 0.99f) {
+                            drawRoundRect(
+                                color = paletteColors[idx],
+                                topLeft = topLeft,
+                                size = segSize,
+                                cornerRadius = corner
+                            )
+                        } else {
+                            drawRoundRect(
+                                color = segEmptyBg,
+                                topLeft = topLeft,
+                                size = segSize,
+                                cornerRadius = corner
+                            )
+                            drawRoundRect(
+                                color = segEmptyBorder,
+                                topLeft = topLeft,
+                                size = segSize,
+                                cornerRadius = corner,
+                                style = Stroke(width = borderPx)
+                            )
+                            if (boxFill > 0.01f) {
+                                clipRect(left = left, top = 0f, right = left + segW * boxFill, bottom = segH) {
+                                    drawRoundRect(
+                                        color = paletteColors[idx],
+                                        topLeft = topLeft,
+                                        size = segSize,
+                                        cornerRadius = corner
                                     )
                                 }
                             }
@@ -836,7 +915,7 @@ fun SegmentedBarGaugeWidget(
                     Text(
                         text = if (unit == "mm:ss") "3h" else "${max.roundToInt()}",
                         fontSize = 8.sp,
-                        color = if (hasActiveFill && pct > 0.85f) TorqueEvoColors.CriticalRed else palette.textSecondary
+                        color = if (isHighRedMax) TorqueEvoColors.CriticalRed else palette.textSecondary
                     )
                 }
             }
@@ -847,17 +926,23 @@ fun SegmentedBarGaugeWidget(
 @Composable
 fun SparklineChartWidget(
     shortLabel: String,
-    value: Double?,
+    valueProvider: () -> Double?,
     unit: String,
     min: Double,
     max: Double,
-    history: List<Double>,
+    historyProvider: () -> List<Double>,
     modifier: Modifier = Modifier,
     sensorKey: String = ""
 ) {
     val palette = LocalHudVisualStyle.current
-    val (displayVal, displayUnit) = formatTelemetryValueAndUnit(value, unit, min, max, sensorKey)
     val span = (max - min).coerceAtLeast(1.0)
+    val linePath = remember { Path() }
+    val fillPath = remember { Path() }
+    val dashEffect = remember { PathEffect.dashPathEffect(floatArrayOf(6f, 6f)) }
+    val fillBrush = remember(palette.accent) {
+        Brush.verticalGradient(listOf(palette.accent.copy(alpha = 0.32f), Color.Transparent))
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -881,20 +966,22 @@ fun SparklineChartWidget(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f).padding(end = 6.dp)
             )
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    text = displayVal,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.textPrimary,
-                    style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                    maxLines = 1,
-                    softWrap = false
-                )
-                if (displayUnit.isNotBlank()) {
-                    Text(displayUnit, fontSize = 10.sp, color = palette.textSecondary, modifier = Modifier.padding(bottom = 1.dp), maxLines = 1, softWrap = false)
-                }
-            }
+            LiveDigitsRow(
+                valueProvider = valueProvider,
+                unit = unit,
+                min = min,
+                max = max,
+                sensorKey = sensorKey,
+                availWidthDp = 96f,
+                unitSp = 10f,
+                minSp = 16f,
+                maxSp = 16f,
+                fixedDigitsSp = 16f,
+                primaryColor = palette.textPrimary,
+                secondaryColor = palette.textSecondary,
+                unitBottomPadding = 1.dp,
+                gapDp = 3.dp
+            )
         }
 
         Canvas(modifier = Modifier.fillMaxSize().padding(top = 5.dp)) {
@@ -903,11 +990,13 @@ fun SparklineChartWidget(
                 start = Offset(0f, size.height * 0.5f),
                 end = Offset(size.width, size.height * 0.5f),
                 strokeWidth = 1f,
-                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f))
+                pathEffect = dashEffect
             )
-            val pts = if (history.size >= 2) history else listOf(min, value ?: min)
-            val linePath = Path()
-            val fillPath = Path()
+            val hist = historyProvider()
+            val curVal = valueProvider()
+            val pts = if (hist.size >= 2) hist else listOf(min, curVal ?: min)
+            linePath.reset()
+            fillPath.reset()
             var lastPt = Offset(0f, size.height)
 
             pts.forEachIndexed { idx, v ->
@@ -928,12 +1017,7 @@ fun SparklineChartWidget(
             fillPath.lineTo(lastPt.x, size.height)
             fillPath.close()
 
-            drawPath(
-                path = fillPath,
-                brush = Brush.verticalGradient(
-                    listOf(palette.accent.copy(alpha = 0.32f), Color.Transparent)
-                )
-            )
+            drawPath(path = fillPath, brush = fillBrush)
             drawPath(
                 path = linePath,
                 color = palette.accent,
@@ -1135,10 +1219,8 @@ fun MiniMapWidget(
 
 @Composable
 fun FuelControlWidget(
-    kplValue: Double?,
+    kplProvider: () -> Double?,
     kplUnit: String,
-    estRangeValue: Double?,
-    estRangeUnit: String,
     paused: Boolean,
     onTogglePause: () -> Unit,
     modifier: Modifier = Modifier
@@ -1155,19 +1237,10 @@ fun FuelControlWidget(
         val btnSize = if (compact) 30.dp else 36.dp
         val btnGap = 6.dp
         val textMaxW = (maxWidth.value - padH.value * 2f - btnSize.value - btnGap.value).coerceAtLeast(44f)
-        val kplText = formatTelemetryValue(kplValue, 0.0, 30.0, unit = kplUnit, sensorKey = "kpl_road_avg")
         val labelSpVal = fitLabelFontSizeSp(textMaxW, "KPL · AVG", minSp = 8.5f, maxSp = if (compact) 10.5f else 12f)
-        val unitSpVal = if (compact) 8.5.sp else 10.5.sp
+        val unitSpVal = if (compact) 8.5f else 10.5f
         val heightBoundMaxSp = ((maxHeight.value - padV.value * 2f - labelSpVal * 1.3f) * 0.72f)
             .coerceIn(13f, if (compact) 20f else 24f)
-        val valSp = fitDigitsFontSizeSp(
-            availWidthDp = textMaxW,
-            text = kplText,
-            unit = kplUnit,
-            unitSp = unitSpVal.value,
-            minSp = 13f,
-            maxSp = heightBoundMaxSp
-        ).sp
 
         Row(
             modifier = Modifier
@@ -1193,29 +1266,21 @@ fun FuelControlWidget(
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(2.5.dp)
-                ) {
-                    Text(
-                        text = kplText,
-                        fontSize = valSp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (paused) palette.textSecondary else palette.textPrimary,
-                        style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                    Text(
-                        text = kplUnit,
-                        fontSize = unitSpVal,
-                        fontWeight = FontWeight.SemiBold,
-                        color = palette.textSecondary,
-                        modifier = Modifier.padding(bottom = if (compact) 1.dp else 2.dp),
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
+                LiveDigitsRow(
+                    valueProvider = kplProvider,
+                    unit = kplUnit,
+                    min = 0.0,
+                    max = 30.0,
+                    sensorKey = "kpl_road_avg",
+                    availWidthDp = textMaxW,
+                    unitSp = unitSpVal,
+                    minSp = 13f,
+                    maxSp = heightBoundMaxSp,
+                    primaryColor = if (paused) palette.textSecondary else palette.textPrimary,
+                    secondaryColor = palette.textSecondary,
+                    unitBottomPadding = if (compact) 1.dp else 2.dp,
+                    gapDp = 2.5.dp
+                )
             }
 
             val ringColor = if (paused) TorqueEvoColors.WarnAmber else palette.accent
