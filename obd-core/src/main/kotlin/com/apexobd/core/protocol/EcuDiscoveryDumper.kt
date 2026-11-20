@@ -212,9 +212,10 @@ object EcuDiscoveryDumper {
             }
         } finally {
             if (handshake.isCanProtocol) {
-                client.execute("ATCRA", timeoutMs = 800L)
+                client.restoreDefaultCanHeaderAndFilter(timeoutMs = 800L)
+            } else {
+                client.execute("ATSH7DF", timeoutMs = 800L)
             }
-            client.execute("ATSH7DF", timeoutMs = 800L)
         }
 
         log("\n=== SCAN COMPLETE in ${System.currentTimeMillis() - tStart}ms ===")

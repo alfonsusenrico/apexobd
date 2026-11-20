@@ -43,7 +43,8 @@ data class ToyotaMeterDiscoveryResult(
     val initialOdometerKm: Long? = null,
     val initialClusterSpeedKmh: Double? = null,
     val initialClusterRpm: Double? = null,
-    val initialClusterCoolantC: Double? = null
+    val initialClusterCoolantC: Double? = null,
+    val requiresExplicitEcmRxFilter: Boolean = false
 )
 
 /**
@@ -63,6 +64,7 @@ object ToyotaMeterProtocol {
         var clusterRpm: Double? = null
         var clusterCoolant: Double? = null
 
+        var requiresExplicitEcmRx = false
         try {
             val sh = client.execute("ATSH${ToyotaMeterCapabilities.HEADER_TX}", timeoutMs = 800L)
             if (sh !is ObdCommandResult.Success) {
@@ -96,8 +98,16 @@ object ToyotaMeterProtocol {
                 }
             }
         } finally {
-            client.execute("ATCRA", timeoutMs = 800L)
-            client.execute("ATSH7DF", timeoutMs = 800L)
+            client.restoreDefaultCanHeaderAndFilter(explicitEcmRxFallback = false, timeoutMs = 800L)
+            // Verify Engine ECU (7E8) still responds after clearing 7C8 filter; some ELM327 v1.5 clones
+            // ignore ATCRA/ATCM/ATAR and require an explicit ATCRA7E8 to unlock Mode 01 responses.
+            val verify = client.execute("01001", timeoutMs = 750L)
+            val ecmOk = verify is ObdCommandResult.Success &&
+                Elm327Client.extractPidPayload(verify.lines, 0x41, 0x00) != null
+            if (!ecmOk) {
+                requiresExplicitEcmRx = true
+                client.restoreDefaultCanHeaderAndFilter(explicitEcmRxFallback = true, timeoutMs = 800L)
+            }
         }
 
         val caps = ToyotaMeterCapabilities(
@@ -113,7 +123,8 @@ object ToyotaMeterProtocol {
             initialOdometerKm = odometerKm,
             initialClusterSpeedKmh = clusterSpeed,
             initialClusterRpm = clusterRpm,
-            initialClusterCoolantC = clusterCoolant
+            initialClusterCoolantC = clusterCoolant,
+            requiresExplicitEcmRxFilter = requiresExplicitEcmRx
         )
     }
 

@@ -555,4 +555,83 @@ class EngineAndPerformanceTest {
             assertTrue("Expected ATSH7DF restore after 7C0 discovery", "ATSH7DF" in cmds)
         }
     }
+
+    @Test
+    fun `sticky ATCRA ELM327 v1_5 clone recovers Mode 01 streaming via ATCRA7E8 fallback after 7C0 discovery`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            var activeHeader = "7DF"
+            var activeRxFilter: String? = null // null = auto (7E8)
+            val stickyCloneTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "sticky-atcra-clone"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    return when {
+                        cmd == "ATZ" -> {
+                            activeHeader = "7DF"
+                            activeRxFilter = null
+                            "ELM327 v1.5\r"
+                        }
+                        cmd.startsWith("ATSH") -> {
+                            activeHeader = cmd.removePrefix("ATSH")
+                            "OK\r"
+                        }
+                        // Reproduce ELM327 v1.5 clone: parameterless ATCRA returns '?', leaving filter stuck on 7C8!
+                        cmd == "ATCRA" -> "?\r"
+                        cmd.startsWith("ATCRA") && cmd.length == 8 -> {
+                            activeRxFilter = cmd.removePrefix("ATCRA")
+                            "OK\r"
+                        }
+                        // Clone also ignores ATCM/ATCF/ATAR once ATCRAhhh is set
+                        cmd == "ATCM000" || cmd == "ATCF000" || cmd == "ATAR" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        cmd.startsWith("AT") -> "OK\r"
+                        activeHeader == "7C0" && (activeRxFilter == null || activeRxFilter == "7C8") -> when (cmd) {
+                            "2129" -> "612925\r"
+                            "21E1" -> "013\r0:61E10013FF00\r1:0003BA0000770D\r2:26112050153200\r"
+                            else -> "NO DATA\r"
+                        }
+                        // Engine ECU replies on 7E8: blocked whenever activeRxFilter is stuck on 7C8!
+                        activeHeader == "7DF" && (activeRxFilter == null || activeRxFilter == "7E8") -> when {
+                            cmd.startsWith("0100") -> "4100BE1EA813\r"
+                            cmd == "0120" -> "41209005B015\r"
+                            cmd == "0140" -> "41405EDC8000\r"
+                            cmd.startsWith("010C") -> "410C0C30\r" // 780 RPM
+                            cmd.startsWith("0105") -> "410578\r"   // 80 °C
+                            cmd.startsWith("0142") -> "414236B0\r" // 14.0 V
+                            else -> "NO DATA\r"
+                        }
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(stickyCloneTransport, scope)
+            engine.setActiveSensors(setOf("rpm", "coolant", "voltage", "fuel_level"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(250L)
+            val snap = engine.liveValues.value
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            assertTrue("Expected ATCM000 fallback after ATCRA ?", "ATCM000" in cmds)
+            assertTrue("Expected ATAR restore attempt", "ATAR" in cmds)
+            assertTrue("Expected ATCRA7E8 recovery when 01001 failed", "ATCRA7E8" in cmds)
+            assertEquals(780.0, snap["rpm"] ?: -1.0, 1.0)
+            assertEquals(80.0, snap["coolant"] ?: -1.0, 0.5)
+        }
+    }
 }

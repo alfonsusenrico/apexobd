@@ -111,6 +111,31 @@ class Elm327Client(
         }
     }
 
+    /**
+     * Restores standard OBD-II CAN functional TX header (`7DF`) and Engine ECU reception (`7E8..7EF`)
+     * after querying an alternate module (e.g. `7C0` Combination Meter or `750` Body ECU).
+     *
+     * Parameterless `ATCRA` was added in ELM327 v1.4b and is rejected (`?`) or ignored by many ELM327 v1.5
+     * clones, leaving the CAN RX hardware filter stuck on `7C8` and silencing all Mode 01 `7E8` responses.
+     */
+    suspend fun restoreDefaultCanHeaderAndFilter(
+        explicitEcmRxFallback: Boolean = false,
+        timeoutMs: Long = 800L
+    ) {
+        if (explicitEcmRxFallback) {
+            execute("ATCRA7E8", timeoutMs = timeoutMs)
+            execute("ATSH7DF", timeoutMs = timeoutMs)
+            return
+        }
+        val craReset = execute("ATCRA", timeoutMs = timeoutMs)
+        if (craReset !is ObdCommandResult.Success) {
+            execute("ATCM000", timeoutMs = timeoutMs)
+            execute("ATCF000", timeoutMs = timeoutMs)
+        }
+        execute("ATAR", timeoutMs = timeoutMs)
+        execute("ATSH7DF", timeoutMs = timeoutMs)
+    }
+
     companion object {
         private val CAN_PROTOCOL_TOKEN = Regex("""(?:^|[\s,])A?[6-9A-C](?=[\s,]|$)""")
 

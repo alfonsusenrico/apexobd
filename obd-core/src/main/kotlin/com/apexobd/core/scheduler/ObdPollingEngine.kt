@@ -637,7 +637,12 @@ class ObdPollingEngine(
             if (dueCustom != null && currentCoroutineContext().isActive && transport.isConnected.value) {
                 lastCustomPollMs[dueCustom.key] = customNowMs
                 val t0 = System.currentTimeMillis()
-                val res = executeCustomPidWithHeader(dueCustom, handshake.isCanProtocol, liveTimeoutMs)
+                val res = executeCustomPidWithHeader(
+                    custom = dueCustom,
+                    isCanProtocol = handshake.isCanProtocol,
+                    timeoutMs = liveTimeoutMs,
+                    explicitEcmRxFallback = meterDiscovery.requiresExplicitEcmRxFilter
+                )
                 latencyAccumMs += (System.currentTimeMillis() - t0)
                 rttCount++
                 if (res is ObdCommandResult.Success) {
@@ -666,7 +671,8 @@ class ObdPollingEngine(
                         needClsRpm = needClsRpm,
                         needClsCool = needClsCool,
                         values = values,
-                        timeoutMs = maxOf(liveTimeoutMs, 800L)
+                        timeoutMs = maxOf(liveTimeoutMs, 800L),
+                        explicitEcmRxFallback = meterDiscovery.requiresExplicitEcmRxFilter
                     )
                     if (needFuel) lastMeterFuelMs = meterNowMs
                     if (needOdo) lastMeterOdoMs = meterNowMs
@@ -707,7 +713,8 @@ class ObdPollingEngine(
         needClsRpm: Boolean,
         needClsCool: Boolean,
         values: MutableMap<String, Double>,
-        timeoutMs: Long
+        timeoutMs: Long,
+        explicitEcmRxFallback: Boolean = false
     ): Int {
         var count = 0
         try {
@@ -766,8 +773,10 @@ class ObdPollingEngine(
                 }
             }
         } finally {
-            client.execute("ATCRA", timeoutMs = 800L)
-            client.execute("ATSH7DF", timeoutMs = 800L)
+            client.restoreDefaultCanHeaderAndFilter(
+                explicitEcmRxFallback = explicitEcmRxFallback,
+                timeoutMs = 800L
+            )
         }
         return count
     }
@@ -775,7 +784,8 @@ class ObdPollingEngine(
     private suspend fun executeCustomPidWithHeader(
         custom: CustomPidDefinition,
         isCanProtocol: Boolean,
-        timeoutMs: Long
+        timeoutMs: Long,
+        explicitEcmRxFallback: Boolean = false
     ): ObdCommandResult {
         val rawHeader = custom.headerHex?.replace(" ", "")?.uppercase()?.takeIf { it.isNotBlank() }
         if (!isCanProtocol || rawHeader == null || rawHeader == "7DF") {
@@ -789,10 +799,10 @@ class ObdPollingEngine(
             }
             client.execute(custom.modeAndPidHex, timeoutMs = maxOf(timeoutMs, 900L))
         } finally {
-            if (replyFilter != null) {
-                client.execute("ATCRA", timeoutMs = 800L)
-            }
-            client.execute("ATSH7DF", timeoutMs = 800L)
+            client.restoreDefaultCanHeaderAndFilter(
+                explicitEcmRxFallback = explicitEcmRxFallback,
+                timeoutMs = 800L
+            )
         }
     }
 
