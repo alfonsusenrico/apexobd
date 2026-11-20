@@ -239,6 +239,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _onHudScreen = MutableStateFlow(false)
     val onHudScreen: StateFlow<Boolean> = _onHudScreen.asStateFlow()
 
+    private val _isAppInForeground = MutableStateFlow(true)
+    private val _backgroundServiceActive = MutableStateFlow(true)
+    val backgroundServiceActive: StateFlow<Boolean> = _backgroundServiceActive.asStateFlow()
+
     private val _visiblePageIndex = MutableStateFlow(0)
     private val _chartKeys = MutableStateFlow<Set<String>>(emptySet())
     @Volatile
@@ -358,6 +362,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         wifiBinder.register()
+        LoggingForegroundService.setTerminateListener {
+            terminateBackgroundService()
+        }
         viewModelScope.launch(Dispatchers.IO) {
             ApexDatabase.seedDefaults(hudDao, vehicleDao)
             tripDao.deleteDraftSessions()
@@ -412,19 +419,49 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Start/stop OBD + Sensors + Cellular keepalive strictly according to active HUD or recording state
+        // Keep OBD adapter connected whenever the background listener service is active (Home, HUD, or background)
         viewModelScope.launch {
-            combine(_onHudScreen, _isRecording, settings) { onHud, recording, st ->
-                Triple(onHud || recording, recording, st)
-            }.collect { (shouldPoll, _, st) ->
+            combine(
+                _backgroundServiceActive,
+                _onHudScreen,
+                _isRecording,
+                _isAppInForeground,
+                settings
+            ) { serviceActive, onHud, recording, inForeground, st ->
+                BackgroundLifecycleState(
+                    serviceActive = serviceActive,
+                    onHud = onHud,
+                    recording = recording,
+                    inForeground = inForeground,
+                    settings = st
+                )
+            }.collect { state ->
+                val st = state.settings
+                val isWifiAdapter = st.connectionType == ObdConnectionType.WIFI_TCP
                 engine?.setFuelCalculationPaused(st.pauseFuelCalculation)
                 engine?.setPollingProfile(st.pollingProfile)
+                wifiBinder.setLowLatencyLocks(
+                    wifiLockEnabled = state.serviceActive && isWifiAdapter,
+                    wakeLockEnabled = state.serviceActive
+                )
+                locationTracker.setPreferPureGnss(state.serviceActive && isWifiAdapter)
                 wifiBinder.setKeepCellularActive(
-                    shouldPoll && st.connectionType == ObdConnectionType.WIFI_TCP && st.dualCellularKeepalive
+                    state.serviceActive && isWifiAdapter && st.dualCellularKeepalive
                 )
 
-                if (shouldPoll) {
-                    accelTracker.start()
+                if (state.serviceActive) {
+                    if (!LoggingForegroundService.isRunning && (state.inForeground || state.recording)) {
+                        val (title, text) = buildBackgroundNotificationText(
+                            connectionState = _connectionState.value,
+                            isRecording = state.recording,
+                            endpoint = st.adapterDetailedEndpoint()
+                        )
+                        LoggingForegroundService.start(getApplication(), title, text)
+                    }
+                    val needsImu = (state.onHud && state.inForeground) || state.recording
+                    if (needsImu) accelTracker.start() else accelTracker.stop()
+                    val idleInBackground = !(state.onHud && state.inForeground) && !state.recording && !explorerOpen
+                    engine?.setBackgroundIdleMode(idleInBackground)
                     if (!suppressAutoConnect && engine == null) {
                         reconnectTransport(st)
                     }
@@ -441,10 +478,23 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         activeEngineVehicleId = null
                     }
+                    LoggingForegroundService.stop(getApplication())
                     _fuelMetrics.value = null
                     _connectionState.value = ConnectionState.Disconnected
                     _pollingHz.value = 0
                 }
+            }
+        }
+
+        // Keep foreground notification text synchronized with live connection & recording status
+        viewModelScope.launch {
+            combine(_backgroundServiceActive, _connectionState, _isRecording, settings) { active, conn, rec, st ->
+                Triple(active, rec, conn to st.adapterDetailedEndpoint())
+            }.collect { (active, rec, pair) ->
+                if (!active) return@collect
+                val (conn, endpoint) = pair
+                val (title, text) = buildBackgroundNotificationText(conn, rec, endpoint)
+                LoggingForegroundService.updateIfRunning(getApplication(), title, text)
             }
         }
 
@@ -454,26 +504,41 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Visible page only polling set; background Run Recording uses separate non-blocking logger queue
+        // Visible HUD page polling set; lightweight keepalive set on Home/Background; Run Recording uses logger queue
         viewModelScope.launch {
-            combine(pagesWithWidgets, _visiblePageIndex, _isRecording, settings, _onHudScreen) { pages, pageIdx, recording, st, onHud ->
-                val visibleWidgets = if (onHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
+            combine(
+                pagesWithWidgets,
+                _visiblePageIndex,
+                _isRecording,
+                combine(_onHudScreen, _isAppInForeground, _backgroundServiceActive) { h, fg, svc -> Triple(h, fg, svc) },
+                settings
+            ) { pages, pageIdx, recording, flags, st ->
+                val (onHud, inForeground, serviceActive) = flags
+                val activeHud = onHud && inForeground
+                val visibleWidgets = if (activeHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
                 _chartKeys.value = visibleWidgets
                     .filter { it.displayType == WidgetDisplayType.CHART.name }
                     .map { it.sensorKey }
                     .toSet()
                 hasVisibleTimer0100 = visibleWidgets.any { it.sensorKey == "timer_0100" }
 
-                val visibleKeys = buildSet {
-                    visibleWidgets.forEach { widget ->
-                        add(widget.sensorKey)
-                        if (widget.sensorKey == "fuel_ctrl") add("kpl_road_avg")
+                val visibleKeys = when {
+                    explorerOpen -> ObdPidRegistry.standardPids.map { it.key }.toSet()
+                    activeHud -> buildSet {
+                        visibleWidgets.forEach { widget ->
+                            add(widget.sensorKey)
+                            if (widget.sensorKey == "fuel_ctrl") add("kpl_road_avg")
+                        }
                     }
+                    else -> BACKGROUND_KEEPALIVE_KEYS
                 }
                 val backgroundKeys = if (recording) RECORDING_EXTRA_KEYS else emptySet()
-                val needsHighFreqGps = recording || (onHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
-                if (onHud || recording) {
+                val needsGps = serviceActive && (activeHud || recording)
+                val needsHighFreqGps = recording || (activeHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
+                if (needsGps) {
                     locationTracker.startUpdates(highFrequency = needsHighFreqGps)
+                } else {
+                    locationTracker.stopUpdates()
                 }
                 visibleKeys to backgroundKeys
             }.collect { (visibleKeys, backgroundKeys) ->
@@ -539,6 +604,76 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setOnHudScreen(active: Boolean) {
         _onHudScreen.value = active
+        if (active && !_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        }
+    }
+
+    fun onAppForegrounded() {
+        _isAppInForeground.value = true
+        if (!_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        } else if (!LoggingForegroundService.isRunning) {
+            val (title, text) = buildBackgroundNotificationText(
+                connectionState = _connectionState.value,
+                isRecording = _isRecording.value,
+                endpoint = settings.value.adapterDetailedEndpoint()
+            )
+            LoggingForegroundService.start(getApplication(), title, text)
+        }
+    }
+
+    fun onAppBackgrounded() {
+        _isAppInForeground.value = false
+    }
+
+    fun onPermissionsUpdated() {
+        if (_backgroundServiceActive.value) {
+            val (title, text) = buildBackgroundNotificationText(
+                connectionState = _connectionState.value,
+                isRecording = _isRecording.value,
+                endpoint = settings.value.adapterDetailedEndpoint()
+            )
+            LoggingForegroundService.start(getApplication(), title, text)
+        }
+    }
+
+    fun resumeBackgroundService() {
+        _backgroundServiceActive.value = true
+        val (title, text) = buildBackgroundNotificationText(
+            connectionState = _connectionState.value,
+            isRecording = _isRecording.value,
+            endpoint = settings.value.adapterDetailedEndpoint()
+        )
+        LoggingForegroundService.start(getApplication(), title, text)
+    }
+
+    fun terminateBackgroundService() {
+        if (_isRecording.value) {
+            stopRecording()
+        }
+        _backgroundServiceActive.value = false
+        LoggingForegroundService.stop(getApplication())
+    }
+
+    private fun buildBackgroundNotificationText(
+        connectionState: ConnectionState,
+        isRecording: Boolean,
+        endpoint: String
+    ): Pair<String, String> {
+        val title = if (isRecording) {
+            "ApexOBD · Recording & Listening"
+        } else {
+            "ApexOBD Background Listener"
+        }
+        val stateText = when (connectionState) {
+            is ConnectionState.Connected -> "Connected ($endpoint)"
+            is ConnectionState.Connecting -> "Connecting to $endpoint"
+            is ConnectionState.Reconnecting -> "Reconnecting #${connectionState.attempt} ($endpoint)"
+            is ConnectionState.Disconnected -> "Listener active ($endpoint)"
+        }
+        val body = "$stateText · Active in background · Tap to stop"
+        return title to body
     }
 
     fun setVisiblePageIndex(index: Int) {
@@ -547,6 +682,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun forceConnectAndDiscoverForExplorer() {
         explorerOpen = true
+        if (!_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        }
         if (_deepScanRunning.value) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -571,6 +709,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     _explorerStatus.value = null
                 }
                 val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
+                engine?.setBackgroundIdleMode(false)
                 engine?.setActiveSensors(explorerKeys)
             } catch (e: CancellationException) {
                 throw e
@@ -582,7 +721,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreVisibleCanvasPolling() {
         explorerOpen = false
-        if (!_onHudScreen.value && !_isRecording.value) {
+        if (!_backgroundServiceActive.value) {
             viewModelScope.launch {
                 transportMutex.withLock {
                     engineCollectorsJob?.cancel()
@@ -592,10 +731,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 _connectionState.value = ConnectionState.Disconnected
                 _pollingHz.value = 0
             }
-        } else {
-            val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
-            engine?.setActiveSensors(visible.map { it.sensorKey }.toSet())
+            return
         }
+        val activeHud = _onHudScreen.value && _isAppInForeground.value
+        val nextKeys = if (activeHud) {
+            pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+                .map { it.sensorKey }.toSet()
+        } else {
+            BACKGROUND_KEEPALIVE_KEYS
+        }
+        engine?.setBackgroundIdleMode(!activeHud && !_isRecording.value)
+        engine?.setActiveSensors(nextKeys)
     }
 
     fun runDeepEcuDump(host: String = settings.value.wifiHost, port: Int = settings.value.wifiPort) {
@@ -645,10 +791,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 wifiHost = host,
                 wifiPort = port
             )
-            if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(nextSettings)
-            } else if (explorerOpen) {
+            if (explorerOpen) {
                 forceConnectAndDiscoverForExplorer()
+            } else if (_backgroundServiceActive.value) {
+                reconnectTransport(nextSettings)
             }
         }
     }
@@ -717,8 +863,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         )
         engine = newEngine
 
-        val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
-        newEngine.setActiveSensors(visible.map { it.sensorKey }.toSet())
+        val activeHud = _onHudScreen.value && _isAppInForeground.value
+        val initialKeys = when {
+            explorerOpen -> ObdPidRegistry.standardPids.map { it.key }.toSet()
+            activeHud -> pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+                .map { it.sensorKey }.toSet()
+            else -> BACKGROUND_KEEPALIVE_KEYS
+        }
+        newEngine.setBackgroundIdleMode(!activeHud && !_isRecording.value && !explorerOpen)
+        newEngine.setActiveSensors(initialKeys)
         newEngine.setBackgroundRecordKeys(if (_isRecording.value) RECORDING_EXTRA_KEYS else emptySet())
 
         engineCollectorsJob = viewModelScope.launch {
@@ -861,7 +1014,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 _diagnosticError.value = "Diagnostic scan failed: ${t.message ?: "adapter disconnected"}"
             } finally {
                 _diagnosticScanning.value = false
-                if (!_onHudScreen.value && !_isRecording.value && _connectionState.value !is ConnectionState.Connected) {
+                if (!_backgroundServiceActive.value && !_isRecording.value && _connectionState.value !is ConnectionState.Connected) {
                     transportMutex.withLock {
                         engineCollectorsJob?.cancel()
                         engine?.stop()
@@ -917,7 +1070,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         locationTracker.clearTrail()
         _isRecordingPaused.value = false
         _isRecording.value = true
-        LoggingForegroundService.start(getApplication())
+        if (!_backgroundServiceActive.value) {
+            _backgroundServiceActive.value = true
+        }
+        val (title, text) = buildBackgroundNotificationText(
+            connectionState = _connectionState.value,
+            isRecording = true,
+            endpoint = settings.value.adapterDetailedEndpoint()
+        )
+        LoggingForegroundService.start(getApplication(), title, text)
 
         loggingJob = viewModelScope.launch(Dispatchers.IO) {
             val vehicleId = activeVehicle.value?.id ?: 1L
@@ -1097,7 +1258,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private fun stopRecording() {
         _isRecording.value = false
         _isRecordingPaused.value = false
-        LoggingForegroundService.stop(getApplication())
+        if (!_backgroundServiceActive.value) {
+            LoggingForegroundService.stop(getApplication())
+        }
         activeSessionId = null
     }
 
@@ -1645,7 +1808,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val prev = settings.value
             prefs.setConnectionType(type)
             val next = prev.copy(connectionType = type)
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1660,7 +1825,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 btDeviceAddress = candidate.address,
                 btDeviceName = candidate.name
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1675,7 +1842,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 bleDeviceAddress = candidate.address,
                 bleDeviceName = candidate.name
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1690,7 +1859,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 usbDeviceId = deviceId,
                 usbBaudRate = baudRate
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1707,15 +1878,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             prefs.updateWifiEndpoint(host, port)
             prefs.setConnectionType(ObdConnectionType.WIFI_TCP)
             prefs.setDualCellularKeepalive(dualCell)
-            if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(
-                    settings.value.copy(
-                        connectionType = ObdConnectionType.WIFI_TCP,
-                        wifiHost = host,
-                        wifiPort = port,
-                        dualCellularKeepalive = dualCell
-                    )
-                )
+            val next = settings.value.copy(
+                connectionType = ObdConnectionType.WIFI_TCP,
+                wifiHost = host,
+                wifiPort = port,
+                dualCellularKeepalive = dualCell
+            )
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
+                reconnectTransport(next)
             }
         }
     }
@@ -1813,14 +1985,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addManualCustomPid(name: String, modePidHex: String, formula: String, unit: String) {
+    fun addManualCustomPid(name: String, modePidHex: String, formula: String, unit: String, headerHex: String? = null) {
         val clean = modePidHex.replace(" ", "").uppercase()
+        val cleanHeader = headerHex?.replace(" ", "")?.uppercase()?.takeIf { it.isNotBlank() }
         if (name.isBlank() || clean.length < 4 || formula.isBlank()) return
         val key = "custom_${clean.lowercase()}"
         viewModelScope.launch {
             customPidDao.upsertAll(
                 listOf(
-                    CustomPidEntity(key, name.trim(), name.trim().take(10), clean, formula.trim(), 0.0, 200.0, unit.trim())
+                    CustomPidEntity(key, name.trim(), name.trim().take(10), clean, formula.trim(), 0.0, 200.0, unit.trim(), cleanHeader)
                 )
             )
         }
@@ -1878,6 +2051,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 customPids.value.forEach { add(it.key) }
                 addAll(listOf("gps_speed", "accel_g"))
             }
+            engine?.setBackgroundIdleMode(false)
             engine?.setActiveSensors(allKeys)
         } else {
             restoreVisibleCanvasPolling()
@@ -2007,6 +2181,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        LoggingForegroundService.setTerminateListener(null)
+        LoggingForegroundService.stop(getApplication())
         accelTracker.stop()
         locationTracker.dispose()
         wifiBinder.unregister()
@@ -2016,7 +2192,19 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private data class BackgroundLifecycleState(
+        val serviceActive: Boolean,
+        val onHud: Boolean,
+        val recording: Boolean,
+        val inForeground: Boolean,
+        val settings: UserSettings
+    )
+
     companion object {
+        private val BACKGROUND_KEEPALIVE_KEYS = setOf(
+            "rpm", "obd_speed", "rel_throttle", "engine_load", "coolant", "voltage", "kpl_road_avg"
+        )
+
         private val RECORDING_EXTRA_KEYS = setOf(
             "rpm", "obd_speed", "throttle", "rel_throttle", "maf", "map",
             "iat", "baro", "engine_load", "stft_b1", "ltft_b1",

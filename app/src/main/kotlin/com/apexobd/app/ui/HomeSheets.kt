@@ -138,6 +138,7 @@ import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.model.VolumeUnit
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.GaugeSmoothingMode
+import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.scheduler.PollingProfile
@@ -1601,7 +1602,7 @@ fun EcuPidsSheet(
     hasEcuDump: Boolean = false,
     onDiscoverExplorer: () -> Unit,
     onStopExplorer: () -> Unit,
-    onAddCustomPid: (name: String, hex: String, formula: String, unit: String) -> Unit,
+    onAddCustomPid: (name: String, hex: String, formula: String, unit: String, headerHex: String?) -> Unit,
     onImportCsv: (String) -> Unit,
     onRunDeepDump: () -> Unit,
     onShareDeepDump: () -> Unit = {},
@@ -1609,6 +1610,7 @@ fun EcuPidsSheet(
 ) {
     var name by remember { mutableStateOf("") }
     var hex by remember { mutableStateOf("") }
+    var headerHex by remember { mutableStateOf("") }
     var formula by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("") }
     var csvText by remember { mutableStateOf("") }
@@ -1680,8 +1682,9 @@ fun EcuPidsSheet(
             Spacer(Modifier.height(6.dp))
             Text("Add Custom / UDS Mode 21–22 PID", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TorqueEvoColors.TextPrimary)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(value = hex, onValueChange = { hex = it }, label = { Text("Mode/PID e.g. 221E1C") }, singleLine = true, modifier = Modifier.weight(1f))
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.weight(1.1f))
+                OutlinedTextField(value = hex, onValueChange = { hex = it }, label = { Text("Mode/PID e.g. 2129") }, singleLine = true, modifier = Modifier.weight(0.95f))
+                OutlinedTextField(value = headerHex, onValueChange = { headerHex = it }, label = { Text("Hdr (7C0)") }, singleLine = true, modifier = Modifier.weight(0.65f))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(value = formula, onValueChange = { formula = it }, label = { Text("Formula e.g. (A*256+B)/10") }, singleLine = true, modifier = Modifier.weight(1.4f))
@@ -1689,8 +1692,8 @@ fun EcuPidsSheet(
             }
             Button(
                 onClick = {
-                    onAddCustomPid(name, hex, formula, unit)
-                    name = ""; hex = ""; formula = ""; unit = ""
+                    onAddCustomPid(name, hex, formula, unit, headerHex.ifBlank { null })
+                    name = ""; hex = ""; headerHex = ""; formula = ""; unit = ""
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Add Custom PID") }
@@ -1715,6 +1718,8 @@ fun EcuPidsSheet(
 @Composable
 fun AdapterConnectionSheet(
     settings: UserSettings,
+    connectionState: ConnectionState,
+    backgroundServiceActive: Boolean,
     btPairedDevices: List<BtDeviceCandidate>,
     bleScannedDevices: List<BtDeviceCandidate>,
     bleScanning: Boolean,
@@ -1727,6 +1732,8 @@ fun AdapterConnectionSheet(
     onSelectBleDevice: (BtDeviceCandidate) -> Unit,
     onSelectUsbDevice: (deviceId: Int, baudRate: Int) -> Unit,
     onRequestUsbPermission: (Int) -> Unit,
+    onResumeBackgroundService: () -> Unit,
+    onTerminateBackgroundService: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var host by remember(settings.wifiHost) { mutableStateOf(settings.wifiHost) }
@@ -1737,8 +1744,70 @@ fun AdapterConnectionSheet(
 
     LaunchedEffect(Unit) { onRefreshLocalAdapters() }
 
+    val statusColor = when (connectionState) {
+        is ConnectionState.Connected -> TorqueEvoColors.NominalGreen
+        is ConnectionState.Connecting -> TorqueEvoColors.ElectricBlue
+        is ConnectionState.Reconnecting -> TorqueEvoColors.WarnAmber
+        is ConnectionState.Disconnected -> if (backgroundServiceActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.CriticalRed
+    }
+    val statusText = when (connectionState) {
+        is ConnectionState.Connected -> "Connected · ${connectionState.handshake.protocolName}"
+        is ConnectionState.Connecting -> "Connecting to ${settings.adapterDetailedEndpoint()}..."
+        is ConnectionState.Reconnecting -> "Reconnecting (#${connectionState.attempt}) · ${settings.adapterDetailedEndpoint()}"
+        is ConnectionState.Disconnected -> if (backgroundServiceActive) "Starting background listener..." else "Background listener stopped"
+    }
+
     ApexLockedSheet(onBackRequest = onDismiss) {
         ApexSheetHeader(title = "OBD2 Adapter Connection", onClose = onDismiss)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(TorqueEvoColors.CardSurface)
+                .border(1.dp, statusColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(statusColor)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = statusText,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary
+                )
+                Text(
+                    text = if (backgroundServiceActive) "Runs in background · Tap notification to stop" else "Tap Connect to start background listener",
+                    fontSize = 10.sp,
+                    color = TorqueEvoColors.TextSecondary
+                )
+            }
+            Text(
+                text = if (backgroundServiceActive) "Stop" else "Connect",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (backgroundServiceActive) TorqueEvoColors.CriticalRed else Color.Black,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(if (backgroundServiceActive) TorqueEvoColors.CriticalRed.copy(alpha = 0.14f) else TorqueEvoColors.ElectricBlue)
+                    .border(
+                        1.dp,
+                        if (backgroundServiceActive) TorqueEvoColors.CriticalRed.copy(alpha = 0.5f) else TorqueEvoColors.ElectricBlue,
+                        RoundedCornerShape(7.dp)
+                    )
+                    .clickable {
+                        if (backgroundServiceActive) onTerminateBackgroundService() else onResumeBackgroundService()
+                    }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+        }
 
         Text("Connection Mechanism", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import java.io.BufferedInputStream
+import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -103,18 +103,24 @@ class WifiTcpTransport(
     override val endpointLabel: String get() = "$host:$port"
 
     private var socket: Socket? = null
-    private var input: BufferedInputStream? = null
+    private var input: InputStream? = null
     private var output: OutputStream? = null
+    private val readBuffer = ByteArray(256)
+    private var currentSoTimeoutMs: Int = -1
 
     override suspend fun connect() = withContext(Dispatchers.IO) {
         disconnect()
         try {
             val s = socketFactoryProvider().createSocket()
+            runCatching { s.setPerformancePreferences(0, 2, 1) }
             s.tcpNoDelay = true
-            s.soTimeout = 150
+            s.keepAlive = true
+            runCatching { s.trafficClass = 0x10 } // IPTOS_LOWDELAY for WMM low-latency queuing
+            s.soTimeout = 200
+            currentSoTimeoutMs = 200
             s.connect(InetSocketAddress(host, port), connectTimeoutMs)
             socket = s
-            input = BufferedInputStream(s.getInputStream(), 2048)
+            input = s.getInputStream()
             output = s.getOutputStream()
             _isConnected.value = true
         } catch (t: Throwable) {
@@ -131,6 +137,7 @@ class WifiTcpTransport(
         input = null
         output = null
         socket = null
+        currentSoTimeoutMs = -1
     }
 
     override suspend fun sendCommand(command: String, timeoutMs: Long): String = withContext(Dispatchers.IO) {
@@ -139,8 +146,10 @@ class WifiTcpTransport(
         val sock = socket ?: throw TransportError.Disconnected("Socket not connected")
 
         try {
+            // Drain any stale buffered bytes in bulk before transmitting the next command
             while (inp.available() > 0) {
-                inp.read()
+                val toRead = inp.available().coerceAtMost(readBuffer.size)
+                if (inp.read(readBuffer, 0, toRead) <= 0) break
             }
             val payload = (command.trim() + "\r").toByteArray(Charsets.US_ASCII)
             out.write(payload)
@@ -150,16 +159,31 @@ class WifiTcpTransport(
             val deadline = System.currentTimeMillis() + timeoutMs
             while (true) {
                 val remaining = deadline - System.currentTimeMillis()
-                if (remaining <= 0L) throw TransportError.Timeout(command)
-                sock.soTimeout = remaining.coerceAtMost(250L).toInt().coerceAtLeast(20)
-                try {
-                    val b = inp.read()
-                    if (b == -1) throw TransportError.Disconnected("Remote adapter closed socket")
-                    val ch = b.toChar()
-                    if (ch == '>') {
-                        return@withContext sb.toString()
+                if (remaining <= 0L) {
+                    // Best-effort carriage return resync so ELM327 returns to '>' prompt on next command
+                    runCatching {
+                        out.write('\r'.code)
+                        out.flush()
                     }
-                    sb.append(ch)
+                    throw TransportError.Timeout(command)
+                }
+                val desiredSoTimeout = remaining.coerceAtMost(200L).toInt().coerceAtLeast(25)
+                if (desiredSoTimeout != currentSoTimeoutMs) {
+                    sock.soTimeout = desiredSoTimeout
+                    currentSoTimeoutMs = desiredSoTimeout
+                }
+                try {
+                    val count = inp.read(readBuffer)
+                    if (count == -1) throw TransportError.Disconnected("Remote adapter closed socket")
+                    for (i in 0 until count) {
+                        val raw = readBuffer[i].toInt() and 0xFF
+                        if (raw == 0) continue
+                        val ch = raw.toChar()
+                        if (ch == '>') {
+                            return@withContext sb.toString()
+                        }
+                        sb.append(ch)
+                    }
                 } catch (_: SocketTimeoutException) {
                     // Loop checks deadline cleanly without spin-sleeping
                 }

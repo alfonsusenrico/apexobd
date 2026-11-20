@@ -350,6 +350,8 @@ class EngineAndPerformanceTest {
             scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
 
             assertTrue("Expected ATCAF1 during init in $cmds", "ATCAF1" in cmds)
+            assertTrue("Expected reliable ATAT1 during init in $cmds", "ATAT1" in cmds)
+            assertFalse("Expected ATAT2 removed to prevent ELM327 v1.5 NO DATA drops", "ATAT2" in cmds)
             val pack1Count = cmds.count { it == "010C451" }
             val pack2Count = cmds.count { it == "01040D1" }
             val voltCount = cmds.count { it == "01421" }
@@ -360,5 +362,103 @@ class EngineAndPerformanceTest {
             assertTrue((snap["engine_load"] ?: 0.0) > 20.0)
             assertTrue((snap["voltage"] ?: 0.0) > 12.0)
         }
+    }
+
+    @Test
+    fun `custom PID with headerHex switches CAN header to 7C0, decodes Mode 21 fuel level, and restores 7DF`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val meterTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "meter-7c0-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    return when {
+                        cmd == "ATZ" -> "ELM327 v1.5\r"
+                        cmd.startsWith("AT") && cmd != "ATDP" && cmd != "ATDPN" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        cmd == "0100" -> "41 00 18 18 00 00\r" // 04, 05, 0C, 0D
+                        cmd == "2129" -> "61 29 4A\r" // 0x4A = 74 -> 74 * 0.5 = 37.0 L
+                        cmd.startsWith("010C") -> "41 0C 0D 3E\r"
+                        cmd.startsWith("010D") -> "41 0D 28\r"
+                        cmd.startsWith("0104") -> "41 04 59\r"
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(meterTransport, scope)
+            engine.setCustomPids(
+                listOf(
+                    com.apexobd.core.formula.CustomPidDefinition(
+                        key = "custom_meter_fuel",
+                        name = "Cluster Fuel Level",
+                        shortName = "Fuel7C0",
+                        modeAndPidHex = "2129",
+                        formula = "A*0.5",
+                        minValue = 0.0,
+                        maxValue = 50.0,
+                        unit = "L",
+                        headerHex = "7C0"
+                    )
+                )
+            )
+            engine.setActiveSensors(setOf("rpm", "custom_meter_fuel"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(140L)
+            val snap = engine.liveValues.value
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            assertTrue("Expected ATSH7C0 in $cmds", "ATSH7C0" in cmds)
+            assertTrue("Expected ATCRA7C8 in $cmds", "ATCRA7C8" in cmds)
+            assertTrue("Expected 2129 in $cmds", "2129" in cmds)
+            assertTrue("Expected ATCRA restore in $cmds", "ATCRA" in cmds)
+            assertTrue("Expected ATSH7DF restore in $cmds", "ATSH7DF" in cmds)
+            assertEquals(37.0, snap["custom_meter_fuel"] ?: -1.0, 0.01)
+        }
+    }
+
+    @Test
+    fun `EcuDiscoveryDumper probes 7C0 combination meter, walks 7E0 Mode 21 bitmasks, and restores 7DF`() = runTest {
+        val cmds = mutableListOf<String>()
+        val mockTransport = object : ObdTransport {
+            private val _connected = MutableStateFlow(true)
+            override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+            override val endpointLabel: String = "deep-scan-7c0"
+            override suspend fun connect() { _connected.value = true }
+            override suspend fun disconnect() { _connected.value = false }
+            override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                val cmd = command.trim()
+                cmds += cmd
+                return when (cmd) {
+                    "ATZ" -> "ELM327 v1.5\r"
+                    "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                    "ATDPN" -> "A6\r"
+                    "0100" -> "41 00 18 00 00 00\r"
+                    "2100" -> "61 00 80 00 00 00\r"
+                    "2129" -> "61 29 50\r"
+                    else -> if (cmd.startsWith("AT")) "OK\r" else "NO DATA\r"
+                }
+            }
+        }
+        val report = com.apexobd.core.protocol.EcuDiscoveryDumper.runFullReadOnlyScan(mockTransport)
+        assertTrue("Expected 7C0 header probe in $cmds", "ATSH7C0" in cmds)
+        assertTrue("Expected 7C8 reply filter in $cmds", "ATCRA7C8" in cmds)
+        assertTrue("Expected 750 body probe in $cmds", "ATSH750" in cmds)
+        assertEquals("ATSH7DF", cmds.last())
+        assertTrue(report.contains("COMBINATION METER 7C0"))
+        assertTrue(report.contains("7C0 2129 -> 61 29 50"))
     }
 }

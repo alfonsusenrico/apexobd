@@ -12,4 +12,4 @@ Android-only OBD-II HUD, diagnostics, data logging, and GPS trip tracking applic
 ## Rules
 - Keep `PROJECT_STATE.md` and `JOURNAL.md` local and untracked.
 - Default to free MapLibre offline/vector maps (`OpenFreeMap` + `.pmtiles`) and `OLED Track Only` mode with zero Google Maps API keys or external navigation dependencies.
-- Keep the 2-page architecture: Page 1 static/summary Home Menu (no live polling while idle on Home) and Page 2 zero-navigation-chrome `#000000` blank-default HUD Canvas (`HorizontalPager` with hold-tap context and component edit menus).
+- Keep the 2-page architecture: Page 1 summary Home Menu and Page 2 zero-navigation-chrome `#000000` blank-default HUD Canvas (`VerticalPager` with hold-tap context and component edit menus). Keep the OBD-II adapter listener connected continuously via the persistent foreground background service whenever the app is opened (showing an ongoing notification that terminates the background service when tapped).

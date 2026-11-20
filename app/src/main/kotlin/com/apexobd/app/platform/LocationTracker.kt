@@ -6,7 +6,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Bundle
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
@@ -49,6 +51,8 @@ class LocationTracker(context: Context) {
     private var trailWasSimulated = false
     private var simTick = 0.0
     private var updatesRunning = false
+    private var usingPureGnss = false
+    private var preferPureGnss = false
     private var lastHighFrequency = true
     private var currentIntervalMs = 500L
     private var lastGradeLoc: Location? = null
@@ -56,6 +60,23 @@ class LocationTracker(context: Context) {
     private var prevBearingLoc: Location? = null
     private var lastValidBearingDeg = 0f
     private var receiverRegistered = false
+
+    private val gnssListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            processLocation(location)
+        }
+
+        override fun onProviderEnabled(provider: String) {
+            refreshLocationEnabledState()
+        }
+
+        override fun onProviderDisabled(provider: String) {
+            refreshLocationEnabledState()
+        }
+
+        @Deprecated("Deprecated in Android Q")
+        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+    }
 
     private val providerReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -150,8 +171,33 @@ class LocationTracker(context: Context) {
         )
     }
 
+    /**
+     * When connected to a Wi-Fi OBD adapter, prefer hardware GNSS ([LocationManager.GPS_PROVIDER])
+     * over Google Play Services FusedLocationProvider so NLP Wi-Fi assist scans do not pull the
+     * phone's single Wi-Fi radio off-channel and stall OBD TCP frames.
+     */
+    fun setPreferPureGnss(prefer: Boolean) {
+        if (preferPureGnss == prefer) return
+        preferPureGnss = prefer
+        if (updatesRunning) {
+            val high = lastHighFrequency
+            stopUpdates()
+            startUpdates(highFrequency = high)
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun requestImmediateFix() {
+        if (preferPureGnss && runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)) {
+            runCatching {
+                locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { loc ->
+                    if (System.currentTimeMillis() - loc.time <= 60_000L) {
+                        processLocation(loc)
+                    }
+                }
+            }
+            return
+        }
         runCatching {
             client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
                 .addOnSuccessListener { loc ->
@@ -182,11 +228,34 @@ class LocationTracker(context: Context) {
         registerProviderReceiver()
         _isGpsEnabled.value = readSystemLocationEnabled()
         val desiredInterval = if (highFrequency) 350L else 1500L
+        val wantPureGnss = preferPureGnss &&
+            runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)
         lastHighFrequency = highFrequency
-        if (updatesRunning && currentIntervalMs == desiredInterval) return
+        if (updatesRunning && currentIntervalMs == desiredInterval && usingPureGnss == wantPureGnss) return
         stopUpdates()
 
         currentIntervalMs = desiredInterval
+        if (wantPureGnss) {
+            val startedGnss = runCatching {
+                locationManager.requestLocationUpdates(
+                    LocationManager.GPS_PROVIDER,
+                    desiredInterval,
+                    if (highFrequency) 0.5f else 3f,
+                    gnssListener,
+                    Looper.getMainLooper()
+                )
+                true
+            }.getOrDefault(false)
+            if (startedGnss) {
+                updatesRunning = true
+                usingPureGnss = true
+                if (_isGpsEnabled.value) {
+                    requestImmediateFix()
+                }
+                return
+            }
+        }
+
         val priority = if (highFrequency) Priority.PRIORITY_HIGH_ACCURACY else Priority.PRIORITY_BALANCED_POWER_ACCURACY
         val req = LocationRequest.Builder(priority, desiredInterval)
             .setMinUpdateIntervalMillis(if (highFrequency) 180L else 750L)
@@ -195,6 +264,7 @@ class LocationTracker(context: Context) {
         runCatching {
             client.requestLocationUpdates(req, callback, Looper.getMainLooper())
             updatesRunning = true
+            usingPureGnss = false
             if (_isGpsEnabled.value) {
                 requestImmediateFix()
             }
@@ -203,8 +273,13 @@ class LocationTracker(context: Context) {
 
     fun stopUpdates() {
         if (!updatesRunning) return
-        runCatching { client.removeLocationUpdates(callback) }
+        if (usingPureGnss) {
+            runCatching { locationManager.removeUpdates(gnssListener) }
+        } else {
+            runCatching { client.removeLocationUpdates(callback) }
+        }
         updatesRunning = false
+        usingPureGnss = false
     }
 
     fun dispose() {

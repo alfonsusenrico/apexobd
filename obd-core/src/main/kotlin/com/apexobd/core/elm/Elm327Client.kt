@@ -41,7 +41,9 @@ class Elm327Client(
             "ATL0",   // Linefeeds off
             "ATS0",   // Spaces off (cuts Wi-Fi/UART payload bytes)
             "ATCAF1", // Guarantee ISO-TP CAN automatic formatting stays enabled
-            if (aggressiveTiming) "ATAT2" else "ATAT1",
+            // Use reliable ATAT1 everywhere: CAN single-frame queries already terminate immediately
+            // via the trailing '1' response-count hint, whereas ATAT2 causes premature NO DATA drops on ELM327 v1.5 clones.
+            "ATAT1",
             "ATSP0"   // Auto-detect vehicle protocol
         )
         for (at in initCommands) {

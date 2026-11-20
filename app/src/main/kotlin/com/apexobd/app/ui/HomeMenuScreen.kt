@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -72,6 +73,7 @@ import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
 import com.apexobd.core.protocol.FuelEconomyTracker
+import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.transport.ObdConnectionType
 import java.io.File
 import java.text.SimpleDateFormat
@@ -110,6 +112,8 @@ fun HomeMenuScreen(
     val bleScanning by viewModel.bleScanning.collectAsStateWithLifecycle()
     val usbDevices by viewModel.usbDevices.collectAsStateWithLifecycle()
     val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val backgroundServiceActive by viewModel.backgroundServiceActive.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
     var startAddingNewVehicle by remember { mutableStateOf(false) }
@@ -184,7 +188,12 @@ fun HomeMenuScreen(
                 ObdConnectionType.BLUETOOTH_CLASSIC, ObdConnectionType.BLUETOOTH_LE -> Icons.Default.Bluetooth
                 ObdConnectionType.USB_SERIAL -> Icons.Default.Usb
             }
-            val adapterTint = TorqueEvoColors.ElectricBlue
+            val adapterTint = when (connectionState) {
+                is ConnectionState.Connected -> TorqueEvoColors.NominalGreen
+                is ConnectionState.Connecting -> TorqueEvoColors.ElectricBlue
+                is ConnectionState.Reconnecting -> TorqueEvoColors.WarnAmber
+                is ConnectionState.Disconnected -> if (backgroundServiceActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.CriticalRed
+            }
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -196,15 +205,21 @@ fun HomeMenuScreen(
                         Row(
                             modifier = Modifier
                                 .heightIn(min = 32.dp)
-                                .widthIn(max = 166.dp)
+                                .widthIn(max = 178.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(Color(0xFF101620))
-                                .border(1.dp, adapterTint.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                .border(1.dp, adapterTint.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
                                 .clickable { activeSheet = ActiveHomeSheet.ADAPTER }
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(adapterTint)
+                            )
                             Icon(adapterIcon, contentDescription = "OBD2 Adapter", tint = adapterTint, modifier = Modifier.size(13.dp))
                             Text(
                                 text = settings.adapterChipLabel(),
@@ -670,7 +685,7 @@ fun HomeMenuScreen(
             hasEcuDump = ecuDumpReady,
             onDiscoverExplorer = { viewModel.forceConnectAndDiscoverForExplorer() },
             onStopExplorer = { viewModel.restoreVisibleCanvasPolling() },
-            onAddCustomPid = { n, hex, form, u -> viewModel.addManualCustomPid(n, hex, form, u) },
+            onAddCustomPid = { n, hex, form, u, hdr -> viewModel.addManualCustomPid(n, hex, form, u, hdr) },
             onImportCsv = { viewModel.importTorqueCsv(it) },
             onRunDeepDump = { viewModel.runDeepEcuDump() },
             onShareDeepDump = { viewModel.shareEcuDump() },
@@ -678,6 +693,8 @@ fun HomeMenuScreen(
         )
         ActiveHomeSheet.ADAPTER -> AdapterConnectionSheet(
             settings = settings,
+            connectionState = connectionState,
+            backgroundServiceActive = backgroundServiceActive,
             btPairedDevices = btPairedDevices,
             bleScannedDevices = bleScannedDevices,
             bleScanning = bleScanning,
@@ -690,6 +707,8 @@ fun HomeMenuScreen(
             onSelectBleDevice = { viewModel.selectBleDevice(it) },
             onSelectUsbDevice = { id, baud -> viewModel.selectUsbDevice(id, baud) },
             onRequestUsbPermission = { viewModel.requestUsbAdapterPermission(it) },
+            onResumeBackgroundService = { viewModel.resumeBackgroundService() },
+            onTerminateBackgroundService = { viewModel.terminateBackgroundService() },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.SETTINGS -> SettingsSheet(
