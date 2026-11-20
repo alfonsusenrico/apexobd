@@ -63,11 +63,14 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -99,6 +102,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -117,11 +121,18 @@ import com.apexobd.app.ui.components.DataLoggerWidget
 import com.apexobd.app.ui.components.DigitalReadoutWidget
 import com.apexobd.app.ui.components.DtcCheckerWidget
 import com.apexobd.app.ui.components.FuelControlWidget
+import com.apexobd.app.ui.components.MetricAlertFrameOverlay
 import com.apexobd.app.ui.components.MiniMapWidget
 import com.apexobd.app.ui.components.PerfTimerWidget
+import com.apexobd.app.ui.components.RpmTachChronoWidget
+import com.apexobd.app.ui.components.RpmTachF1LedsWidget
+import com.apexobd.app.ui.components.RpmTachGtWidget
+import com.apexobd.app.ui.components.RpmTachHaloWidget
 import com.apexobd.app.ui.components.SegmentedBarGaugeWidget
 import com.apexobd.app.ui.components.SemiDigitalArcWidget
 import com.apexobd.app.ui.components.SparklineChartWidget
+import com.apexobd.app.ui.components.defaultAlertBelowForSensor
+import com.apexobd.app.ui.components.isRpmSensorKey
 import com.apexobd.app.ui.theme.LocalHudVisualStyle
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.app.ui.theme.hudCanvasBackdrop
@@ -244,6 +255,7 @@ fun HudCanvasScreen(
     val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
     val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
     val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
@@ -537,18 +549,45 @@ fun HudCanvasScreen(
             }
         }
 
-        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Drag & Drop, Remove)
+        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Optional Shift/Warning Thresholds, Drag & Drop, Remove)
         val editingPage = pages.getOrNull(pagerState.currentPage)
         val editingWidget = editingWidgetId?.let { targetId ->
             editingPage?.widgets?.firstOrNull { it.id == targetId }
         }
         if (editingWidget != null && editingPage != null) {
+            val editMeta = viewModel.catalogItemFor(editingWidget.sensorKey)
+            val editUnitPrefs = settings.toUnitPreferences()
+            val editFuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            val editUnitLabel = if (editMeta.quantity == SensorQuantity.RAW) {
+                editMeta.unit
+            } else {
+                com.apexobd.core.model.UnitConverter.convert(0.0, editMeta.quantity, editUnitPrefs, editFuelType).second
+            }
+            val editWarnDisp = editingWidget.warnThreshold?.let {
+                viewModel.convertValueOnly(it, editMeta.quantity, editUnitPrefs, editFuelType)
+            }
+            val editCritDisp = editingWidget.critThreshold?.let {
+                viewModel.convertValueOnly(it, editMeta.quantity, editUnitPrefs, editFuelType)
+            }
             ComponentEditDialog(
                 widget = editingWidget,
-                widgetLabel = viewModel.catalogItemFor(editingWidget.sensorKey).label,
+                widgetLabel = editMeta.label,
+                unitLabel = editUnitLabel,
+                redlineRpm = activeVehicle?.redlineRpm ?: 7000,
+                initialWarnDisplay = editWarnDisp,
+                initialCritDisplay = editCritDisp,
                 gridScale = settings.hudGridScale,
                 onSelectDisplayType = { dt -> viewModel.updateWidgetDisplayType(editingWidget, dt) },
                 onResize = { c, r -> viewModel.updateWidgetSize(editingWidget, c, r) },
+                onUpdateThresholds = { warnDisp, critDisp, alertBelow ->
+                    val warnMetric = warnDisp?.let {
+                        viewModel.displayToInternalValue(it, editMeta.quantity, editUnitPrefs, editFuelType)
+                    }
+                    val critMetric = critDisp?.let {
+                        viewModel.displayToInternalValue(it, editMeta.quantity, editUnitPrefs, editFuelType)
+                    }
+                    viewModel.updateWidgetThresholds(editingWidget, warnMetric, critMetric, alertBelow)
+                },
                 onEnterMoveMode = {
                     editingWidgetId = null
                     selectedWidgetId = editingWidget.id
@@ -1387,25 +1426,84 @@ private fun RenderWidgetContent(
             val valueProvider: () -> Double? = remember(rawState, meta.quantity, unitPrefs, fuelType) {
                 { viewModel.convertValueOnly(rawState.value, meta.quantity, unitPrefs, fuelType) }
             }
+            val redlineRpm = activeVehicle?.redlineRpm ?: 7000
 
             when (type) {
-                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
-                WidgetDisplayType.CHART -> {
-                    val histState = viewModel.hudLiveValues.historyStateFor(widget.sensorKey)
-                    val convertedHist = remember(histState, meta.quantity, unitPrefs, fuelType) {
-                        androidx.compose.runtime.derivedStateOf {
-                            val list = histState.value
-                            if (meta.quantity == SensorQuantity.RAW) list
-                            else list.map { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) ?: it }
+                WidgetDisplayType.RPM_TACH_GT -> RpmTachGtWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_F1_LEDS -> RpmTachF1LedsWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_CHRONO -> RpmTachChronoWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_HALO -> RpmTachHaloWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                else -> {
+                    val overlayRadius = when (type) {
+                        WidgetDisplayType.ANALOG_DIAL, WidgetDisplayType.SEMI_DIGITAL -> 12.dp
+                        WidgetDisplayType.BAR, WidgetDisplayType.SEGMENTED_BAR -> 8.dp
+                        else -> 10.dp
+                    }
+                    MetricAlertFrameOverlay(
+                        valueProvider = valueProvider,
+                        warnThreshold = warnConv,
+                        critThreshold = critConv,
+                        alertBelow = widget.alertBelow,
+                        cornerRadiusDp = overlayRadius
+                    ) {
+                        when (type) {
+                            WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.BAR -> BarGaugeWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.CHART -> {
+                                val histState = viewModel.hudLiveValues.historyStateFor(widget.sensorKey)
+                                val convertedHist = remember(histState, meta.quantity, unitPrefs, fuelType) {
+                                    androidx.compose.runtime.derivedStateOf {
+                                        val list = histState.value
+                                        if (meta.quantity == SensorQuantity.RAW) list
+                                        else list.map { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) ?: it }
+                                    }
+                                }
+                                val historyProvider: () -> List<Double> = remember(convertedHist) { { convertedHist.value } }
+                                SparklineChartWidget(
+                                    meta.shortLabel, valueProvider, dispUnit, cMin, cMax, historyProvider,
+                                    sensorKey = widget.sensorKey,
+                                    warnThreshold = warnConv,
+                                    critThreshold = critConv,
+                                    alertBelow = widget.alertBelow
+                                )
+                            }
+                            else -> DigitalReadoutWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
                         }
                     }
-                    val historyProvider: () -> List<Double> = remember(convertedHist) { { convertedHist.value } }
-                    SparklineChartWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, historyProvider, sensorKey = widget.sensorKey)
                 }
-                else -> DigitalReadoutWidget(meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv, sensorKey = widget.sensorKey)
             }
         }
     }
@@ -1450,6 +1548,20 @@ private fun ContextMenuButton(
     )
 }
 
+private val RPM_DISPLAY_STYLE_OPTIONS = listOf(
+    WidgetDisplayType.RPM_TACH_GT to "GT Tach",
+    WidgetDisplayType.RPM_TACH_F1_LEDS to "F1 LEDs",
+    WidgetDisplayType.RPM_TACH_CHRONO to "Track Chrono",
+    WidgetDisplayType.RPM_TACH_HALO to "OLED Halo"
+)
+
+private val RPM_DEDICATED_TYPES = setOf(
+    WidgetDisplayType.RPM_TACH_GT,
+    WidgetDisplayType.RPM_TACH_F1_LEDS,
+    WidgetDisplayType.RPM_TACH_CHRONO,
+    WidgetDisplayType.RPM_TACH_HALO
+)
+
 private val DISPLAY_STYLE_OPTIONS = listOf(
     WidgetDisplayType.ANALOG_DIAL to "Radial",
     WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
@@ -1461,14 +1573,19 @@ private val DISPLAY_STYLE_OPTIONS = listOf(
 
 @Composable
 private fun VisualStyleChipsRow(
+    sensorKey: String,
     selectedType: WidgetDisplayType,
     onSelect: (WidgetDisplayType) -> Unit
 ) {
+    val options = remember(sensorKey) {
+        if (isRpmSensorKey(sensorKey)) RPM_DISPLAY_STYLE_OPTIONS + DISPLAY_STYLE_OPTIONS
+        else DISPLAY_STYLE_OPTIONS
+    }
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        DISPLAY_STYLE_OPTIONS.forEach { (dt, lbl) ->
+        options.forEach { (dt, lbl) ->
             ApexFilterChip(
                 selected = selectedType == dt,
                 onClick = { onSelect(dt) },
@@ -1647,14 +1764,29 @@ private fun StepperBadge(symbol: String, enabled: Boolean, onClick: () -> Unit) 
     }
 }
 
+private fun formatThresholdInput(value: Double?): String {
+    if (value == null || !value.isFinite()) return ""
+    val rounded = value.roundToInt().toDouble()
+    return if (kotlin.math.abs(value - rounded) < 0.005) {
+        value.roundToInt().toString()
+    } else {
+        "%.2f".format(value).trimEnd('0').trimEnd('.')
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ComponentEditDialog(
     widget: HudWidgetEntity,
     widgetLabel: String,
+    unitLabel: String,
+    redlineRpm: Int,
+    initialWarnDisplay: Double?,
+    initialCritDisplay: Double?,
     gridScale: HudGridScale,
     onSelectDisplayType: (WidgetDisplayType) -> Unit,
     onResize: (Int, Int) -> Unit,
+    onUpdateThresholds: (warnDisplay: Double?, critDisplay: Double?, alertBelow: Boolean) -> Unit,
     onEnterMoveMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
     onRemove: () -> Unit,
@@ -1662,8 +1794,36 @@ private fun ComponentEditDialog(
 ) {
     val currentType = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
     val canStyle = !isFixedLayoutSpecialWidget(widget.sensorKey)
+    val isRpm = isRpmSensorKey(widget.sensorKey)
     val safeCols = widget.spanCols.coerceIn(1, gridScale.cols)
     val safeRows = widget.spanRows.coerceIn(1, gridScale.rows)
+
+    val defaultBelow = remember(widget.sensorKey) { defaultAlertBelowForSensor(widget.sensorKey) }
+    val effectiveInitialBelow = if (initialWarnDisplay == null && initialCritDisplay == null) {
+        defaultBelow
+    } else {
+        widget.alertBelow
+    }
+
+    var alertBelowState by remember(widget.id, widget.alertBelow, initialWarnDisplay, initialCritDisplay) {
+        mutableStateOf(effectiveInitialBelow)
+    }
+    var warnText by remember(widget.id, initialWarnDisplay) {
+        mutableStateOf(formatThresholdInput(initialWarnDisplay))
+    }
+    var critText by remember(widget.id, initialCritDisplay) {
+        mutableStateOf(formatThresholdInput(initialCritDisplay))
+    }
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = TorqueEvoColors.ElectricBlue,
+        unfocusedBorderColor = TorqueEvoColors.SubtleBorder,
+        focusedTextColor = TorqueEvoColors.TextPrimary,
+        unfocusedTextColor = TorqueEvoColors.TextPrimary,
+        focusedLabelColor = TorqueEvoColors.ElectricBlue,
+        unfocusedLabelColor = TorqueEvoColors.TextSecondary,
+        cursorColor = TorqueEvoColors.ElectricBlue
+    )
 
     Box(
         modifier = Modifier
@@ -1676,9 +1836,9 @@ private fun ComponentEditDialog(
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 560.dp)
+                .widthIn(max = 580.dp)
                 .fillMaxWidth()
-                .heightIn(max = 355.dp)
+                .heightIn(max = 390.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(Color(0xFF0E1116))
                 .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
@@ -1734,7 +1894,11 @@ private fun ComponentEditDialog(
             if (canStyle) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Display Type", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                    VisualStyleChipsRow(selectedType = currentType, onSelect = onSelectDisplayType)
+                    VisualStyleChipsRow(
+                        sensorKey = widget.sensorKey,
+                        selectedType = currentType,
+                        onSelect = onSelectDisplayType
+                    )
                 }
             }
 
@@ -1752,6 +1916,201 @@ private fun ComponentEditDialog(
                     maxRows = gridScale.rows,
                     onSizeChange = onResize
                 )
+            }
+
+            if (canStyle) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(TorqueEvoColors.PureBlack)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    if (isRpm) {
+                        val activeShift = initialCritDisplay?.roundToInt()
+                        val redlineMinus500 = (redlineRpm - 500).coerceAtLeast(2500)
+                        val presets = remember(redlineMinus500) {
+                            listOf(4500, 5500, 6000, redlineMinus500).distinct().sorted()
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Shift Light Threshold (Optional)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextSecondary
+                            )
+                            Text(
+                                text = if (activeShift != null) "$activeShift RPM · Active" else "Off",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (activeShift != null) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextSecondary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ApexFilterChip(
+                                selected = activeShift == null,
+                                onClick = {
+                                    critText = ""
+                                    onUpdateThresholds(null, null, false)
+                                },
+                                label = "Off",
+                                compact = true
+                            )
+                            presets.forEach { preset ->
+                                val tag = if (preset == redlineMinus500) "$preset (Redline-500)" else "$preset"
+                                ApexFilterChip(
+                                    selected = activeShift == preset,
+                                    onClick = {
+                                        critText = preset.toString()
+                                        onUpdateThresholds(null, preset.toDouble(), false)
+                                    },
+                                    label = tag,
+                                    compact = true
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = critText,
+                                onValueChange = { next ->
+                                    if (next.length <= 6 && next.all { it.isDigit() }) critText = next
+                                },
+                                label = { Text("Custom Shift RPM", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            EditActionPill(
+                                label = "Apply",
+                                tint = Color(0xFF020810),
+                                bg = TorqueEvoColors.ElectricBlue
+                            ) {
+                                val parsed = critText.trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+                                onUpdateThresholds(null, parsed, false)
+                            }
+                        }
+                        Text(
+                            text = "Shift lamp scales Green (60%) → Yellow (80%) → Red Flash (100%) · Redline $redlineRpm RPM",
+                            fontSize = 10.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                    } else {
+                        val hasAlert = initialWarnDisplay != null || initialCritDisplay != null
+                        val unitSuffix = if (unitLabel.isNotBlank()) " ($unitLabel)" else ""
+                        val summaryText = if (!hasAlert) {
+                            "Off"
+                        } else {
+                            val dir = if (widget.alertBelow) "≤" else "≥"
+                            val parts = buildList {
+                                initialWarnDisplay?.let { add("W ${formatThresholdInput(it)}") }
+                                initialCritDisplay?.let { add("C ${formatThresholdInput(it)}") }
+                            }.joinToString(" · ")
+                            "$dir $parts${if (unitLabel.isNotBlank()) " $unitLabel" else ""}"
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Warning Threshold (Optional)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextSecondary
+                            )
+                            Text(
+                                text = summaryText,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (hasAlert) TorqueEvoColors.WarnAmber else TorqueEvoColors.TextSecondary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Trigger:", fontSize = 10.5.sp, color = TorqueEvoColors.TextSecondary)
+                            ApexFilterChip(
+                                selected = !alertBelowState,
+                                onClick = { alertBelowState = false },
+                                label = "Above (≥)",
+                                compact = true
+                            )
+                            ApexFilterChip(
+                                selected = alertBelowState,
+                                onClick = { alertBelowState = true },
+                                label = "Below (≤)",
+                                compact = true
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = warnText,
+                                onValueChange = { next ->
+                                    if (next.length <= 8 && next.all { it.isDigit() || it == '.' || it == '-' }) {
+                                        warnText = next
+                                    }
+                                },
+                                label = { Text("Warn$unitSuffix", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = critText,
+                                onValueChange = { next ->
+                                    if (next.length <= 8 && next.all { it.isDigit() || it == '.' || it == '-' }) {
+                                        critText = next
+                                    }
+                                },
+                                label = { Text("Critical$unitSuffix", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                EditActionPill(
+                                    label = "Apply",
+                                    tint = Color(0xFF020810),
+                                    bg = TorqueEvoColors.ElectricBlue
+                                ) {
+                                    val wVal = warnText.trim().toDoubleOrNull()
+                                    val cVal = critText.trim().toDoubleOrNull()
+                                    onUpdateThresholds(wVal, cVal, alertBelowState)
+                                }
+                                EditActionPill(
+                                    label = "Clear",
+                                    tint = TorqueEvoColors.TextSecondary
+                                ) {
+                                    warnText = ""
+                                    critText = ""
+                                    onUpdateThresholds(null, null, defaultBelow)
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             FlowRow(
@@ -1948,6 +2307,16 @@ private fun FullscreenComponentPickerDialog(
                                                             selectedRows = 1
                                                         }
                                                     }
+                                                } else if (isRpmSensorKey(item.key)) {
+                                                    if (selectedType !in RPM_DEDICATED_TYPES) {
+                                                        selectedType = WidgetDisplayType.RPM_TACH_GT
+                                                    }
+                                                    if (selectedRows < 2 && gridScale.rows >= 2) {
+                                                        selectedCols = 2.coerceIn(1, gridScale.cols)
+                                                        selectedRows = 2.coerceIn(1, gridScale.rows)
+                                                    }
+                                                } else if (selectedType in RPM_DEDICATED_TYPES) {
+                                                    selectedType = WidgetDisplayType.DIGITAL
                                                 }
                                             }
                                         } else Modifier
@@ -1980,7 +2349,11 @@ private fun FullscreenComponentPickerDialog(
                     if (!selectedItem.isSpecialWidget) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text("2. Component Visual", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                            VisualStyleChipsRow(selectedType = selectedType, onSelect = { selectedType = it })
+                            VisualStyleChipsRow(
+                                sensorKey = selectedItem.key,
+                                selectedType = selectedType,
+                                onSelect = { selectedType = it }
+                            )
                         }
                     } else {
                         Text(

@@ -151,19 +151,17 @@ private fun thresholdColor(
     warnThreshold: Double?,
     critThreshold: Double?,
     pct: Float,
-    baseAccent: Color = TorqueEvoColors.ElectricBlue
+    baseAccent: Color = TorqueEvoColors.ElectricBlue,
+    alertBelow: Boolean = false
 ): Color {
-    if (value != null && critThreshold != null) {
-        val crit = if (critThreshold < 12.5) value <= critThreshold else value >= critThreshold
-        if (crit) return TorqueEvoColors.CriticalRed
-    }
-    if (value != null && warnThreshold != null) {
-        val warn = if (warnThreshold < 12.5) value <= warnThreshold else value >= warnThreshold
-        if (warn) return TorqueEvoColors.WarnAmber
-    }
-    return when {
-        pct > 0.85f -> TorqueEvoColors.WarnAmber
-        else -> baseAccent
+    return when (evaluateMetricAlert(value, warnThreshold, critThreshold, alertBelow)) {
+        MetricAlertLevel.CRITICAL -> TorqueEvoColors.CriticalRed
+        MetricAlertLevel.WARN -> TorqueEvoColors.WarnAmber
+        MetricAlertLevel.NONE -> if (warnThreshold == null && critThreshold == null && pct > 0.85f) {
+            TorqueEvoColors.WarnAmber
+        } else {
+            baseAccent
+        }
     }
 }
 
@@ -210,28 +208,29 @@ private fun LiveDigitsRow(
     secondaryColor: Color,
     warnThreshold: Double? = null,
     critThreshold: Double? = null,
+    alertBelow: Boolean = false,
     tintRedOnCritical: Boolean = false,
     fixedDigitsSp: Float? = null,
     unitBottomPadding: Dp = 1.dp,
     gapDp: Dp = 2.5.dp,
     modifier: Modifier = Modifier
 ) {
-    val span = (max - min).coerceAtLeast(1.0)
     val displayUnit = remember(unit, sensorKey) { if (unit == "mm:ss") "" else unit }
     val displayVal by remember(valueProvider, unit, min, max, sensorKey) {
         derivedStateOf {
             formatTelemetryValueAndUnit(valueProvider(), unit, min, max, sensorKey).first
         }
     }
-    val isCritical by remember(valueProvider, warnThreshold, critThreshold, min, span, tintRedOnCritical) {
+    val alertLevel by remember(valueProvider, warnThreshold, critThreshold, alertBelow, tintRedOnCritical) {
         derivedStateOf {
-            if (!tintRedOnCritical) false
-            else {
-                val v = valueProvider()
-                val pct = v?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-                thresholdColor(v, warnThreshold, critThreshold, pct, TorqueEvoColors.ElectricBlue) == TorqueEvoColors.CriticalRed
-            }
+            if (!tintRedOnCritical) MetricAlertLevel.NONE
+            else evaluateMetricAlert(valueProvider(), warnThreshold, critThreshold, alertBelow)
         }
+    }
+    val digitColor = when (alertLevel) {
+        MetricAlertLevel.CRITICAL -> TorqueEvoColors.CriticalRed
+        MetricAlertLevel.WARN -> TorqueEvoColors.WarnAmber
+        MetricAlertLevel.NONE -> primaryColor
     }
     val valSp = fixedDigitsSp?.sp ?: remember(availWidthDp, displayVal, displayUnit, unitSp, minSp, maxSp) {
         fitDigitsFontSizeSp(
@@ -253,7 +252,7 @@ private fun LiveDigitsRow(
             text = displayVal,
             fontSize = valSp,
             fontWeight = FontWeight.Bold,
-            color = if (isCritical) TorqueEvoColors.CriticalRed else primaryColor,
+            color = digitColor,
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
             maxLines = 1,
             softWrap = false
@@ -282,7 +281,8 @@ fun AnalogDialWidget(
     warnThreshold: Double?,
     critThreshold: Double?,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -309,7 +309,7 @@ fun AnalogDialWidget(
         Canvas(modifier = Modifier.fillMaxSize().padding(4.dp)) {
             val curVal = valueProvider()
             val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow)
 
             val r = minOf(size.width / 2.12f, size.height / 1.72f)
             val c = Offset(size.width / 2f, size.height * 0.5f + r * 0.20f)
@@ -397,6 +397,10 @@ fun AnalogDialWidget(
             maxSp = maxValSp,
             primaryColor = palette.textPrimary,
             secondaryColor = palette.textSecondary,
+            warnThreshold = warnThreshold,
+            critThreshold = critThreshold,
+            alertBelow = alertBelow,
+            tintRedOnCritical = true,
             unitBottomPadding = 2.dp,
             gapDp = 3.dp,
             modifier = Modifier
@@ -416,7 +420,8 @@ fun SemiDigitalArcWidget(
     warnThreshold: Double?,
     critThreshold: Double?,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -439,7 +444,7 @@ fun SemiDigitalArcWidget(
         Canvas(modifier = Modifier.fillMaxSize().padding(top = 12.dp, bottom = 10.dp)) {
             val curVal = valueProvider()
             val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+            val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow)
 
             val d = minOf(size.width * 0.88f, size.height * 1.25f)
             val r = d / 2f
@@ -482,6 +487,10 @@ fun SemiDigitalArcWidget(
             fixedDigitsSp = 23f,
             primaryColor = palette.textPrimary,
             secondaryColor = palette.textSecondary,
+            warnThreshold = warnThreshold,
+            critThreshold = critThreshold,
+            alertBelow = alertBelow,
+            tintRedOnCritical = true,
             unitBottomPadding = 3.dp,
             gapDp = 3.dp,
             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp)
@@ -506,7 +515,8 @@ fun DigitalReadoutWidget(
     warnThreshold: Double?,
     critThreshold: Double?,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -559,7 +569,7 @@ fun DigitalReadoutWidget(
                         .drawBehind {
                             val curVal = valueProvider()
                             val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-                            drawCircle(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent))
+                            drawCircle(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow))
                         }
                 )
             }
@@ -578,6 +588,7 @@ fun DigitalReadoutWidget(
                 secondaryColor = palette.textSecondary,
                 warnThreshold = warnThreshold,
                 critThreshold = critThreshold,
+                alertBelow = alertBelow,
                 tintRedOnCritical = true,
                 unitBottomPadding = 2.dp,
                 gapDp = if (compact) 2.dp else 4.dp,
@@ -599,7 +610,8 @@ fun BarGaugeWidget(
     warnThreshold: Double?,
     critThreshold: Double?,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -623,7 +635,7 @@ fun BarGaugeWidget(
                     .drawBehind {
                         val curVal = valueProvider()
                         val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-                        drawRect(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent))
+                        drawRect(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow))
                     }
             )
             Column(
@@ -654,6 +666,10 @@ fun BarGaugeWidget(
                         maxSp = 21f,
                         primaryColor = palette.textPrimary,
                         secondaryColor = palette.textSecondary,
+                        warnThreshold = warnThreshold,
+                        critThreshold = critThreshold,
+                        alertBelow = alertBelow,
+                        tintRedOnCritical = true,
                         unitBottomPadding = 1.dp,
                         gapDp = 2.dp
                     )
@@ -687,6 +703,10 @@ fun BarGaugeWidget(
                             fixedDigitsSp = 20f,
                             primaryColor = palette.textPrimary,
                             secondaryColor = palette.textSecondary,
+                            warnThreshold = warnThreshold,
+                            critThreshold = critThreshold,
+                            alertBelow = alertBelow,
+                            tintRedOnCritical = true,
                             unitBottomPadding = 2.dp,
                             gapDp = 3.dp
                         )
@@ -704,7 +724,7 @@ fun BarGaugeWidget(
                     val curVal = valueProvider()
                     val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
                     if (pct > 0f) {
-                        val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent)
+                        val accent = thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow)
                         val fillW = size.width * pct
                         drawRoundRect(
                             brush = Brush.horizontalGradient(
@@ -760,7 +780,8 @@ fun SegmentedBarGaugeWidget(
     warnThreshold: Double?,
     critThreshold: Double?,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -802,7 +823,7 @@ fun SegmentedBarGaugeWidget(
                         val stripColor = if (!active) {
                             palette.dialTrack
                         } else {
-                            thresholdColor(curVal, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct))
+                            thresholdColor(curVal, warnThreshold, critThreshold, pct, segmentedSpectrumColor(pct), alertBelow = alertBelow)
                         }
                         drawRect(stripColor)
                     }
@@ -843,6 +864,7 @@ fun SegmentedBarGaugeWidget(
                         secondaryColor = palette.textSecondary,
                         warnThreshold = warnThreshold,
                         critThreshold = critThreshold,
+                        alertBelow = alertBelow,
                         tintRedOnCritical = true,
                         unitBottomPadding = 1.dp,
                         gapDp = 2.dp
@@ -932,7 +954,10 @@ fun SparklineChartWidget(
     max: Double,
     historyProvider: () -> List<Double>,
     modifier: Modifier = Modifier,
-    sensorKey: String = ""
+    sensorKey: String = "",
+    warnThreshold: Double? = null,
+    critThreshold: Double? = null,
+    alertBelow: Boolean = false
 ) {
     val palette = LocalHudVisualStyle.current
     val span = (max - min).coerceAtLeast(1.0)
@@ -979,6 +1004,10 @@ fun SparklineChartWidget(
                 fixedDigitsSp = 16f,
                 primaryColor = palette.textPrimary,
                 secondaryColor = palette.textSecondary,
+                warnThreshold = warnThreshold,
+                critThreshold = critThreshold,
+                alertBelow = alertBelow,
+                tintRedOnCritical = true,
                 unitBottomPadding = 1.dp,
                 gapDp = 3.dp
             )

@@ -1685,23 +1685,54 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cycleWidgetDisplayType(widget: HudWidgetEntity) {
-        val cycle = listOf(
-            WidgetDisplayType.ANALOG_DIAL,
-            WidgetDisplayType.SEMI_DIGITAL,
-            WidgetDisplayType.DIGITAL,
-            WidgetDisplayType.BAR,
-            WidgetDisplayType.SEGMENTED_BAR,
-            WidgetDisplayType.CHART
-        )
+        val cycle = if (com.apexobd.app.ui.components.isRpmSensorKey(widget.sensorKey)) {
+            listOf(
+                WidgetDisplayType.RPM_TACH_GT,
+                WidgetDisplayType.RPM_TACH_F1_LEDS,
+                WidgetDisplayType.RPM_TACH_CHRONO,
+                WidgetDisplayType.RPM_TACH_HALO,
+                WidgetDisplayType.ANALOG_DIAL,
+                WidgetDisplayType.SEMI_DIGITAL,
+                WidgetDisplayType.DIGITAL,
+                WidgetDisplayType.BAR,
+                WidgetDisplayType.SEGMENTED_BAR,
+                WidgetDisplayType.CHART
+            )
+        } else {
+            listOf(
+                WidgetDisplayType.ANALOG_DIAL,
+                WidgetDisplayType.SEMI_DIGITAL,
+                WidgetDisplayType.DIGITAL,
+                WidgetDisplayType.BAR,
+                WidgetDisplayType.SEGMENTED_BAR,
+                WidgetDisplayType.CHART
+            )
+        }
         val cur = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrNull() ?: return
         val idx = cycle.indexOf(cur)
-        if (idx == -1) return
-        val next = cycle[(idx + 1) % cycle.size]
+        val next = if (idx == -1) cycle.first() else cycle[(idx + 1) % cycle.size]
         updateWidgetDisplayType(widget, next)
     }
 
     fun updateWidgetDisplayType(widget: HudWidgetEntity, displayType: WidgetDisplayType) {
         viewModelScope.launch { hudDao.updateWidget(widget.copy(displayType = displayType.name)) }
+    }
+
+    fun updateWidgetThresholds(
+        widget: HudWidgetEntity,
+        warnMetric: Double?,
+        critMetric: Double?,
+        alertBelow: Boolean
+    ) {
+        viewModelScope.launch {
+            hudDao.updateWidget(
+                widget.copy(
+                    warnThreshold = warnMetric?.takeIf { it.isFinite() },
+                    critThreshold = critMetric?.takeIf { it.isFinite() },
+                    alertBelow = alertBelow
+                )
+            )
+        }
     }
 
     fun updateWidgetSize(widget: HudWidgetEntity, cols: Int, rows: Int) {
@@ -2171,6 +2202,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         if (valueMetric == null || quantity == SensorQuantity.RAW) return valueMetric
         return UnitConverter.convert(valueMetric, quantity, prefs, fuelType).first
     }
+
+    fun displayToInternalValue(
+        displayValue: Double,
+        quantity: SensorQuantity,
+        prefs: UnitPreferences,
+        fuelType: FuelType
+    ): Double = UnitConverter.toInternalMetric(displayValue, quantity, prefs, fuelType)
 
     fun convertForDisplay(valueMetric: Double?, quantity: SensorQuantity, rawFallbackUnit: String): Pair<Double?, String> {
         val prefs = settings.value.toUnitPreferences()

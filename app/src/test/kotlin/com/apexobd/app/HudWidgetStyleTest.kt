@@ -3,11 +3,30 @@ package com.apexobd.app
 import androidx.compose.ui.graphics.Color
 import com.apexobd.app.data.prefs.HudThemePreset
 import com.apexobd.app.ui.HudLiveValueStore
+import com.apexobd.app.ui.components.MetricAlertLevel
+import com.apexobd.app.ui.components.ShiftLampStage
+import com.apexobd.app.ui.components.computeShiftLampStage
+import com.apexobd.app.ui.components.defaultAlertBelowForSensor
+import com.apexobd.app.ui.components.evaluateMetricAlert
 import com.apexobd.app.ui.components.formatTelemetryValue
+import com.apexobd.app.ui.components.isRpmSensorKey
+import com.apexobd.app.ui.components.rpmDialMaxForRedline
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
 import com.apexobd.app.ui.theme.resolveHudVisualPalette
+import com.apexobd.core.model.AirflowUnit
+import com.apexobd.core.model.FuelEconomyUnit
+import com.apexobd.core.model.PowerUnit
+import com.apexobd.core.model.PressureUnit
+import com.apexobd.core.model.SensorQuantity
+import com.apexobd.core.model.SpeedUnit
+import com.apexobd.core.model.TempUnit
+import com.apexobd.core.model.TorqueUnit
+import com.apexobd.core.model.UnitConverter
+import com.apexobd.core.model.UnitPreferences
+import com.apexobd.core.model.VolumeUnit
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -88,5 +107,95 @@ class HudWidgetStyleTest {
         assertEquals(h1, coolantHistState.value)
         store.updateHistoryFrom(emptyMap())
         assertTrue(coolantHistState.value.isEmpty())
+    }
+
+    @Test
+    fun `computeShiftLampStage stays off unless configured and progresses green yellow red flash`() {
+        assertEquals(ShiftLampStage.OFF, computeShiftLampStage(6800.0, null, 6500))
+        assertEquals(ShiftLampStage.OFF, computeShiftLampStage(6800.0, 0.0, 6500))
+        assertEquals(ShiftLampStage.OFF, computeShiftLampStage(null, 6000.0, 6500))
+
+        // Trigger = min(6000, 6500) = 6000 -> 60% = 3600, 80% = 4800, 100% = 6000
+        assertEquals(ShiftLampStage.OFF, computeShiftLampStage(3599.0, 6000.0, 6500))
+        assertEquals(ShiftLampStage.GREEN, computeShiftLampStage(3600.0, 6000.0, 6500))
+        assertEquals(ShiftLampStage.GREEN, computeShiftLampStage(4799.0, 6000.0, 6500))
+        assertEquals(ShiftLampStage.YELLOW, computeShiftLampStage(4800.0, 6000.0, 6500))
+        assertEquals(ShiftLampStage.YELLOW, computeShiftLampStage(5999.0, 6000.0, 6500))
+        assertEquals(ShiftLampStage.RED_FLASH, computeShiftLampStage(6000.0, 6000.0, 6500))
+
+        // Shift configured above redline still clamps trigger to redline
+        assertEquals(ShiftLampStage.RED_FLASH, computeShiftLampStage(6500.0, 7200.0, 6500))
+    }
+
+    @Test
+    fun `evaluateMetricAlert respects optional null thresholds and explicit above or below direction`() {
+        assertEquals(MetricAlertLevel.NONE, evaluateMetricAlert(115.0, null, null, alertBelow = false))
+        assertEquals(MetricAlertLevel.NONE, evaluateMetricAlert(null, 95.0, 105.0, alertBelow = false))
+
+        // High-threshold coolant example (Above >=)
+        assertEquals(MetricAlertLevel.NONE, evaluateMetricAlert(94.9, 95.0, 105.0, alertBelow = false))
+        assertEquals(MetricAlertLevel.WARN, evaluateMetricAlert(95.0, 95.0, 105.0, alertBelow = false))
+        assertEquals(MetricAlertLevel.CRITICAL, evaluateMetricAlert(105.0, 95.0, 105.0, alertBelow = false))
+
+        // Low-threshold battery/fuel example (Below <=)
+        assertEquals(MetricAlertLevel.NONE, evaluateMetricAlert(12.6, 12.2, 11.6, alertBelow = true))
+        assertEquals(MetricAlertLevel.WARN, evaluateMetricAlert(12.2, 12.2, 11.6, alertBelow = true))
+        assertEquals(MetricAlertLevel.CRITICAL, evaluateMetricAlert(11.6, 12.2, 11.6, alertBelow = true))
+
+        // Low-fuel percentage (value >= 12.5 still triggers Below <= 15% without old heuristic bug)
+        assertEquals(MetricAlertLevel.WARN, evaluateMetricAlert(14.5, 15.0, 8.0, alertBelow = true))
+    }
+
+    @Test
+    fun `rpmDialMaxForRedline and sensor helpers classify rpm and low-alert sensors cleanly`() {
+        assertEquals(6000.0, rpmDialMaxForRedline(5000), 0.01)
+        assertEquals(8000.0, rpmDialMaxForRedline(6500), 0.01)
+        assertEquals(9000.0, rpmDialMaxForRedline(8200), 0.01)
+        assertEquals(10000.0, rpmDialMaxForRedline(9000), 0.01)
+        assertEquals(12000.0, rpmDialMaxForRedline(11000), 0.01)
+
+        assertTrue(isRpmSensorKey("rpm"))
+        assertTrue(isRpmSensorKey("cluster_rpm"))
+        assertFalse(isRpmSensorKey("coolant"))
+
+        assertTrue(defaultAlertBelowForSensor("voltage"))
+        assertTrue(defaultAlertBelowForSensor("fuel_level"))
+        assertFalse(defaultAlertBelowForSensor("coolant"))
+        assertFalse(defaultAlertBelowForSensor("boost_bar"))
+    }
+
+    @Test
+    fun `UnitConverter toInternalMetric round-trips non-metric display thresholds`() {
+        val imperial = UnitPreferences(
+            speed = SpeedUnit.MPH,
+            temperature = TempUnit.FAHRENHEIT,
+            pressure = PressureUnit.PSI,
+            fuelEconomy = FuelEconomyUnit.MPG_US,
+            volume = VolumeUnit.GALLONS_US,
+            airflow = AirflowUnit.KG_PER_H,
+            power = PowerUnit.KW,
+            torque = TorqueUnit.LB_FT
+        )
+        val cases = listOf(
+            SensorQuantity.TEMPERATURE to 212.0,
+            SensorQuantity.SPEED to 75.0,
+            SensorQuantity.PRESSURE_KPA to 18.5,
+            SensorQuantity.BOOST_KPA to 14.7,
+            SensorQuantity.FUEL_ECONOMY_KPL to 32.0,
+            SensorQuantity.VOLUME_L to 11.5,
+            SensorQuantity.AIRFLOW_GS to 120.0,
+            SensorQuantity.POWER_HP to 95.0,
+            SensorQuantity.TORQUE_NM to 140.0
+        )
+        cases.forEach { (qty, disp) ->
+            val metric = UnitConverter.toInternalMetric(disp, qty, imperial)
+            val roundTripped = UnitConverter.convert(metric, qty, imperial).first
+            assertEquals("Round-trip mismatch for $qty", disp, roundTripped, 0.01)
+        }
+
+        val l100Prefs = UnitPreferences(fuelEconomy = FuelEconomyUnit.L_PER_100KM)
+        val kpl = UnitConverter.toInternalMetric(8.0, SensorQuantity.FUEL_ECONOMY_KPL, l100Prefs)
+        assertEquals(12.5, kpl, 0.01)
+        assertEquals(8.0, UnitConverter.convert(kpl, SensorQuantity.FUEL_ECONOMY_KPL, l100Prefs).first, 0.01)
     }
 }
