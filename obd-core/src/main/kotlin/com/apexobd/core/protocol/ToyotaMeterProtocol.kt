@@ -174,3 +174,89 @@ object ToyotaMeterProtocol {
         return raw * 0.5
     }
 }
+
+/**
+ * OEM-style fuel float slosh filter for raw undamped `7C0 2129` readings (0.5 L steps, ~12 s cadence).
+ * Rejects cornering/braking slosh spikes while moving, applies a sliding median + slow asymmetric EMA
+ * (faster downward tracking than upward while moving), and snaps immediately only after 2 consecutive
+ * stationary readings confirm a real refuel (+3.0 L or more).
+ */
+class FuelFloatSloshFilter {
+    private val window = ArrayDeque<Double>(WINDOW_SIZE)
+    private var filteredLiters: Double? = null
+    private var refuelStreak = 0
+
+    val currentLiters: Double?
+        get() = filteredLiters
+
+    fun seed(initialLiters: Double, tankCapacityLiters: Double): Double {
+        val cap = tankCapacityLiters.coerceAtLeast(1.0)
+        val clamped = initialLiters.coerceIn(0.0, cap)
+        window.clear()
+        window.addLast(clamped)
+        filteredLiters = clamped
+        refuelStreak = 0
+        return clamped
+    }
+
+    fun reset() {
+        window.clear()
+        filteredLiters = null
+        refuelStreak = 0
+    }
+
+    fun onRawSample(
+        rawLiters: Double,
+        speedKmh: Double,
+        accelG: Double,
+        tankCapacityLiters: Double
+    ): Double {
+        val cap = tankCapacityLiters.coerceAtLeast(1.0)
+        val raw = rawLiters.coerceIn(0.0, cap)
+        val prev = filteredLiters ?: return seed(raw, cap)
+        val stationary = speedKmh <= 1.5
+
+        if (stationary && raw >= prev + REFUEL_JUMP_LITERS) {
+            refuelStreak++
+            if (refuelStreak >= 2) {
+                return seed(raw, cap)
+            }
+        } else {
+            refuelStreak = 0
+        }
+
+        if (!stationary) {
+            if (kotlin.math.abs(raw - prev) > MOVING_SLOSH_REJECT_LITERS || kotlin.math.abs(accelG) > MOVING_MAX_ACCEL_G) {
+                return prev
+            }
+        }
+
+        if (window.size >= WINDOW_SIZE) {
+            window.removeFirst()
+        }
+        window.addLast(raw)
+        val sorted = window.sorted()
+        val median = if (sorted.size % 2 == 1) {
+            sorted[sorted.size / 2]
+        } else {
+            (sorted[sorted.size / 2 - 1] + sorted[sorted.size / 2]) * 0.5
+        }
+
+        val delta = median - prev
+        val step = if (stationary) {
+            (delta * 0.22).coerceIn(-0.35, 0.35)
+        } else {
+            (delta * 0.08).coerceIn(-0.18, 0.04)
+        }
+        val next = (prev + step).coerceIn(0.0, cap)
+        filteredLiters = next
+        return next
+    }
+
+    companion object {
+        private const val WINDOW_SIZE = 11
+        private const val REFUEL_JUMP_LITERS = 3.0
+        private const val MOVING_SLOSH_REJECT_LITERS = 2.5
+        private const val MOVING_MAX_ACCEL_G = 0.12
+    }
+}

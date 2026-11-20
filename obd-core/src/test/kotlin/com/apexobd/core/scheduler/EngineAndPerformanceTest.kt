@@ -547,6 +547,9 @@ class EngineAndPerformanceTest {
             assertTrue("fuel_level should be unlocked via 7C0 2129 in $avail", "fuel_level" in avail)
             assertTrue("ecu_odometer should be unlocked via 7C0 21E1 in $avail", "ecu_odometer" in avail)
             assertTrue("cluster_speed should be unlocked in $avail", "cluster_speed" in avail)
+            assertEquals(null, snap["cluster_speed"])
+            assertEquals(null, snap["cluster_rpm"])
+            assertEquals(null, snap["cluster_coolant"])
             assertEquals(18.5, liters!!, 0.01)
             assertEquals(30477.0, odo!!, 0.01)
             assertEquals(18.5, snap["fuel_remaining"]!!, 0.05)
@@ -633,5 +636,30 @@ class EngineAndPerformanceTest {
             assertEquals(780.0, snap["rpm"] ?: -1.0, 1.0)
             assertEquals(80.0, snap["coolant"] ?: -1.0, 0.5)
         }
+    }
+
+    @Test
+    fun `FuelFloatSloshFilter rejects moving cornering slosh spikes and snaps cleanly on verified stationary refuel`() {
+        val filter = com.apexobd.core.protocol.FuelFloatSloshFilter()
+        assertEquals(16.5, filter.seed(16.5, 43.0), 0.001)
+
+        // Wild moving slosh (8.5 L and 21.5 L like real Session #18) must be rejected completely
+        assertEquals(16.5, filter.onRawSample(8.5, speedKmh = 35.0, accelG = 0.05, tankCapacityLiters = 43.0), 0.001)
+        assertEquals(16.5, filter.onRawSample(21.5, speedKmh = 40.0, accelG = -0.04, tankCapacityLiters = 43.0), 0.001)
+        // High G braking/acceleration while moving is ignored even for smaller swings
+        assertEquals(16.5, filter.onRawSample(14.5, speedKmh = 30.0, accelG = -0.25, tankCapacityLiters = 43.0), 0.001)
+
+        // Gradual real burn at stationary stops tracks downward smoothly
+        var lvl = 16.5
+        repeat(6) {
+            lvl = filter.onRawSample(15.5, speedKmh = 0.0, accelG = 0.0, tankCapacityLiters = 43.0)
+        }
+        assertTrue("Expected smooth convergence toward 15.5 L, got $lvl", lvl in 15.45..16.05)
+
+        // Single stationary jump (+18 L) waits for confirmation; 2nd consecutive stationary sample snaps immediately
+        val afterFirst = filter.onRawSample(34.0, speedKmh = 0.0, accelG = 0.0, tankCapacityLiters = 43.0)
+        assertTrue("Single sample should not immediately snap to 34 L, got $afterFirst", afterFirst < 20.0)
+        val afterSecond = filter.onRawSample(34.0, speedKmh = 0.0, accelG = 0.0, tankCapacityLiters = 43.0)
+        assertEquals(34.0, afterSecond, 0.001)
     }
 }

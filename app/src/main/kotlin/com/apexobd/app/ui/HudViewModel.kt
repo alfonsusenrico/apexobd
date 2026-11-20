@@ -875,11 +875,20 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch { newEngine.connectionState.collect { _connectionState.value = it } }
             launch {
                 newEngine.supportedPids.collect { pids ->
-                    _supportedPids.value = pids
-                    if (pids.isNotEmpty()) {
-                        val csv = pids.sorted().joinToString(",")
-                        val targetId = activeEngineVehicleId
-                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                    val targetId = activeEngineVehicleId
+                    val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                    val prevSaved = cur?.savedSupportedPids().orEmpty()
+                    val prevMode01 = prevSaved.filterNot { it.startsWith("7C0_") }.toSet()
+                    val curMode01 = pids.filterNot { it.startsWith("7C0_") }.toSet()
+                    val mergedPids = if (curMode01.isNotEmpty() && curMode01 == prevMode01) {
+                        // Keep previously confirmed 7C0 meter capabilities if a brief reconnect happened while cluster slept.
+                        pids + prevSaved.filter { it.startsWith("7C0_") }
+                    } else {
+                        pids
+                    }
+                    _supportedPids.value = mergedPids
+                    if (mergedPids.isNotEmpty()) {
+                        val csv = mergedPids.sorted().joinToString(",")
                         if (cur != null && cur.supportedPidsCsv != csv) {
                             vehicleDao.updateVehicle(cur.copy(supportedPidsCsv = csv))
                         }

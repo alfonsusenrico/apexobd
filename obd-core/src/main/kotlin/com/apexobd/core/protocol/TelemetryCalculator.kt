@@ -274,13 +274,13 @@ class FuelEconomyTracker {
         }
         if (ecuFuelLiters != null && ecuFuelLiters.isFinite() && ecuFuelLiters >= 0.0) {
             val nextLiters = ecuFuelLiters.coerceIn(0.0, profile.tankCapacityLiters)
-            if (abs(nextLiters - estimatedFuelLiters) >= 0.4) {
+            if (abs(nextLiters - estimatedFuelLiters) >= 1.5) {
                 displayedRangeKm = null
             }
             estimatedFuelLiters = nextLiters
         } else if (ecuFuelLevelPct != null && ecuFuelLevelPct in 0.0..100.0) {
             val nextLiters = (ecuFuelLevelPct / 100.0) * profile.tankCapacityLiters
-            if (abs(nextLiters - estimatedFuelLiters) >= 0.4) {
+            if (abs(nextLiters - estimatedFuelLiters) >= 1.5) {
                 displayedRangeKm = null
             }
             estimatedFuelLiters = nextLiters

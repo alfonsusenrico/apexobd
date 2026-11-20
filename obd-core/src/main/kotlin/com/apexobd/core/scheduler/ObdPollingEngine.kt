@@ -254,6 +254,8 @@ class ObdPollingEngine(
     @Volatile
     private var latestMeterFuelLiters: Double? = null
 
+    private val meterFuelFilter = com.apexobd.core.protocol.FuelFloatSloshFilter()
+
     @Volatile
     private var activeSensorKeys: Set<String> = emptySet()
 
@@ -352,8 +354,11 @@ class ObdPollingEngine(
                     _supportedPids.value = allCapabilities
                     _availableSensorKeys.value = computeAvailableSensorKeys(allCapabilities)
 
-                    latestMeterFuelLiters = meterDiscovery.initialFuelLiters
-                    meterDiscovery.initialFuelLiters?.let { liters ->
+                    meterFuelFilter.reset()
+                    latestMeterFuelLiters = meterDiscovery.initialFuelLiters?.let { raw ->
+                        meterFuelFilter.seed(raw, vehicleProfile.tankCapacityLiters)
+                    }
+                    latestMeterFuelLiters?.let { liters ->
                         _ecuFuelLiters.value = liters
                         fuelTracker.syncFuelRemainingFromEcu(liters, vehicleProfile.tankCapacityLiters)
                     }
@@ -470,15 +475,28 @@ class ObdPollingEngine(
         var lastMeterFastMs = windowStart
         var lastMeterCoolantMs = windowStart
         val values = _liveValues.value.toMutableMap()
-        meterDiscovery.initialFuelLiters?.let { liters ->
+        latestMeterFuelLiters?.let { liters ->
             val cap = vehicleProfile.tankCapacityLiters.coerceAtLeast(1.0)
             values["fuel_level"] = ((liters / cap) * 100.0).coerceIn(0.0, 100.0)
             values["fuel_remaining"] = liters.coerceIn(0.0, cap)
         }
         meterDiscovery.initialOdometerKm?.let { values["ecu_odometer"] = it.toDouble() }
-        meterDiscovery.initialClusterSpeedKmh?.let { values["cluster_speed"] = it }
-        meterDiscovery.initialClusterRpm?.let { values["cluster_rpm"] = it }
-        meterDiscovery.initialClusterCoolantC?.let { values["cluster_coolant"] = it }
+        // Only expose cluster comparison channels when actively requested on the HUD so trip logs never carry frozen connect snapshots.
+        if ("cluster_speed" in activeSensorKeys) {
+            meterDiscovery.initialClusterSpeedKmh?.let { values["cluster_speed"] = it }
+        } else {
+            values.remove("cluster_speed")
+        }
+        if ("cluster_rpm" in activeSensorKeys) {
+            meterDiscovery.initialClusterRpm?.let { values["cluster_rpm"] = it }
+        } else {
+            values.remove("cluster_rpm")
+        }
+        if ("cluster_coolant" in activeSensorKeys) {
+            meterDiscovery.initialClusterCoolantC?.let { values["cluster_coolant"] = it }
+        } else {
+            values.remove("cluster_coolant")
+        }
         if (meterCaps.hasAny) {
             emitDerivedAndSnapshot(values)
         }
@@ -658,9 +676,15 @@ class ObdPollingEngine(
                 val meterNowMs = System.currentTimeMillis()
                 val needFuel = meterCaps.fuelLevel && "2F" !in discovered && (meterNowMs - lastMeterFuelMs >= 12_000L)
                 val needOdo = meterCaps.odometer && (meterNowMs - lastMeterOdoMs >= 30_000L)
-                val needClsSpd = meterCaps.clusterSpeed && "cluster_speed" in requested && (meterNowMs - lastMeterFastMs >= 450L)
-                val needClsRpm = meterCaps.clusterRpm && "cluster_rpm" in requested && (meterNowMs - lastMeterFastMs >= 450L)
-                val needClsCool = meterCaps.clusterCoolant && "cluster_coolant" in requested && (meterNowMs - lastMeterCoolantMs >= 2500L)
+                val wantClsSpd = meterCaps.clusterSpeed && "cluster_speed" in requested
+                val wantClsRpm = meterCaps.clusterRpm && "cluster_rpm" in requested
+                val wantClsCool = meterCaps.clusterCoolant && "cluster_coolant" in requested
+                if (!wantClsSpd) values.remove("cluster_speed")
+                if (!wantClsRpm) values.remove("cluster_rpm")
+                if (!wantClsCool) values.remove("cluster_coolant")
+                val needClsSpd = wantClsSpd && (meterNowMs - lastMeterFastMs >= 450L)
+                val needClsRpm = wantClsRpm && (meterNowMs - lastMeterFastMs >= 450L)
+                val needClsCool = wantClsCool && (meterNowMs - lastMeterCoolantMs >= 2500L)
 
                 if (needFuel || needOdo || needClsSpd || needClsRpm || needClsCool) {
                     val t0 = System.currentTimeMillis()
@@ -724,11 +748,19 @@ class ObdPollingEngine(
             if (needFuel) {
                 val res = client.execute("2129", timeoutMs = timeoutMs)
                 if (res is ObdCommandResult.Success) {
-                    ToyotaMeterProtocol.decodeFuelLiters(res.lines)?.let { liters ->
-                        latestMeterFuelLiters = liters
-                        _ecuFuelLiters.value = liters
+                    ToyotaMeterProtocol.decodeFuelLiters(res.lines)?.let { rawLiters ->
+                        val curSpeed = values["obd_speed"] ?: externalGpsSpeedKmh ?: 0.0
+                        val curAccelG = externalImuAccelG ?: 0.0
                         val cap = vehicleProfile.tankCapacityLiters.coerceAtLeast(1.0)
-                        values["fuel_level"] = ((liters / cap) * 100.0).coerceIn(0.0, 100.0)
+                        val smoothed = meterFuelFilter.onRawSample(
+                            rawLiters = rawLiters,
+                            speedKmh = curSpeed,
+                            accelG = curAccelG,
+                            tankCapacityLiters = cap
+                        )
+                        latestMeterFuelLiters = smoothed
+                        _ecuFuelLiters.value = smoothed
+                        values["fuel_level"] = ((smoothed / cap) * 100.0).coerceIn(0.0, 100.0)
                         count++
                     }
                 }
