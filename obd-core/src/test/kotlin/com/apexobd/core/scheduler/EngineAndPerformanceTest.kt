@@ -461,4 +461,98 @@ class EngineAndPerformanceTest {
         assertTrue(report.contains("COMBINATION METER 7C0"))
         assertTrue(report.contains("7C0 2129 -> 61 29 50"))
     }
+
+    @Test
+    fun `ToyotaMeterProtocol decodes real 2024 Avanza 7C0 fuel level, odometer, and cluster channels accurately`() {
+        assertEquals(18.5, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeFuelLiters(listOf("612925"))!!, 0.001)
+        assertEquals(null, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeFuelLiters(listOf("6129FF")))
+        assertEquals(null, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeFuelLiters(listOf("7F2112")))
+
+        val odoLines = listOf("013", "0:61E10013FF00", "1:0003BA0000770D", "2:26112050153200")
+        assertEquals(30477L, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeOdometerKm(odoLines))
+        assertEquals(0.0, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeClusterSpeedKmh(listOf("612100"))!!, 0.001)
+        assertEquals(750.0, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeClusterRpm(listOf("61220F"))!!, 0.001)
+        assertEquals(56.5, com.apexobd.core.protocol.ToyotaMeterProtocol.decodeClusterCoolantC(listOf("612371"))!!, 0.001)
+    }
+
+    @Test
+    fun `ObdPollingEngine auto-discovers 7C0 fuel level and odometer on Avanza without Mode 01 2F`() {
+        kotlinx.coroutines.runBlocking {
+            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            var activeHeader = "7DF"
+            val avanzaTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "avanza-7c0-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    val cmd = command.trim()
+                    cmds += cmd
+                    if (cmd.startsWith("ATSH")) {
+                        activeHeader = cmd.removePrefix("ATSH")
+                        return "OK\r"
+                    }
+                    return when {
+                        cmd == "ATZ" -> "ELM327 v1.5\r"
+                        cmd.startsWith("AT") && cmd != "ATDP" && cmd != "ATDPN" -> "OK\r"
+                        cmd == "ATDP" -> "ISO 15765-4 (CAN 11/500)\r"
+                        cmd == "ATDPN" -> "A6\r"
+                        activeHeader == "7C0" && cmd == "2129" -> "612925\r"
+                        activeHeader == "7C0" && cmd == "21E1" -> "013\r0:61E10013FF00\r1:0003BA0000770D\r2:26112050153200\r"
+                        activeHeader == "7C0" && cmd == "2121" -> "612128\r"
+                        activeHeader == "7C0" && cmd == "2122" -> "61220F\r"
+                        activeHeader == "7C0" && cmd == "2123" -> "612371\r"
+                        cmd == "0100" -> "4100BE1EA813\r"
+                        cmd == "0120" -> "41209005B015\r" // No 2F!
+                        cmd == "0140" -> "41405EDC8000\r"
+                        cmd == "010C451" -> "410C0C314500\r"
+                        cmd == "01040D1" -> "4104580D00\r"
+                        cmd.startsWith("010C") -> "410C0C31\r"
+                        cmd.startsWith("0104") -> "410458\r"
+                        cmd.startsWith("010D") -> "410D00\r"
+                        cmd.startsWith("0145") -> "414500\r"
+                        else -> "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(avanzaTransport, scope)
+            engine.setVehicleProfile(
+                com.apexobd.core.model.VehicleProfile(
+                    id = 1L,
+                    name = "Avanza 2024",
+                    tankCapacityLiters = 43.0,
+                    estimatedRemainingFuelLiters = 10.0,
+                    allTimeOdometerKm = 30000.0
+                ),
+                resetFuelSession = true
+            )
+            engine.setActiveSensors(setOf("rpm", "fuel_level", "fuel_remaining", "ecu_odometer"))
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(140L)
+            val snap = engine.liveValues.value
+            val avail = engine.availableSensorKeys.value
+            val odo = engine.ecuOdometerKm.value
+            val liters = engine.ecuFuelLiters.value
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            assertTrue("fuel_level should be unlocked via 7C0 2129 in $avail", "fuel_level" in avail)
+            assertTrue("ecu_odometer should be unlocked via 7C0 21E1 in $avail", "ecu_odometer" in avail)
+            assertTrue("cluster_speed should be unlocked in $avail", "cluster_speed" in avail)
+            assertEquals(18.5, liters!!, 0.01)
+            assertEquals(30477.0, odo!!, 0.01)
+            assertEquals(18.5, snap["fuel_remaining"]!!, 0.05)
+            assertEquals((18.5 / 43.0) * 100.0, snap["fuel_level"]!!, 0.1)
+            assertEquals(30477.0, snap["ecu_odometer"]!!, 0.01)
+            assertTrue("Expected ATSH7DF restore after 7C0 discovery", "ATSH7DF" in cmds)
+        }
+    }
 }

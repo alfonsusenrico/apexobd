@@ -64,6 +64,7 @@ import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.GaugeSmoothingMode
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TelemetryDisplaySmoother
+import com.apexobd.core.protocol.ToyotaMeterCapabilities
 import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.protocol.TripRunMetrics
 import com.apexobd.core.scheduler.ConnectionState
@@ -888,6 +889,31 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch { newEngine.availableSensorKeys.collect { _availableSensorKeys.value = it } }
             launch { newEngine.pollingHz.collect { _pollingHz.value = it } }
             launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
+            launch {
+                newEngine.ecuOdometerKm.collect { ecuOdo ->
+                    if (ecuOdo != null && ecuOdo in 1.0..999_999.0) {
+                        val targetId = activeEngineVehicleId
+                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        if (cur != null && kotlin.math.abs(cur.allTimeOdometerKm - ecuOdo) >= 1.0) {
+                            vehicleDao.updateVehicle(cur.copy(allTimeOdometerKm = ecuOdo))
+                        }
+                    }
+                }
+            }
+            launch {
+                newEngine.ecuFuelLiters.collect { ecuLiters ->
+                    if (ecuLiters != null && ecuLiters >= 0.0) {
+                        val targetId = activeEngineVehicleId
+                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        if (cur != null) {
+                            val clamped = ecuLiters.coerceIn(0.0, cur.tankCapacityLiters)
+                            if (kotlin.math.abs(cur.estimatedRemainingFuelLiters - clamped) >= 0.25) {
+                                vehicleDao.updateVehicle(cur.copy(estimatedRemainingFuelLiters = clamped))
+                            }
+                        }
+                    }
+                }
+            }
             launch {
                 newEngine.fuelMetrics.collect { fm ->
                     _fuelMetrics.value = fm
@@ -2000,9 +2026,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val list = mutableListOf<PickerSensorOption>()
 
         ObdPidRegistry.standardPids.forEach { pid ->
-            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported
+            val fuelViaMeter = pid.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in effectiveSupported
+            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported || fuelViaMeter
+            val sourceTag = if (fuelViaMeter && pid.pidHex !in effectiveSupported) "7C0 2129" else "01${pid.pidHex}"
             list += PickerSensorOption(
-                item = SensorCatalogItem(pid.key, pid.name, pid.shortName, "01${pid.pidHex}", pid.unit, pid.quantity, pid.minValue, pid.maxValue),
+                item = SensorCatalogItem(pid.key, pid.name, pid.shortName, sourceTag, pid.unit, pid.quantity, pid.minValue, pid.maxValue),
                 available = avail
             )
         }
@@ -2059,11 +2087,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val out = mutableListOf<GroupedSensorCatalogItem>()
 
         ObdPidRegistry.standardPids
-            .filter { supported.isEmpty() || it.pidHex in supported }
+            .filter {
+                supported.isEmpty() || it.pidHex in supported ||
+                    (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported)
+            }
             .forEach {
+                val fuelViaMeter = it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported && it.pidHex !in supported
+                val sourceTag = if (fuelViaMeter) "7C0 2129" else "01${it.pidHex}"
                 out += GroupedSensorCatalogItem(
                     SensorCatalogGroup.ECU_MODE01,
-                    SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
+                    SensorCatalogItem(it.key, it.name, it.shortName, sourceTag, it.unit, it.quantity, it.minValue, it.maxValue)
                 )
             }
 

@@ -101,6 +101,21 @@ class FuelEconomyTracker {
         displayedRangeKm = null
     }
 
+    fun syncOdometerFromEcu(ecuOdometerKm: Double) {
+        if (ecuOdometerKm.isFinite() && ecuOdometerKm in 1.0..999_999.0) {
+            allTimeOdometerKm = ecuOdometerKm
+        }
+    }
+
+    fun syncFuelRemainingFromEcu(liters: Double, tankCapacityLiters: Double) {
+        if (!liters.isFinite() || liters < 0.0) return
+        val clamped = liters.coerceIn(0.0, tankCapacityLiters.coerceAtLeast(1.0))
+        if (abs(clamped - estimatedFuelLiters) >= 0.4) {
+            displayedRangeKm = null
+        }
+        estimatedFuelLiters = clamped
+    }
+
     fun resetSession() {
         totalDistanceKm = 0.0
         roadDistanceKm = 0.0
@@ -140,6 +155,7 @@ class FuelEconomyTracker {
         ltftPct: Double? = null,
         ecuFuelRateLph: Double? = null,
         ecuFuelLevelPct: Double? = null,
+        ecuFuelLiters: Double? = null,
         wheelPowerKw: Double? = null,
         fuelSystemStatus: Double? = null,
         fuelCoastingMode: FuelCoastingMode = FuelCoastingMode.REALISTIC_DFCO,
@@ -256,9 +272,18 @@ class FuelEconomyTracker {
                 }
             }
         }
-        if (ecuFuelLevelPct != null && ecuFuelLevelPct in 0.0..100.0) {
-            estimatedFuelLiters = (ecuFuelLevelPct / 100.0) * profile.tankCapacityLiters
-            displayedRangeKm = null
+        if (ecuFuelLiters != null && ecuFuelLiters.isFinite() && ecuFuelLiters >= 0.0) {
+            val nextLiters = ecuFuelLiters.coerceIn(0.0, profile.tankCapacityLiters)
+            if (abs(nextLiters - estimatedFuelLiters) >= 0.4) {
+                displayedRangeKm = null
+            }
+            estimatedFuelLiters = nextLiters
+        } else if (ecuFuelLevelPct != null && ecuFuelLevelPct in 0.0..100.0) {
+            val nextLiters = (ecuFuelLevelPct / 100.0) * profile.tankCapacityLiters
+            if (abs(nextLiters - estimatedFuelLiters) >= 0.4) {
+                displayedRangeKm = null
+            }
+            estimatedFuelLiters = nextLiters
         }
         lastUpdateMs = nowMs
 
@@ -758,6 +783,50 @@ object DerivedSensorCatalog {
             minValue = 0.0,
             maxValue = 100.0,
             requiredAnyOfPidGroups = listOf(setOf("10"), setOf("0B", "0C"), setOf("04", "0C"), setOf("5E"))
+        ),
+        DerivedSensorSpec(
+            key = "ecu_odometer",
+            name = "Cluster Odometer",
+            shortName = "Odo",
+            sourceLabel = "7C0 21E1",
+            defaultUnit = "km",
+            quantity = SensorQuantity.DISTANCE_KM,
+            minValue = 0.0,
+            maxValue = 500000.0,
+            requiredAnyOfPidGroups = listOf(setOf(ToyotaMeterCapabilities.TOKEN_ODOMETER))
+        ),
+        DerivedSensorSpec(
+            key = "cluster_speed",
+            name = "Cluster Speed (7C0)",
+            shortName = "Cls Spd",
+            sourceLabel = "7C0 2121",
+            defaultUnit = "km/h",
+            quantity = SensorQuantity.SPEED,
+            minValue = 0.0,
+            maxValue = 220.0,
+            requiredAnyOfPidGroups = listOf(setOf(ToyotaMeterCapabilities.TOKEN_CLUSTER_SPEED))
+        ),
+        DerivedSensorSpec(
+            key = "cluster_rpm",
+            name = "Cluster RPM (7C0)",
+            shortName = "Cls RPM",
+            sourceLabel = "7C0 2122",
+            defaultUnit = "RPM",
+            quantity = SensorQuantity.RAW,
+            minValue = 0.0,
+            maxValue = 8000.0,
+            requiredAnyOfPidGroups = listOf(setOf(ToyotaMeterCapabilities.TOKEN_CLUSTER_RPM))
+        ),
+        DerivedSensorSpec(
+            key = "cluster_coolant",
+            name = "Cluster Coolant (7C0)",
+            shortName = "Cls Cool",
+            sourceLabel = "7C0 2123",
+            defaultUnit = "°C",
+            quantity = SensorQuantity.TEMPERATURE,
+            minValue = -40.0,
+            maxValue = 150.0,
+            requiredAnyOfPidGroups = listOf(setOf(ToyotaMeterCapabilities.TOKEN_CLUSTER_COOLANT))
         )
     )
 

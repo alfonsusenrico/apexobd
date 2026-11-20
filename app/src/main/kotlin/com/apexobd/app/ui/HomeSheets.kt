@@ -138,6 +138,7 @@ import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.model.VolumeUnit
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.GaugeSmoothingMode
+import com.apexobd.core.protocol.ToyotaMeterCapabilities
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TripRunCalculator
@@ -1658,8 +1659,15 @@ fun EcuPidsSheet(
             }
 
             ObdPidRegistry.standardPids
-                .filter { supportedPids.isEmpty() || it.pidHex in supportedPids }
+                .filter {
+                    supportedPids.isEmpty() || it.pidHex in supportedPids ||
+                        (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supportedPids)
+                }
                 .forEach { pid ->
+                    val viaMeter = pid.key == "fuel_level" &&
+                        ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supportedPids &&
+                        pid.pidHex !in supportedPids
+                    val tag = if (viaMeter) "7C0 2129" else "01${pid.pidHex}"
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1668,7 +1676,7 @@ fun EcuPidsSheet(
                             .padding(horizontal = 10.dp, vertical = 7.dp),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("01${pid.pidHex} · ${pid.name}", fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        Text("$tag · ${pid.name}", fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
                         val v = liveValues[pid.key]
                         Text(
                             if (v != null) "%.1f %s".format(v, pid.unit) else "—",
@@ -1678,6 +1686,43 @@ fun EcuPidsSheet(
                         )
                     }
                 }
+
+            val meterSpecs = listOf(
+                Triple(ToyotaMeterCapabilities.TOKEN_ODOMETER, "ecu_odometer", "7C0 21E1 · Cluster Odometer" to "km"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_SPEED, "cluster_speed", "7C0 2121 · Cluster Speed" to "km/h"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_RPM, "cluster_rpm", "7C0 2122 · Cluster RPM" to "RPM"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_COOLANT, "cluster_coolant", "7C0 2123 · Cluster Coolant" to "°C")
+            ).filter { (token, _, _) -> token in supportedPids }
+
+            if (meterSpecs.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text("Combination Meter (7C0) Live PIDs", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TorqueEvoColors.SkyBlue)
+                meterSpecs.forEach { (_, key, labelUnit) ->
+                    val (label, unitStr) = labelUnit
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(label, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        val v = liveValues[key]
+                        val formatted = when {
+                            v == null -> "—"
+                            key == "ecu_odometer" || key == "cluster_rpm" -> "%.0f %s".format(v, unitStr)
+                            else -> "%.1f %s".format(v, unitStr)
+                        }
+                        Text(
+                            formatted,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.NominalGreen
+                        )
+                    }
+                }
+            }
 
             Spacer(Modifier.height(6.dp))
             Text("Add Custom / UDS Mode 21–22 PID", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TorqueEvoColors.TextPrimary)

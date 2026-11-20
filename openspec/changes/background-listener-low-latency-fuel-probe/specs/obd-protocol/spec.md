@@ -29,3 +29,10 @@ When ApexOBD opens, the OBD-II adapter listener SHALL connect automatically acro
 #### Scenario: Custom PID targeting Combination Meter `7C0` switches headers safely and decodes Mode 21
 - **WHEN** a custom PID defines `headerHex = "7C0"` and `modeAndPidHex = "2129"`
 - **THEN** `ObdPollingEngine` sends `ATSH7C0`, `ATCRA7C8`, `2129`, decodes the `61 29` payload, and restores `ATCRA` and `ATSH7DF`
+
+### Requirement: Auto-Detected Combination Meter (`7C0`) Fuel, Odometer & Cluster Sync
+On CAN buses, `ObdPollingEngine` SHALL probe `7C0`/`7C8` at connect time (always restoring `ATCRA` + `ATSH7DF`). When `2129` responds, ApexOBD SHALL unlock `fuel_level` and feed `A * 0.5 L` into `FuelEconomyTracker` every `12 s`. When `21E1` responds, ApexOBD SHALL expose `ecu_odometer` and auto-sync the active vehicle profile every `30 s`. Optional `2121`/`2122`/`2123` cluster comparison sensors SHALL poll only when visible on the HUD.
+
+#### Scenario: 2024 Avanza without Mode 01 `2F` unlocks live digital fuel level and syncs exact odometer
+- **WHEN** `ObdPollingEngine` connects to a vehicle reporting `7C0 2129 -> 612925` and `7C0 21E1 -> 0000770D` without Mode 01 `2F`
+- **THEN** `fuel_level` unlocks (`43.0%` on a 43 L tank), `fuel_remaining` updates to `18.5 L`, and `ecuOdometerKm` emits `30477.0 km` for automatic vehicle profile sync
