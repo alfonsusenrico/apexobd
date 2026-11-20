@@ -355,7 +355,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val usbDevices: StateFlow<List<UsbSerialCandidate>> = _usbDevices.asStateFlow()
 
     val wifiConnected = wifiBinder.wifiConnected
-    val cellularOnline = wifiBinder.cellularOnline
 
     private var activeSessionId: Long? = null
     private val mutableHistory = mutableMapOf<String, ArrayDeque<Double>>()
@@ -445,9 +444,6 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     wakeLockEnabled = state.serviceActive
                 )
                 locationTracker.setPreferPureGnss(state.serviceActive && isWifiAdapter)
-                wifiBinder.setKeepCellularActive(
-                    state.serviceActive && isWifiAdapter && st.dualCellularKeepalive
-                )
 
                 if (state.serviceActive) {
                     if (!LoggingForegroundService.isRunning && (state.inForeground || state.recording)) {

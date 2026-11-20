@@ -14,10 +14,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.net.SocketFactory
 
 /**
- * Binds ELM327 TCP sockets explicitly to the active Wi-Fi [Network], holds a low-latency
- * [WifiManager.WifiLock] + [PowerManager.PARTIAL_WAKE_LOCK] to disable 802.11 PSM (+102ms DTIM sleep)
- * and suppress off-channel background Wi-Fi scans, and optionally holds a parallel cellular
- * internet [NetworkRequest] so mobile data remains usable while Wi-Fi talks to the OBD adapter.
+ * Pins the ApexOBD process and ELM327 TCP sockets exclusively to the active Wi-Fi [Network]
+ * (without requesting parallel cellular keepalive) and holds a low-latency
+ * [WifiManager.WifiLock] + [PowerManager.PARTIAL_WAKE_LOCK] so Android keeps Wi-Fi at maximum
+ * low-latency performance without 802.11 PSM (+102ms DTIM sleep) or cellular handover contention.
  */
 class WifiNetworkBinder(context: Context) {
 
@@ -32,13 +32,12 @@ class WifiNetworkBinder(context: Context) {
     @Volatile
     private var wifiNetwork: Network? = null
 
+    @Volatile
+    private var dedicatedWifiRequested: Boolean = false
+
     private val _wifiConnected = MutableStateFlow(false)
     val wifiConnected: StateFlow<Boolean> = _wifiConnected.asStateFlow()
 
-    private val _cellularOnline = MutableStateFlow(false)
-    val cellularOnline: StateFlow<Boolean> = _cellularOnline.asStateFlow()
-
-    private var cellularRequested = false
     private val lockGuard = Any()
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -47,23 +46,19 @@ class WifiNetworkBinder(context: Context) {
         override fun onAvailable(network: Network) {
             wifiNetwork = network
             _wifiConnected.value = true
+            if (dedicatedWifiRequested) {
+                runCatching { connectivityManager.bindProcessToNetwork(network) }
+            }
         }
 
         override fun onLost(network: Network) {
             if (wifiNetwork == network) {
                 wifiNetwork = null
                 _wifiConnected.value = false
+                if (dedicatedWifiRequested) {
+                    runCatching { connectivityManager.bindProcessToNetwork(null) }
+                }
             }
-        }
-    }
-
-    private val cellularCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            _cellularOnline.value = true
-        }
-
-        override fun onLost(network: Network) {
-            _cellularOnline.value = false
         }
     }
 
@@ -74,27 +69,21 @@ class WifiNetworkBinder(context: Context) {
         runCatching { connectivityManager.registerNetworkCallback(request, wifiCallback) }
     }
 
-    fun setKeepCellularActive(enabled: Boolean) {
-        if (enabled && !cellularRequested) {
-            val req = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
-            runCatching {
-                connectivityManager.requestNetwork(req, cellularCallback)
-                cellularRequested = true
-            }
-        } else if (!enabled && cellularRequested) {
-            runCatching { connectivityManager.unregisterNetworkCallback(cellularCallback) }
-            cellularRequested = false
-            _cellularOnline.value = false
-        }
-    }
-
+    /**
+     * Enables/disables dedicated high-performance Wi-Fi mode:
+     * binds the entire app process exclusively to the OBD Wi-Fi network (dropping dual Wi-Fi+Mobile
+     * routing contention) and holds [WifiManager.WIFI_MODE_FULL_LOW_LATENCY] + [PowerManager.PARTIAL_WAKE_LOCK].
+     */
     @Suppress("DEPRECATION")
     fun setLowLatencyLocks(wifiLockEnabled: Boolean, wakeLockEnabled: Boolean) {
         synchronized(lockGuard) {
+            dedicatedWifiRequested = wifiLockEnabled
             if (wifiLockEnabled) {
+                val activeWifi = wifiNetwork ?: findActiveWifiNetwork()
+                if (activeWifi != null) {
+                    wifiNetwork = activeWifi
+                    runCatching { connectivityManager.bindProcessToNetwork(activeWifi) }
+                }
                 val existing = wifiLock
                 if (existing == null || !existing.isHeld) {
                     runCatching {
@@ -111,6 +100,7 @@ class WifiNetworkBinder(context: Context) {
                     }
                 }
             } else {
+                runCatching { connectivityManager.bindProcessToNetwork(null) }
                 runCatching {
                     if (wifiLock?.isHeld == true) wifiLock?.release()
                 }
@@ -140,7 +130,6 @@ class WifiNetworkBinder(context: Context) {
 
     fun unregister() {
         runCatching { connectivityManager.unregisterNetworkCallback(wifiCallback) }
-        setKeepCellularActive(false)
         setLowLatencyLocks(wifiLockEnabled = false, wakeLockEnabled = false)
     }
 

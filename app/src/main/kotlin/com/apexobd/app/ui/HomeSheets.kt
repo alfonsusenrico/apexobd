@@ -1738,7 +1738,6 @@ fun AdapterConnectionSheet(
 ) {
     var host by remember(settings.wifiHost) { mutableStateOf(settings.wifiHost) }
     var port by remember(settings.wifiPort) { mutableStateOf("${settings.wifiPort}") }
-    var dualCell by remember(settings.dualCellularKeepalive) { mutableStateOf(settings.dualCellularKeepalive) }
     var manualBtMac by remember(settings.btDeviceAddress) { mutableStateOf(settings.btDeviceAddress) }
     var selectedBaud by remember(settings.usbBaudRate) { mutableStateOf(settings.usbBaudRate) }
 
@@ -1843,13 +1842,14 @@ fun AdapterConnectionSheet(
                         modifier = Modifier.weight(0.7f)
                     )
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Keep Mobile Data Active", color = TorqueEvoColors.TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = dualCell, onCheckedChange = { dualCell = it })
-                }
+                Text(
+                    text = "Dedicated Low-Latency Wi-Fi · Dual mobile-data keepalive is disabled while connected for maximum OBD speed.",
+                    color = TorqueEvoColors.TextSecondary,
+                    fontSize = 11.sp
+                )
                 Button(
                     onClick = {
-                        onSaveWifiConnection(host.ifBlank { "192.168.0.10" }, port.toIntOrNull() ?: 35000, dualCell)
+                        onSaveWifiConnection(host.ifBlank { "192.168.0.10" }, port.toIntOrNull() ?: 35000, false)
                         onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),

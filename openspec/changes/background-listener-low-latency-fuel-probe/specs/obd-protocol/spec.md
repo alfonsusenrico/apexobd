@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Low-Latency Wi-Fi Transport & Radio Locks
-`WifiTcpTransport` SHALL read TCP responses in bulk buffers with low-delay QoS (`tcpNoDelay`, `IPTOS_LOWDELAY`), avoid per-byte `setsockopt` mutations, and send a `\r` resync on timeout. While `WIFI_TCP` is active, `WifiNetworkBinder` SHALL hold `WIFI_MODE_FULL_LOW_LATENCY` and `PARTIAL_WAKE_LOCK`, and `LocationTracker` SHALL prefer hardware GNSS (`GPS_PROVIDER`) over FusedLocationProvider to prevent off-channel Wi-Fi scan stalls.
+`WifiTcpTransport` SHALL read TCP responses in bulk buffers with low-delay QoS (`tcpNoDelay`, `IPTOS_LOWDELAY`), avoid per-byte `setsockopt` mutations, and send a `\r` resync on timeout. While `WIFI_TCP` is active, `WifiNetworkBinder` SHALL bind the process exclusively to the Wi-Fi network without holding a parallel cellular keepalive request, hold `WIFI_MODE_FULL_LOW_LATENCY` and `PARTIAL_WAKE_LOCK`, and `LocationTracker` SHALL prefer hardware GNSS (`GPS_PROVIDER`) over FusedLocationProvider.
 
 #### Scenario: Bulk TCP read returns ELM327 prompt immediately without per-byte socket option mutations
 - **WHEN** `WifiTcpTransport.sendCommand` receives `410C1AF8\r>` over TCP
