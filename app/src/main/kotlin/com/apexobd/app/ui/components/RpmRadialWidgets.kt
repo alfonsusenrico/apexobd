@@ -103,7 +103,7 @@ fun evaluateMetricAlert(
     return MetricAlertLevel.NONE
 }
 
-/** Runs a lightweight ~9 Hz strobe pulse ONLY while [active] is true (zero idle cost). */
+/** Runs a punchy asymmetric strobe pulse (~65% ON duty cycle) ONLY while [active] is true for peak perceived brightness. */
 @Composable
 fun rememberFlashPulseState(active: Boolean): State<Boolean> {
     val state = remember { mutableStateOf(true) }
@@ -115,8 +115,8 @@ fun rememberFlashPulseState(active: Boolean): State<Boolean> {
         var on = true
         while (isActive) {
             state.value = on
+            delay(if (on) 130L else 75L)
             on = !on
-            delay(110L)
         }
     }
     return state
@@ -146,9 +146,13 @@ private fun Modifier.rpmCardChrome(
         }
         if (flashingRed) {
             drawRoundRect(
-                color = TorqueEvoColors.CriticalRed.copy(alpha = 0.88f),
+                color = Color(0x26FF0000),
+                cornerRadius = cr
+            )
+            drawRoundRect(
+                color = Color(0xFFFF1A1A),
                 cornerRadius = cr,
-                style = Stroke(width = 2.2.dp.toPx())
+                style = Stroke(width = 2.8.dp.toPx())
             )
         } else if (palette.showBorders) {
             drawRoundRect(
@@ -162,7 +166,7 @@ private fun Modifier.rpmCardChrome(
 
 /**
  * Wraps any standard metric widget to render an optional steady Amber warning indicator
- * or flashing Red critical alert border + top-right beacon dot when user thresholds trigger.
+ * or max-brightness flashing Red critical alert border + top-right LED beacon when user thresholds trigger.
  */
 @Composable
 fun MetricAlertFrameOverlay(
@@ -196,30 +200,34 @@ fun MetricAlertFrameOverlay(
                     MetricAlertLevel.WARN -> {
                         val cr = CornerRadius(cornerRadiusDp.toPx(), cornerRadiusDp.toPx())
                         drawRoundRect(
-                            color = TorqueEvoColors.WarnAmber.copy(alpha = 0.85f),
+                            color = SHIFT_YELLOW,
                             cornerRadius = cr,
-                            style = Stroke(width = 1.8.dp.toPx())
+                            style = Stroke(width = 2.dp.toPx())
                         )
-                        val dotR = (minOf(size.width, size.height) * 0.048f).coerceIn(3.5.dp.toPx(), 6.5.dp.toPx())
+                        val dotR = (minOf(size.width, size.height) * 0.055f).coerceIn(4.dp.toPx(), 7.5.dp.toPx())
                         val center = Offset(size.width - dotR - 7.dp.toPx(), dotR + 7.dp.toPx())
-                        drawCircle(color = TorqueEvoColors.WarnAmber.copy(alpha = 0.32f), radius = dotR * 2.0f, center = center)
-                        drawCircle(color = TorqueEvoColors.WarnAmber, radius = dotR, center = center)
+                        drawHighIntensityLed(center = center, radius = dotR, ledColor = SHIFT_YELLOW, rimColor = Color.White, bloomScale = 2.8f)
                     }
                     MetricAlertLevel.CRITICAL -> {
                         val on = flashState.value
                         val cr = CornerRadius(cornerRadiusDp.toPx(), cornerRadiusDp.toPx())
+                        if (on) {
+                            drawRoundRect(
+                                color = Color(0x22FF0000),
+                                cornerRadius = cr
+                            )
+                        }
                         drawRoundRect(
-                            color = TorqueEvoColors.CriticalRed.copy(alpha = if (on) 0.94f else 0.35f),
+                            color = if (on) Color(0xFFFF1A1A) else Color(0x66FF1A1A),
                             cornerRadius = cr,
-                            style = Stroke(width = (if (on) 2.3.dp else 1.5.dp).toPx())
+                            style = Stroke(width = (if (on) 2.6.dp else 1.5.dp).toPx())
                         )
-                        val dotR = (minOf(size.width, size.height) * 0.052f).coerceIn(4.dp.toPx(), 7.dp.toPx())
+                        val dotR = (minOf(size.width, size.height) * 0.060f).coerceIn(4.5.dp.toPx(), 8.dp.toPx())
                         val center = Offset(size.width - dotR - 7.dp.toPx(), dotR + 7.dp.toPx())
                         if (on) {
-                            drawCircle(color = TorqueEvoColors.CriticalRed.copy(alpha = 0.38f), radius = dotR * 2.4f, center = center)
-                            drawCircle(color = Color(0xFFFF4545), radius = dotR, center = center)
+                            drawHighIntensityLed(center = center, radius = dotR, ledColor = SHIFT_RED, rimColor = Color.White, bloomScale = 3.4f)
                         } else {
-                            drawCircle(color = Color(0xFF4A1216), radius = dotR, center = center)
+                            drawCircle(color = SHIFT_RED_DIM, radius = dotR, center = center)
                         }
                     }
                 }
@@ -228,15 +236,58 @@ fun MetricAlertFrameOverlay(
     )
 }
 
-private val SHIFT_GREEN = Color(0xFF22C55E)
-private val SHIFT_GREEN_RIM = Color(0xFF86EFAC)
-private val SHIFT_YELLOW = Color(0xFFEAB308)
-private val SHIFT_YELLOW_RIM = Color(0xFFFEF08A)
-private val SHIFT_RED = Color(0xFFFF4242)
+private val SHIFT_GREEN = Color(0xFF00FF5A)
+private val SHIFT_GREEN_RIM = Color(0xFFD6FFE5)
+private val SHIFT_YELLOW = Color(0xFFFFEE00)
+private val SHIFT_YELLOW_RIM = Color(0xFFFFFFCC)
+private val SHIFT_RED = Color(0xFFFF1414)
 private val SHIFT_RED_DIM = Color(0xFF421014)
-private val SHIFT_RED_RIM = Color(0xFFFECACA)
 private val SHIFT_OFF_FILL = Color(0xFF181F2A)
 private val SHIFT_OFF_RIM = Color(0x36FFFFFF)
+
+/**
+ * Draws a peak-luminance OLED LED with a multi-stop radial bloom halo and white-hot emitter core
+ * so shift & critical flashes read clearly in bright cabin light or peripheral vision.
+ */
+private fun DrawScope.drawHighIntensityLed(
+    center: Offset,
+    radius: Float,
+    ledColor: Color,
+    rimColor: Color,
+    bloomScale: Float
+) {
+    val bloomRadius = (radius * bloomScale).coerceAtLeast(radius + 2f)
+    drawCircle(
+        brush = Brush.radialGradient(
+            0.0f to ledColor.copy(alpha = 0.95f),
+            0.35f to ledColor.copy(alpha = 0.65f),
+            0.68f to ledColor.copy(alpha = 0.24f),
+            1.0f to Color.Transparent,
+            center = center,
+            radius = bloomRadius
+        ),
+        radius = bloomRadius,
+        center = center
+    )
+    drawCircle(
+        brush = Brush.radialGradient(
+            0.0f to Color.White,
+            0.42f to Color.White.copy(alpha = 0.92f),
+            0.78f to ledColor,
+            1.0f to ledColor,
+            center = center,
+            radius = radius
+        ),
+        radius = radius,
+        center = center
+    )
+    drawCircle(
+        color = rimColor,
+        radius = radius,
+        center = center,
+        style = Stroke(width = (radius * 0.16f).coerceAtLeast(1.4f))
+    )
+}
 
 private fun DrawScope.drawShiftLampDot(
     center: Offset,
@@ -244,35 +295,26 @@ private fun DrawScope.drawShiftLampDot(
     stage: ShiftLampStage,
     flashOn: Boolean
 ) {
-    val fill: Color
-    val rim: Color
-    val glow: Color?
     when (stage) {
         ShiftLampStage.OFF -> {
-            fill = SHIFT_OFF_FILL; rim = SHIFT_OFF_RIM; glow = null
+            drawCircle(color = SHIFT_OFF_FILL, radius = radius, center = center)
+            drawCircle(color = SHIFT_OFF_RIM, radius = radius, center = center, style = Stroke(width = (radius * 0.16f).coerceAtLeast(1.3f)))
         }
         ShiftLampStage.GREEN -> {
-            fill = SHIFT_GREEN; rim = SHIFT_GREEN_RIM; glow = SHIFT_GREEN
+            drawHighIntensityLed(center = center, radius = radius, ledColor = SHIFT_GREEN, rimColor = SHIFT_GREEN_RIM, bloomScale = 2.9f)
         }
         ShiftLampStage.YELLOW -> {
-            fill = SHIFT_YELLOW; rim = SHIFT_YELLOW_RIM; glow = SHIFT_YELLOW
+            drawHighIntensityLed(center = center, radius = radius, ledColor = SHIFT_YELLOW, rimColor = SHIFT_YELLOW_RIM, bloomScale = 3.1f)
         }
         ShiftLampStage.RED_FLASH -> {
             if (flashOn) {
-                fill = SHIFT_RED; rim = SHIFT_RED_RIM; glow = TorqueEvoColors.CriticalRed
+                drawHighIntensityLed(center = center, radius = radius * 1.08f, ledColor = SHIFT_RED, rimColor = Color.White, bloomScale = 3.8f)
             } else {
-                fill = SHIFT_RED_DIM; rim = TorqueEvoColors.CriticalRed.copy(alpha = 0.55f); glow = null
+                drawCircle(color = SHIFT_RED_DIM, radius = radius, center = center)
+                drawCircle(color = SHIFT_RED.copy(alpha = 0.50f), radius = radius, center = center, style = Stroke(width = (radius * 0.16f).coerceAtLeast(1.3f)))
             }
         }
     }
-
-    if (glow != null) {
-        val outerR = if (stage == ShiftLampStage.RED_FLASH) radius * 2.6f else radius * 2.0f
-        drawCircle(color = glow.copy(alpha = 0.28f), radius = outerR, center = center)
-        drawCircle(color = glow.copy(alpha = 0.52f), radius = radius * 1.48f, center = center)
-    }
-    drawCircle(color = fill, radius = radius, center = center)
-    drawCircle(color = rim, radius = radius, center = center, style = Stroke(width = (radius * 0.17f).coerceAtLeast(1.4f)))
 }
 
 private fun DrawScope.drawCenteredCanvasText(
@@ -439,16 +481,6 @@ fun RpmTachGtWidget(
                 }
             }
 
-            // Integrated 12-o'clock Shift Lamp dot (only rendered when shift threshold is configured)
-            if (shiftRpm != null && shiftRpm > 0.0) {
-                drawShiftLampDot(
-                    center = Offset(c.x, c.y - r * 0.41f),
-                    radius = (r * 0.095f).coerceIn(5.5f, 16f),
-                    stage = stage,
-                    flashOn = flashOn
-                )
-            }
-
             // Tapered motorsport needle
             val nRad = (startDeg + sweepDeg * pct) * PI / 180.0
             val cosN = cos(nRad).toFloat()
@@ -474,6 +506,16 @@ fun RpmTachGtWidget(
                 center = c,
                 style = Stroke(width = (r * 0.024f).coerceIn(2f, 4f))
             )
+
+            // Integrated 12-o'clock Shift Lamp dot drawn unobstructed above needle when configured
+            if (shiftRpm != null && shiftRpm > 0.0) {
+                drawShiftLampDot(
+                    center = Offset(c.x, c.y - r * 0.41f),
+                    radius = (r * 0.105f).coerceIn(5.5.dp.toPx(), 14.dp.toPx()),
+                    stage = stage,
+                    flashOn = flashOn
+                )
+            }
 
             // Digital RPM at bottom opening
             val rpmText = rpm?.roundToInt()?.toString() ?: "—"
@@ -542,30 +584,35 @@ fun RpmTachF1LedsWidget(
             // 5 curved crown F1 shift LEDs (Green -> Green -> Yellow -> Yellow -> Red -> ALL flash Red)
             if (hasShift) {
                 val ledAngles = floatArrayOf(-44f, -22f, 0f, 22f, 44f)
-                val ledCols = arrayOf(SHIFT_GREEN, SHIFT_GREEN, SHIFT_YELLOW, SHIFT_YELLOW, TorqueEvoColors.CriticalRed)
+                val ledCols = arrayOf(SHIFT_GREEN, SHIFT_GREEN, SHIFT_YELLOW, SHIFT_YELLOW, SHIFT_RED)
+                val ledRims = arrayOf(SHIFT_GREEN_RIM, SHIFT_GREEN_RIM, SHIFT_YELLOW_RIM, SHIFT_YELLOW_RIM, Color.White)
                 val trigger = minOf(shiftRpm!!, redlineRpm.toDouble().coerceAtLeast(1500.0))
                 val seqStart = trigger * 0.56
                 val seqProg = ((rpm ?: 0.0) - seqStart) / (trigger - seqStart).coerceAtLeast(200.0)
                 val atShift = stage == ShiftLampStage.RED_FLASH
-                val ledR = (r * 0.068f).coerceIn(4f, 11f)
+                val ledR = (r * 0.075f).coerceIn(4.dp.toPx(), 10.dp.toPx())
                 val ledOrbit = r * 1.15f
                 for (i in 0 until 5) {
                     val rad = (-90f + ledAngles[i]) * PI / 180.0
                     val center = Offset(c.x + ledOrbit * cos(rad).toFloat(), c.y + ledOrbit * sin(rad).toFloat())
                     val lit = if (atShift) flashOn else (seqProg >= (i + 0.25) / 5.0)
-                    val col = if (atShift) TorqueEvoColors.CriticalRed else ledCols[i]
                     if (lit) {
-                        drawCircle(col.copy(alpha = 0.34f), ledR * 1.95f, center)
-                        drawCircle(col, ledR, center)
+                        drawHighIntensityLed(
+                            center = center,
+                            radius = if (atShift) ledR * 1.08f else ledR,
+                            ledColor = if (atShift) SHIFT_RED else ledCols[i],
+                            rimColor = if (atShift) Color.White else ledRims[i],
+                            bloomScale = if (atShift) 3.4f else 2.7f
+                        )
                     } else {
-                        drawCircle(SHIFT_OFF_FILL, ledR, center)
+                        drawCircle(if (atShift) SHIFT_RED_DIM else SHIFT_OFF_FILL, ledR, center)
+                        drawCircle(
+                            color = if (atShift) SHIFT_RED.copy(alpha = 0.45f) else SHIFT_OFF_RIM,
+                            radius = ledR,
+                            center = center,
+                            style = Stroke(width = 1.4f)
+                        )
                     }
-                    drawCircle(
-                        color = if (lit) Color(0x8CFFFFFF) else SHIFT_OFF_RIM,
-                        radius = ledR,
-                        center = center,
-                        style = Stroke(width = 1.4f)
-                    )
                 }
             }
 
@@ -814,7 +861,7 @@ fun RpmTachChronoWidget(
                 )
                 drawShiftLampDot(
                     center = Offset(c.x + innerR * 0.30f, labelY),
-                    radius = (innerR * 0.135f).coerceIn(4.5f, 11f),
+                    radius = (innerR * 0.15f).coerceIn(4.5.dp.toPx(), 10.5.dp.toPx()),
                     stage = stage,
                     flashOn = flashOn
                 )
@@ -943,7 +990,7 @@ fun RpmTachHaloWidget(
                 )
                 drawShiftLampDot(
                     center = Offset(c.x + r * 0.22f, labelY),
-                    radius = (r * 0.082f).coerceIn(4.5f, 12f),
+                    radius = (r * 0.092f).coerceIn(4.5.dp.toPx(), 11.dp.toPx()),
                     stage = stage,
                     flashOn = flashOn
                 )
