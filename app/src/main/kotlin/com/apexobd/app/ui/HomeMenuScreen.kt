@@ -72,6 +72,7 @@ import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
+import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.protocol.FuelEconomyTracker
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.transport.ObdConnectionType
@@ -153,7 +154,15 @@ fun HomeMenuScreen(
     }
     val dispRange: Double? = estRangeKm?.let { UnitConverter.convertDistanceKm(it, unitPrefs).first }
     val (dispRemFuel, volSym) = UnitConverter.convertVolume(activeVehicle?.estimatedRemainingFuelLiters ?: 0.0, unitPrefs, fuelType)
-    val (dispCapFuel, _) = UnitConverter.convertVolume(activeVehicle?.tankCapacityLiters ?: 45.0, unitPrefs, fuelType)
+    val fuelLeftPct: Double? = activeVehicle?.let { v ->
+        val cap = v.tankCapacityLiters.coerceAtLeast(1.0)
+        ((v.estimatedRemainingFuelLiters / cap) * 100.0).coerceIn(0.0, 100.0)
+    }
+    val fuelLeftText = if (activeVehicle != null && fuelLeftPct != null) {
+        "%.1f%s (%.1f%%)".format(dispRemFuel, volSym, fuelLeftPct)
+    } else {
+        "—"
+    }
 
     val latestRefuel = refuels.firstOrNull()
     val refuelSub = if (latestRefuel != null) {
@@ -466,16 +475,16 @@ fun HomeMenuScreen(
                         }
                         Column {
                             Text(activeVehicle?.name ?: "My Vehicle", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                            val ccTxt = activeVehicle?.let { if (it.engineCc > 0) "${it.engineCc} cc · " else "" } ?: ""
-                            val yearTxt = activeVehicle?.modelYear?.takeIf { it > 0 }?.let { "$it · " } ?: ""
+                            val carTypeLabel = activeVehicle?.let {
+                                runCatching { VehicleBodyType.valueOf(it.carType).label }.getOrNull()
+                            } ?: VehicleBodyType.MPV.label
+                            val profileSubtitle = buildList {
+                                activeVehicle?.engineCc?.takeIf { it > 0 }?.let { add("$it cc") }
+                                activeVehicle?.modelYear?.takeIf { it > 0 }?.let { add("$it") }
+                                add(carTypeLabel)
+                            }.joinToString(" · ")
                             Text(
-                                "%s%sTank %.1f/%.0f %s".format(
-                                    ccTxt,
-                                    yearTxt,
-                                    dispRemFuel,
-                                    dispCapFuel,
-                                    volSym
-                                ),
+                                text = profileSubtitle,
                                 fontSize = 10.sp,
                                 color = TorqueEvoColors.TextSecondary,
                                 maxLines = 1
@@ -498,6 +507,12 @@ fun HomeMenuScreen(
         }
 
         val statStripCard: @Composable () -> Unit = {
+            val fuelLeftColor = when {
+                fuelLeftPct == null -> TorqueEvoColors.TextPrimary
+                fuelLeftPct < 15.0 -> TorqueEvoColors.CriticalRed
+                fuelLeftPct < 25.0 -> TorqueEvoColors.WarnAmber
+                else -> TorqueEvoColors.TextPrimary
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -506,12 +521,12 @@ fun HomeMenuScreen(
                     .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
                     .clickable { activeSheet = ActiveHomeSheet.VEHICLE }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                StatCell("All time avg", if (allTimeAvgKpl > 0.1) "%.1f %s".format(dispAvg, avgSym) else "— $avgSym", TorqueEvoColors.ElectricBlue, Modifier.weight(1f))
-                StatCell("Odometer", "${dispOdo.roundToInt()} $distSym", TorqueEvoColors.TextPrimary, Modifier.weight(1f))
-                StatCell("Est. Range", dispRange?.let { "${it.roundToInt()} $distSym" } ?: "— $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(1f))
-                StatCell("Best 0–100", activeVehicle?.best0100Sec?.let { "%.2f s".format(it) } ?: "—", TorqueEvoColors.TextPrimary, Modifier.weight(0.9f))
+                StatCell("All time avg", if (allTimeAvgKpl > 0.1) "%.1f %s".format(dispAvg, avgSym) else "— $avgSym", TorqueEvoColors.ElectricBlue, Modifier.weight(0.95f))
+                StatCell("Odometer", "${dispOdo.roundToInt()} $distSym", TorqueEvoColors.TextPrimary, Modifier.weight(0.95f))
+                StatCell("Est. Range", dispRange?.let { "${it.roundToInt()} $distSym" } ?: "— $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(0.85f))
+                StatCell("Fuel Left", fuelLeftText, fuelLeftColor, Modifier.weight(1.35f))
             }
         }
 
@@ -750,7 +765,9 @@ private fun StatCell(label: String, value: String, color: Color, modifier: Modif
             fontWeight = FontWeight.Bold,
             color = color,
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-            maxLines = 1
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
