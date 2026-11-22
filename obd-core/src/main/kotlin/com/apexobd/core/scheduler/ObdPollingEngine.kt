@@ -368,6 +368,7 @@ class ObdPollingEngine(
                         ToyotaMeterDiscoveryResult(ToyotaMeterCapabilities())
                     }
                     val allCapabilities = discovered + meterDiscovery.capabilities.capabilityTokens()
+                    _connectionState.value = ConnectionState.Connected(handshake, allCapabilities.size)
                     _supportedPids.value = allCapabilities
                     _availableSensorKeys.value = computeAvailableSensorKeys(allCapabilities)
 
@@ -397,7 +398,6 @@ class ObdPollingEngine(
                         }
                     }
 
-                    _connectionState.value = ConnectionState.Connected(handshake, allCapabilities.size)
                     attempt = 0
 
                     runPollingLoop(handshake, discovered, meterDiscovery)
