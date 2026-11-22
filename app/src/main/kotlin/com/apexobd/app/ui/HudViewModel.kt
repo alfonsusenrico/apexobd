@@ -977,8 +977,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
             launch {
                 newEngine.supportedPids.collect { pids ->
-                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
-                    val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                    // Never persist empty/stale discovery sets or overwrite a newly selected vehicle
+                    // while connected to a different car's OBD session.
+                    if (pids.isEmpty() || _connectionState.value !is ConnectionState.Connected) return@collect
+                    val targetId = connectedDiscoveryVehicleId ?: return@collect
+                    if (targetId != activeEngineVehicleId) return@collect
+                    val cur = vehicleDao.getById(targetId)
                     val prevSaved = cur?.savedSupportedPids().orEmpty()
                     val isOemToken: (String) -> Boolean = { it.startsWith("7C0_") || it.startsWith("7E0_") }
                     val prevMode01 = prevSaved.filterNot(isOemToken).toSet()
@@ -989,7 +993,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         pids
                     }
-                    if (activeVehicle.value?.id == targetId || _connectionState.value is ConnectionState.Connected) {
+                    if (activeVehicle.value?.id == targetId) {
                         _supportedPids.value = mergedPids
                     }
                     if (mergedPids.isNotEmpty() && cur != null) {
@@ -1005,9 +1009,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
             launch {
                 newEngine.ecuOdometerKm.collect { ecuOdo ->
-                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (_connectionState.value !is ConnectionState.Connected) return@collect
+                    val targetId = connectedDiscoveryVehicleId ?: return@collect
                     if (ecuOdo != null && ecuOdo in 1.0..999_999.0 && targetId == activeEngineVehicleId) {
-                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        val cur = vehicleDao.getById(targetId)
                         if (cur != null && kotlin.math.abs(cur.allTimeOdometerKm - ecuOdo) >= 1.0) {
                             vehicleDao.updateVehicle(cur.copy(allTimeOdometerKm = ecuOdo))
                         }
@@ -1016,9 +1021,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
             launch {
                 newEngine.ecuFuelLiters.collect { ecuLiters ->
-                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (_connectionState.value !is ConnectionState.Connected) return@collect
+                    val targetId = connectedDiscoveryVehicleId ?: return@collect
                     if (ecuLiters != null && ecuLiters >= 0.0 && targetId == activeEngineVehicleId) {
-                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        val cur = vehicleDao.getById(targetId)
                         if (cur != null) {
                             val clamped = ecuLiters.coerceIn(0.0, cur.tankCapacityLiters)
                             if (kotlin.math.abs(cur.estimatedRemainingFuelLiters - clamped) >= 0.25) {
@@ -1030,7 +1036,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
             launch {
                 newEngine.ecuDistanceSinceClearKm.collect { ecuDistKm ->
-                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (_connectionState.value !is ConnectionState.Connected) return@collect
+                    val targetId = connectedDiscoveryVehicleId ?: return@collect
                     if (targetId == activeEngineVehicleId) {
                         _ecuDistanceSinceClearKm.value = ecuDistKm
                         if (ecuDistKm != null && ecuDistKm >= 0.0) {
