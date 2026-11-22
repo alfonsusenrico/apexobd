@@ -153,6 +153,7 @@ fun ApexAppRoot(
 ) {
     var onHudPage by remember { mutableStateOf(false) }
     val pendingSaveTrip by viewModel.pendingSaveTrip.collectAsStateWithLifecycle()
+    val pendingSaveSegments by viewModel.pendingSaveSegments.collectAsStateWithLifecycle()
     val shareCardDraft by viewModel.shareCardDraft.collectAsStateWithLifecycle()
     val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
     val shareCardExporting by viewModel.shareCardExporting.collectAsStateWithLifecycle()
@@ -181,6 +182,7 @@ fun ApexAppRoot(
             val fuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
             SaveTripSummaryDialog(
                 session = session,
+                segments = pendingSaveSegments,
                 vehicleName = activeVehicle?.name ?: "Active Vehicle",
                 unitPrefs = settings.toUnitPreferences(),
                 fuelType = fuelType,
@@ -1340,7 +1342,8 @@ private fun RenderWidgetContent(
                     "km"
                 )
                 val distTxt = dVal?.let { "%.1f %s".format(it, dUnit) } ?: "0.0 $dUnit"
-                "${if (isRecordingPaused) "PAUSED" else "REC"} · $clock · $distTxt"
+                val legSuffix = if (tripState.segmentCount > 1) " · Leg ${tripState.currentSegmentIndex}" else ""
+                "${if (isRecordingPaused) "PAUSED" else "REC"}$legSuffix · $clock · $distTxt"
             } else null
             MiniMapWidget(
                 gps = gps,
@@ -1390,10 +1393,16 @@ private fun RenderWidgetContent(
         }
         "data_logger" -> {
             val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+            val tripState by viewModel.tripRunMetrics.collectAsStateWithLifecycle()
+            val activeSegments by viewModel.activeRunSegments.collectAsStateWithLifecycle()
+            val activeSamples = activeSegments.sumOf { it.sampleCount }
             DataLoggerWidget(
                 isRecording = isRecording,
-                latestSampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
-                onToggleRecord = onToggleRecord
+                isPaused = isRecordingPaused,
+                segmentCount = tripState.currentSegmentIndex,
+                latestSampleCount = if (isRecording) activeSamples else (sessions.firstOrNull()?.sampleCount ?: 0),
+                onToggleRecord = onToggleRecord,
+                onTogglePauseResume = onTogglePauseResume
             )
         }
         else -> {

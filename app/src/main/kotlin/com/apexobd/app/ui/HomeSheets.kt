@@ -93,6 +93,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apexobd.app.data.db.RefuelLogEntity
 import com.apexobd.app.data.db.TelemetrySampleEntity
+import com.apexobd.app.data.db.TripSegmentEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.prefs.HudCanvasBackdrop
@@ -1570,6 +1571,7 @@ fun MapDisplayControlsSection(
 @Composable
 fun RunLogsAndMapsSheet(
     sessions: List<TripSessionEntity>,
+    segmentsBySession: Map<Long, List<TripSegmentEntity>> = emptyMap(),
     vehicleName: String,
     settings: UserSettings,
     onSelectMapStylePreset: (MapStylePreset) -> Unit,
@@ -1585,6 +1587,7 @@ fun RunLogsAndMapsSheet(
     onDismiss: () -> Unit
 ) {
     val fmt = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
+    val legTimeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     var showMapOptions by remember { mutableStateOf(false) }
 
     ApexLockedSheet(onBackRequest = onDismiss) {
@@ -1641,8 +1644,24 @@ fun RunLogsAndMapsSheet(
                         .padding(10.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    val sessionSegments = segmentsBySession[s.id].orEmpty()
+                    val legCount = maxOf(s.segmentCount, sessionSegments.size, 1)
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(fmt.format(Date(s.startedAtMs)), fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary, fontSize = 13.5.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(fmt.format(Date(s.startedAtMs)), fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary, fontSize = 13.5.sp)
+                            if (legCount > 1) {
+                                Text(
+                                    text = "$legCount Legs",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TorqueEvoColors.SkyBlue,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(TorqueEvoColors.DimBlue)
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         Text(
                             "%.1f %s · %s · %.1f %s".format(dVal, dSym, TripRunCalculator.formatDurationClock(durSec), kVal, kSym),
                             color = TorqueEvoColors.ElectricBlue,
@@ -1658,6 +1677,61 @@ fun RunLogsAndMapsSheet(
                         RunCellStat("FUEL USED", "%.2f %s".format(fVal, fSym), Modifier.weight(0.95f))
                         RunCellStat("PEAK RPM", "%.0f".format(s.peakRpm), Modifier.weight(0.85f))
                         RunCellStat("SAMPLES", "${s.sampleCount}", Modifier.weight(0.75f))
+                    }
+                    if (sessionSegments.size > 1) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF0A0E16))
+                                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                "SUB-RECORDS (PAUSE / RESUME LEGS)",
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.TextSecondary,
+                                letterSpacing = 0.5.sp
+                            )
+                            sessionSegments.forEach { seg ->
+                                val (sdVal, sdSym) = UnitConverter.convertDistanceKm(seg.distanceKm, unitPrefs)
+                                val (skVal, skSym) = UnitConverter.convertFuelEconomy(seg.avgKpl, unitPrefs, fuelType)
+                                val (sfVal, sfSym) = UnitConverter.convertVolume(seg.fuelUsedLiters, unitPrefs, fuelType)
+                                val segTimeRange = buildString {
+                                    append(legTimeFmt.format(Date(seg.startedAtMs)))
+                                    seg.endedAtMs?.let { append("–").append(legTimeFmt.format(Date(it))) }
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Leg ${seg.segmentIndex} ($segTimeRange)",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = TorqueEvoColors.TextPrimary
+                                    )
+                                    val kplPart = if (seg.avgKpl > 0.05) " · %.1f %s".format(skVal, skSym) else ""
+                                    Text(
+                                        text = "%.2f %s · %s · %.2f %s%s".format(
+                                            sdVal,
+                                            sdSym,
+                                            TripRunCalculator.formatDurationClock(seg.activeDurationSec),
+                                            sfVal,
+                                            sfSym,
+                                            kplPart
+                                        ),
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = TorqueEvoColors.SkyBlue,
+                                        style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                                    )
+                                }
+                            }
+                        }
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -3377,6 +3451,7 @@ private fun ComposerCheckboxItem(
 @Composable
 fun SaveTripSummaryDialog(
     session: TripSessionEntity,
+    segments: List<TripSegmentEntity> = emptyList(),
     vehicleName: String,
     unitPrefs: UnitPreferences,
     fuelType: FuelType,
@@ -3385,12 +3460,14 @@ fun SaveTripSummaryDialog(
     onDiscard: () -> Unit
 ) {
     val fmt = remember { SimpleDateFormat("dd MMM HH:mm", Locale.getDefault()) }
+    val legTimeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val (distVal, distUnit) = UnitConverter.convertDistanceKm(session.distanceKm, unitPrefs)
     val (kplVal, kplUnit) = UnitConverter.convertFuelEconomy(session.avgKpl, unitPrefs, fuelType)
     val (fuelVal, fuelUnit) = UnitConverter.convertVolume(session.fuelUsedLiters, unitPrefs, fuelType)
     val (avgSpdVal, spdUnit) = UnitConverter.convert(session.effectiveAvgSpeedKmh(), SensorQuantity.SPEED, unitPrefs, fuelType)
     val (maxSpdVal, _) = UnitConverter.convert(session.maxSpeedKmh, SensorQuantity.SPEED, unitPrefs, fuelType)
     val durationSec = session.effectiveDurationSec()
+    val legCount = maxOf(session.segmentCount, segments.size, 1)
 
     Dialog(
         onDismissRequest = {},
@@ -3423,8 +3500,9 @@ fun SaveTripSummaryDialog(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text("Save Recorded Trip Log?", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
+            val legSubtitle = if (legCount > 1) " · $legCount legs" else ""
             Text(
-                "$vehicleName · ${fmt.format(Date(session.startedAtMs))} · ${session.sampleCount} telemetry pts",
+                "$vehicleName · ${fmt.format(Date(session.startedAtMs))}$legSubtitle · ${session.sampleCount} telemetry pts",
                 fontSize = 11.5.sp,
                 color = TorqueEvoColors.TextSecondary
             )
@@ -3440,6 +3518,62 @@ fun SaveTripSummaryDialog(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TripSummaryMetricBox("TRIP AVG SPEED", "%.0f %s".format(avgSpdVal, spdUnit), TorqueEvoColors.AccentViolet, Modifier.weight(1f))
                 TripSummaryMetricBox("PEAKS", "%.0f %s · %.0f rpm".format(maxSpdVal, spdUnit, session.peakRpm), TorqueEvoColors.WarnAmber, Modifier.weight(1f))
+            }
+
+            if (segments.size > 1) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(TorqueEvoColors.CardSurface)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        "SUB-RECORDS (${segments.size} LEGS IN COMPLETE RUN)",
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.TextSecondary,
+                        letterSpacing = 0.5.sp
+                    )
+                    segments.forEach { seg ->
+                        val (sdVal, sdSym) = UnitConverter.convertDistanceKm(seg.distanceKm, unitPrefs)
+                        val (skVal, skSym) = UnitConverter.convertFuelEconomy(seg.avgKpl, unitPrefs, fuelType)
+                        val (sfVal, sfSym) = UnitConverter.convertVolume(seg.fuelUsedLiters, unitPrefs, fuelType)
+                        val timeRange = buildString {
+                            append(legTimeFmt.format(Date(seg.startedAtMs)))
+                            seg.endedAtMs?.let { append("–").append(legTimeFmt.format(Date(it))) }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Leg ${seg.segmentIndex} ($timeRange)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                            val kplPart = if (seg.avgKpl > 0.05) " · %.1f %s".format(skVal, skSym) else ""
+                            Text(
+                                text = "%.2f %s · %s · %.2f %s%s".format(
+                                    sdVal,
+                                    sdSym,
+                                    TripRunCalculator.formatDurationClock(seg.activeDurationSec),
+                                    sfVal,
+                                    sfSym,
+                                    kplPart
+                                ),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = TorqueEvoColors.SkyBlue,
+                                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum")
+                            )
+                        }
+                    }
+                }
             }
 
             Text(

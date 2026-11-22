@@ -1,6 +1,7 @@
 package com.apexobd.app
 
 import com.apexobd.app.data.db.TelemetrySampleEntity
+import com.apexobd.app.data.db.TripSegmentEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.platform.TripExporter
 import org.junit.Assert.assertTrue
@@ -9,7 +10,7 @@ import org.junit.Test
 class TripExporterTest {
 
     @Test
-    fun `toCsv and toJson emit valid telemetry rows`() {
+    fun `toCsv and toJson emit valid telemetry rows and sub-record segments`() {
         val session = TripSessionEntity(
             id = 7L,
             startedAtMs = 1700000000000L,
@@ -19,30 +20,77 @@ class TripExporterTest {
             maxSpeedKmh = 95.0,
             peakRpm = 4800.0,
             best0100Sec = 6.84,
-            sampleCount = 1,
+            sampleCount = 2,
             fuelUsedLiters = 0.2,
-            avgKpl = 12.0
+            avgKpl = 12.0,
+            segmentCount = 2
         )
-        val sample = TelemetrySampleEntity(
+        val leg1 = TripSegmentEntity(
+            id = 1L,
+            sessionId = 7L,
+            segmentIndex = 1,
+            startedAtMs = 1700000000000L,
+            endedAtMs = 1700000030000L,
+            distanceKm = 1.4,
+            fuelUsedLiters = 0.12,
+            activeDurationSec = 30L,
+            avgSpeedKmh = 168.0,
+            maxSpeedKmh = 95.0,
+            peakRpm = 4800.0,
+            avgKpl = 11.67,
+            sampleCount = 1
+        )
+        val leg2 = TripSegmentEntity(
+            id = 2L,
+            sessionId = 7L,
+            segmentIndex = 2,
+            startedAtMs = 1700000040000L,
+            endedAtMs = 1700000060000L,
+            distanceKm = 1.0,
+            fuelUsedLiters = 0.08,
+            activeDurationSec = 20L,
+            avgSpeedKmh = 180.0,
+            maxSpeedKmh = 90.0,
+            peakRpm = 4400.0,
+            avgKpl = 12.5,
+            sampleCount = 1
+        )
+        val sample1 = TelemetrySampleEntity(
             id = 1L,
             sessionId = 7L,
             timestampMs = 1700000010000L,
             latitude = -6.2088,
             longitude = 106.8456,
             gpsSpeedKmh = 84.0,
-            payloadJson = """{"rpm":3420,"coolant":90}"""
+            payloadJson = """{"rpm":3420,"coolant":90}""",
+            segmentIndex = 1
+        )
+        val sample2 = TelemetrySampleEntity(
+            id = 2L,
+            sessionId = 7L,
+            timestampMs = 1700000050000L,
+            latitude = -6.2100,
+            longitude = 106.8470,
+            gpsSpeedKmh = 80.0,
+            payloadJson = """{"rpm":3100,"coolant":91}""",
+            segmentIndex = 2
         )
 
-        val csv = TripExporter.toCsv(session, listOf(sample))
-        assertTrue(csv.contains("session_id,timestamp_ms,latitude,longitude,gps_speed_kmh,rpm,coolant"))
-        assertTrue(csv.contains("7,1700000010000,-6.2088,106.8456,84.0,3420.0,90.0"))
+        val csv = TripExporter.toCsv(session, listOf(sample1, sample2))
+        assertTrue(csv.contains("session_id,segment_index,timestamp_ms,latitude,longitude,gps_speed_kmh,rpm,coolant"))
+        assertTrue(csv.contains("7,1,1700000010000,-6.2088,106.8456,84.0,3420.0,90.0"))
+        assertTrue(csv.contains("7,2,1700000050000,-6.21,106.847,80.0,3100.0,91.0"))
 
-        val json = TripExporter.toJson(session, listOf(sample))
+        val json = TripExporter.toJson(session, listOf(sample1, sample2), listOf(leg1, leg2))
         assertTrue(json.contains("\"sessionId\": 7"))
         assertTrue(json.contains("\"durationSec\": 60"))
         assertTrue(json.contains("\"avgSpeedKmh\": 144.0"))
         assertTrue(json.contains("\"fuelUsedLiters\": 0.2"))
         assertTrue(json.contains("\"avgKpl\": 12.0"))
+        assertTrue(json.contains("\"segmentCount\": 2"))
+        assertTrue(json.contains("\"segments\": ["))
+        assertTrue(json.contains("\"segmentIndex\": 1"))
+        assertTrue(json.contains("\"segmentIndex\": 2"))
         assertTrue(json.contains("\"gpsSpeedKmh\": 84"))
     }
 

@@ -312,6 +312,24 @@ class LocationTracker(context: Context) {
         _gps.value = _gps.value.copy(trail = emptyList())
     }
 
+    /** Restores recorded GPS trail coordinates when resuming an unfinished paused run after an app restart. */
+    fun restoreTrail(points: List<Pair<Double, Double>>) {
+        trailBuffer.clear()
+        trailWasSimulated = false
+        val tail = if (points.size > 250) points.takeLast(250) else points
+        tail.forEach { trailBuffer.addLast(it) }
+        val lastPt = tail.lastOrNull()
+        _gps.value = if (lastPt != null) {
+            _gps.value.copy(
+                latitude = lastPt.first,
+                longitude = lastPt.second,
+                trail = trailBuffer.toList()
+            )
+        } else {
+            _gps.value.copy(trail = emptyList())
+        }
+    }
+
     private fun appendTrailPoint(lat: Double, lon: Double, simulated: Boolean) {
         val last = trailBuffer.lastOrNull()
         if (shouldResetTrail(last?.first, last?.second, lat, lon, trailWasSimulated, simulated)) {

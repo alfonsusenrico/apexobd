@@ -20,6 +20,7 @@ import com.apexobd.app.data.db.HudPageEntity
 import com.apexobd.app.data.db.HudWidgetEntity
 import com.apexobd.app.data.db.RefuelLogEntity
 import com.apexobd.app.data.db.TelemetrySampleEntity
+import com.apexobd.app.data.db.TripSegmentEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.db.WidgetDisplayType
@@ -240,6 +241,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    val tripSegmentsBySession: StateFlow<Map<Long, List<TripSegmentEntity>>> = tripSessions
+        .map { list -> list.map { it.id } }
+        .distinctUntilChanged()
+        .flatMapLatest { ids ->
+            if (ids.isEmpty()) flowOf(emptyMap())
+            else tripDao.observeSegmentsForSessions(ids).map { segs -> segs.groupBy { it.sessionId } }
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
     private val _onHudScreen = MutableStateFlow(false)
     val onHudScreen: StateFlow<Boolean> = _onHudScreen.asStateFlow()
 
@@ -277,6 +287,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _pendingSaveTrip = MutableStateFlow<TripSessionEntity?>(null)
     val pendingSaveTrip: StateFlow<TripSessionEntity?> = _pendingSaveTrip.asStateFlow()
+
+    private val _pendingSaveSegments = MutableStateFlow<List<TripSegmentEntity>>(emptyList())
+    val pendingSaveSegments: StateFlow<List<TripSegmentEntity>> = _pendingSaveSegments.asStateFlow()
+
+    private val _activeRunSegments = MutableStateFlow<List<TripSegmentEntity>>(emptyList())
+    val activeRunSegments: StateFlow<List<TripSegmentEntity>> = _activeRunSegments.asStateFlow()
 
     enum class ShareCardExportAction { SHARE_TO_APPS, DOWNLOAD_PNG }
 
@@ -364,6 +380,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val wifiConnected = wifiBinder.wifiConnected
 
     private var activeSessionId: Long? = null
+    @Volatile
+    private var endRecordingRequested: Boolean = false
     private val mutableHistory = mutableMapOf<String, ArrayDeque<Double>>()
 
     init {
@@ -373,7 +391,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch(Dispatchers.IO) {
             ApexDatabase.seedDefaults(hudDao, vehicleDao)
-            tripDao.deleteDraftSessions()
+            restoreOrCleanupDraftSessionsOnStartup()
             offlineMapManager.refreshAll()
         }
 
@@ -429,15 +447,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         // Keep OBD adapter connected whenever the background listener service is active (Home, HUD, or background)
         viewModelScope.launch {
             combine(
-                combine(_backgroundServiceActive, _onHudScreen, _isRecording) { s, h, r -> Triple(s, h, r) },
+                combine(_backgroundServiceActive, _onHudScreen, _isRecording, _isRecordingPaused) { s, h, r, p ->
+                    Triple(s, h, r && !p)
+                },
                 _isAppInForeground,
                 _connectionState,
                 settings
-            ) { (serviceActive, onHud, recording), inForeground, connState, st ->
+            ) { (serviceActive, onHud, activeRecording), inForeground, connState, st ->
                 BackgroundLifecycleState(
                     serviceActive = serviceActive,
                     onHud = onHud,
-                    recording = recording,
+                    recording = activeRecording,
                     inForeground = inForeground,
                     isObdConnected = connState is ConnectionState.Connected,
                     settings = st
@@ -499,16 +519,18 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             combine(
                 combine(_backgroundServiceActive, _onHudScreen, _isAppInForeground) { a, h, fg -> Triple(a, h, fg) },
                 _connectionState,
-                _isRecording,
+                combine(_isRecording, _isRecordingPaused) { r, p -> r to p },
                 settings
-            ) { (active, onHud, inFg), conn, rec, st ->
-                val needsLocationFgs = rec || (onHud && inFg)
-                Triple(active to needsLocationFgs, rec, conn to st.adapterDetailedEndpoint())
-            }.collect { (activeAndLoc, rec, pair) ->
+            ) { (active, onHud, inFg), conn, (rec, paused), st ->
+                val activeRecording = rec && !paused
+                val needsLocationFgs = activeRecording || (onHud && inFg)
+                Triple(active to needsLocationFgs, rec to paused, conn to st.adapterDetailedEndpoint())
+            }.collect { (activeAndLoc, recAndPaused, pair) ->
                 val (active, needsLocationFgs) = activeAndLoc
                 if (!active) return@collect
+                val (rec, paused) = recAndPaused
                 val (conn, endpoint) = pair
-                val (title, text) = buildBackgroundNotificationText(conn, rec, endpoint)
+                val (title, text) = buildBackgroundNotificationText(conn, rec, endpoint, isRecordingPaused = paused)
                 LoggingForegroundService.updateIfRunning(
                     context = getApplication(),
                     title = title,
@@ -529,10 +551,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             combine(
                 pagesWithWidgets,
                 _visiblePageIndex,
-                _isRecording,
+                combine(_isRecording, _isRecordingPaused) { r, p -> r && !p },
                 combine(_onHudScreen, _isAppInForeground, _backgroundServiceActive) { h, fg, svc -> Triple(h, fg, svc) },
                 settings
-            ) { pages, pageIdx, recording, flags, st ->
+            ) { pages, pageIdx, activeRecording, flags, st ->
                 val (onHud, inForeground, serviceActive) = flags
                 val activeHud = onHud && inForeground
                 val visibleWidgets = if (activeHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
@@ -552,9 +574,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     else -> BACKGROUND_KEEPALIVE_KEYS
                 }
-                val backgroundKeys = if (recording) RECORDING_EXTRA_KEYS else emptySet()
-                val needsGps = serviceActive && (activeHud || recording)
-                val needsHighFreqGps = recording || (activeHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
+                val backgroundKeys = if (activeRecording) RECORDING_EXTRA_KEYS else emptySet()
+                val needsGps = serviceActive && (activeHud || activeRecording)
+                val needsHighFreqGps = activeRecording || (activeHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
                 if (needsGps) {
                     locationTracker.startUpdates(highFrequency = needsHighFreqGps)
                 } else {
@@ -569,8 +591,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
         // Direct 0ms-overhead GPS speed emission independent of OBD poll cycle cadence
         viewModelScope.launch {
-            combine(_onHudScreen, _isRecording, locationTracker.gps) { onHud, recording, gps ->
-                Triple(onHud || recording, recording, gps)
+            combine(_onHudScreen, _isRecording, _isRecordingPaused, locationTracker.gps) { onHud, recording, paused, gps ->
+                val activeRec = recording && !paused
+                Triple(onHud || activeRec, activeRec, gps)
             }.collect { (active, recording, gps) ->
                 if (active && gps.hasRealFix) {
                     val imuG = accelTracker.accelG.value
@@ -687,7 +710,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun terminateBackgroundService() {
         if (_isRecording.value) {
-            stopRecording()
+            // Pause and checkpoint the active run rather than terminating it so the user can resume later
+            _isRecordingPaused.value = true
+            endRecordingRequested = false
+            loggingJob?.cancel()
+            loggingJob = null
         }
         _backgroundServiceActive.value = false
         LoggingForegroundService.stop(getApplication())
@@ -696,12 +723,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildBackgroundNotificationText(
         connectionState: ConnectionState,
         isRecording: Boolean,
-        endpoint: String
+        endpoint: String,
+        isRecordingPaused: Boolean = _isRecordingPaused.value
     ): Pair<String, String> {
-        val title = if (isRecording) {
-            "ApexOBD · Recording & Listening"
-        } else {
-            "ApexOBD Background Listener"
+        val title = when {
+            isRecording && isRecordingPaused -> "ApexOBD · Run Paused"
+            isRecording -> "ApexOBD · Recording & Listening"
+            else -> "ApexOBD Background Listener"
         }
         // Use a stable status string without per-attempt retry counters (#1, #2, ...) so
         // NotificationManagerService is only invoked on actual state transitions.
@@ -711,7 +739,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             is ConnectionState.Reconnecting -> "Waiting for adapter ($endpoint)"
             is ConnectionState.Disconnected -> "Listener active ($endpoint)"
         }
-        val body = "$stateText · Active in background · Tap to stop"
+        val body = if (isRecording && isRecordingPaused) {
+            "$stateText · Run paused (saved) · Tap to stop listener"
+        } else {
+            "$stateText · Active in background · Tap to stop"
+        }
         return title to body
     }
 
@@ -1274,15 +1306,102 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun togglePauseResumeRecording() {
         if (!_isRecording.value) return
-        _isRecordingPaused.value = !_isRecordingPaused.value
+        val willPause = !_isRecordingPaused.value
+        _isRecordingPaused.value = willPause
+        if (!willPause) {
+            // Resuming: if the recording loop is not running (e.g. restored after cold start or background service stop), launch it
+            val jobActive = loggingJob?.isActive == true
+            if (!jobActive) {
+                val sid = activeSessionId
+                if (sid != null) {
+                    resumeRestoredRecording(sid)
+                } else {
+                    startRecording()
+                }
+            }
+        }
+    }
+
+    private suspend fun restoreOrCleanupDraftSessionsOnStartup() {
+        val drafts = tripDao.getDraftSessionsOnce()
+        if (drafts.isEmpty()) return
+
+        var restoredAny = false
+        for (draft in drafts) {
+            val hasData = draft.sampleCount > 0 || draft.distanceKm >= 0.005 || (draft.activeDurationSec ?: 0L) >= 2L
+            if (!hasData || restoredAny) {
+                tripDao.deleteSessionById(draft.id)
+                continue
+            }
+            restoredAny = true
+            val samples = tripDao.getSamplesForSession(draft.id)
+            var segments = tripDao.getSegmentsForSession(draft.id)
+            val fallbackEndMs = samples.lastOrNull()?.timestampMs ?: System.currentTimeMillis()
+            segments = segments.map { seg ->
+                if (seg.endedAtMs == null) {
+                    val closed = seg.copy(endedAtMs = maxOf(seg.startedAtMs, fallbackEndMs))
+                    tripDao.updateSegment(closed)
+                    closed
+                } else seg
+            }
+
+            if (draft.endedAtMs != null) {
+                _pendingSaveSegments.value = segments
+                _pendingSaveTrip.value = draft
+            } else {
+                // Unfinished run that was active or paused when the app closed -> restore in PAUSED state
+                val gpsPts = TripCardRenderer.extractValidGpsPoints(samples)
+                withContext(Dispatchers.Main) {
+                    locationTracker.restoreTrail(gpsPts)
+                }
+                val segCount = maxOf(draft.segmentCount, segments.size, 1)
+                val lastSegIdx = segments.maxOfOrNull { it.segmentIndex } ?: segCount
+                val durSec = draft.effectiveDurationSec()
+                val restoredMetrics = TripRunMetrics(
+                    activeOrCompleted = true,
+                    isRecording = true,
+                    isPaused = true,
+                    distanceKm = draft.distanceKm,
+                    fuelUsedLiters = draft.fuelUsedLiters,
+                    elapsedSec = durSec,
+                    avgKpl = draft.avgKpl.takeIf { it > 0.05 },
+                    avgSpeedKmh = draft.effectiveAvgSpeedKmh().takeIf { it > 0.05 },
+                    segmentCount = segCount,
+                    currentSegmentIndex = lastSegIdx
+                )
+                activeSessionId = draft.id
+                endRecordingRequested = false
+                _activeRunSegments.value = segments
+                _isRecordingPaused.value = true
+                _isRecording.value = true
+                _tripRunMetrics.value = restoredMetrics
+                _liveValues.update { TripRunCalculator.applyToLiveValues(it, restoredMetrics) }
+            }
+        }
     }
 
     private fun startRecording() {
         if (_isRecording.value) return
         _pendingSaveTrip.value = null
+        _pendingSaveSegments.value = emptyList()
+        _activeRunSegments.value = emptyList()
         locationTracker.clearTrail()
+        endRecordingRequested = false
         _isRecordingPaused.value = false
         _isRecording.value = true
+        ensureForegroundServiceForRecording()
+        launchRecordingCoroutine(resumeSessionId = null)
+    }
+
+    private fun resumeRestoredRecording(sessionId: Long) {
+        endRecordingRequested = false
+        _isRecordingPaused.value = false
+        _isRecording.value = true
+        ensureForegroundServiceForRecording()
+        launchRecordingCoroutine(resumeSessionId = sessionId)
+    }
+
+    private fun ensureForegroundServiceForRecording() {
         if (!_backgroundServiceActive.value) {
             _backgroundServiceActive.value = true
         }
@@ -1292,33 +1411,140 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             endpoint = settings.value.adapterDetailedEndpoint()
         )
         LoggingForegroundService.start(getApplication(), title, text, needsLocation = true)
+    }
 
+    private fun launchRecordingCoroutine(resumeSessionId: Long?) {
+        loggingJob?.cancel()
         loggingJob = viewModelScope.launch(Dispatchers.IO) {
-            val vehicleId = activeVehicle.value?.id ?: 1L
-            val startMs = System.currentTimeMillis()
-            val sessionId = tripDao.insertSession(
-                TripSessionEntity(startedAtMs = startMs, vehicleId = vehicleId, isSaved = false)
+            val nowInitMs = System.currentTimeMillis()
+            val existingSession = resumeSessionId?.let { tripDao.getSessionById(it) }
+            val existingSegments = if (existingSession != null) {
+                tripDao.getSegmentsForSession(existingSession.id)
+            } else emptyList()
+
+            val vehicleId = existingSession?.vehicleId ?: activeVehicle.value?.id ?: 1L
+            val startMs = existingSession?.startedAtMs ?: nowInitMs
+            val sessionId = existingSession?.id ?: tripDao.insertSession(
+                TripSessionEntity(
+                    startedAtMs = startMs,
+                    vehicleId = vehicleId,
+                    isSaved = false,
+                    segmentCount = 1
+                )
             )
             activeSessionId = sessionId
 
-            var currentTrip = TripRunMetrics(activeOrCompleted = true, isRecording = true, isPaused = false)
+            var currentSegmentIndex = if (existingSession != null) {
+                (existingSegments.maxOfOrNull { it.segmentIndex } ?: existingSession.segmentCount).coerceAtLeast(0) + 1
+            } else 1
+            var totalSegmentsCount = maxOf(currentSegmentIndex, existingSegments.size + 1)
+
+            var maxSpeed = existingSession?.maxSpeedKmh ?: 0.0
+            var peakRpm = existingSession?.peakRpm ?: 0.0
+            var totalCount = existingSession?.sampleCount ?: 0
+            var activeElapsedMs = (existingSession?.activeDurationSec ?: 0L) * 1000L
+            var accumulatedFuelL = existingSession?.fuelUsedLiters ?: 0.0
+            var segmentFuelBaseline = _fuelMetrics.value?.totalFuelUsedLiters ?: 0.0
+
+            var currentTrip = TripRunMetrics(
+                activeOrCompleted = true,
+                isRecording = true,
+                isPaused = false,
+                distanceKm = existingSession?.distanceKm ?: 0.0,
+                fuelUsedLiters = accumulatedFuelL,
+                elapsedSec = activeElapsedMs / 1000L,
+                avgKpl = existingSession?.avgKpl?.takeIf { it > 0.05 },
+                avgSpeedKmh = existingSession?.avgSpeedKmh?.takeIf { it > 0.05 },
+                segmentCount = totalSegmentsCount,
+                currentSegmentIndex = currentSegmentIndex
+            )
             _tripRunMetrics.value = currentTrip
             _liveValues.update { TripRunCalculator.applyToLiveValues(it, currentTrip) }
 
-            var maxSpeed = 0.0
-            var peakRpm = 0.0
-            var totalCount = 0
-            var activeElapsedMs = 0L
-            var accumulatedFuelL = 0.0
-            var segmentFuelBaseline = _fuelMetrics.value?.totalFuelUsedLiters ?: 0.0
+            // Start the active leg sub-record (Leg 1 on fresh start, or Leg N+1 on resume)
+            var segStartedAtMs = nowInitMs
+            var segStartDistKm = currentTrip.distanceKm
+            var segStartFuelL = accumulatedFuelL
+            var segStartElapsedMs = activeElapsedMs
+            var segMaxSpeed = 0.0
+            var segPeakRpm = 0.0
+            var segSampleCount = 0
+            var currentSegmentRowId = tripDao.insertSegment(
+                TripSegmentEntity(
+                    sessionId = sessionId,
+                    segmentIndex = currentSegmentIndex,
+                    startedAtMs = segStartedAtMs
+                )
+            )
+            _activeRunSegments.value = tripDao.getSegmentsForSession(sessionId)
+
             var wasPaused = false
-            var lastStepMs = startMs
-            var lastGpsMoveMs = startMs
+            var lastStepMs = nowInitMs
+            var lastGpsMoveMs = nowInitMs
             var prevGps: GpsSnapshot? = null
             val batch = ArrayList<TelemetrySampleEntity>(10)
 
+            suspend fun checkpointCurrentSegmentAndSession(
+                checkpointMs: Long,
+                closeSegment: Boolean,
+                endSession: Boolean
+            ): TripSessionEntity {
+                if (batch.isNotEmpty()) {
+                    tripDao.insertSamples(batch.toList())
+                    batch.clear()
+                }
+                if (currentSegmentRowId > 0L) {
+                    val segDist = (currentTrip.distanceKm - segStartDistKm).coerceAtLeast(0.0)
+                    val segFuel = (currentTrip.fuelUsedLiters - segStartFuelL).coerceAtLeast(0.0)
+                    val segDurSec = ((activeElapsedMs - segStartElapsedMs).coerceAtLeast(0L)) / 1000L
+                    val segAvgSpd = if (segDurSec > 0L && segDist > 0.01) {
+                        (segDist / (segDurSec / 3600.0)).coerceIn(0.0, 400.0)
+                    } else 0.0
+                    val segAvgKpl = if (segFuel > 0.002) {
+                        (segDist / segFuel).coerceIn(0.0, 99.9)
+                    } else 0.0
+                    tripDao.updateSegment(
+                        TripSegmentEntity(
+                            id = currentSegmentRowId,
+                            sessionId = sessionId,
+                            segmentIndex = currentSegmentIndex,
+                            startedAtMs = segStartedAtMs,
+                            endedAtMs = if (closeSegment) checkpointMs else null,
+                            distanceKm = segDist,
+                            fuelUsedLiters = segFuel,
+                            activeDurationSec = segDurSec,
+                            avgSpeedKmh = segAvgSpd,
+                            maxSpeedKmh = segMaxSpeed,
+                            peakRpm = segPeakRpm,
+                            avgKpl = segAvgKpl,
+                            sampleCount = segSampleCount
+                        )
+                    )
+                }
+                val sessionEntity = TripSessionEntity(
+                    id = sessionId,
+                    startedAtMs = startMs,
+                    endedAtMs = if (endSession) checkpointMs else null,
+                    distanceKm = currentTrip.distanceKm,
+                    avgSpeedKmh = currentTrip.avgSpeedKmh ?: 0.0,
+                    maxSpeedKmh = maxSpeed,
+                    peakRpm = peakRpm,
+                    best0100Sec = _timer0100.value.bestRunSec,
+                    sampleCount = totalCount,
+                    vehicleId = vehicleId,
+                    fuelUsedLiters = currentTrip.fuelUsedLiters,
+                    avgKpl = currentTrip.avgKpl ?: 0.0,
+                    activeDurationSec = activeElapsedMs / 1000L,
+                    isSaved = false,
+                    segmentCount = totalSegmentsCount
+                )
+                tripDao.updateSession(sessionEntity)
+                _activeRunSegments.value = tripDao.getSegmentsForSession(sessionId)
+                return sessionEntity
+            }
+
             try {
-                while (_isRecording.value) {
+                while (_isRecording.value && !endRecordingRequested) {
                     val nowMs = System.currentTimeMillis()
                     val dtMs = (nowMs - lastStepMs).coerceAtLeast(0L)
                     lastStepMs = nowMs
@@ -1328,19 +1554,56 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     if (pausedNow) {
                         if (!wasPaused) {
                             accumulatedFuelL += (curTotalFuel - segmentFuelBaseline).coerceAtLeast(0.0)
+                            currentTrip = TripRunCalculator.computeStep(
+                                previousDistanceKm = currentTrip.distanceKm,
+                                gpsDeltaKm = null,
+                                gpsHasRealFix = false,
+                                msSinceLastGpsMovement = 0L,
+                                useSimulator = false,
+                                speedKmh = 0.0,
+                                dtMs = 0L,
+                                elapsedMs = activeElapsedMs,
+                                fuelDeltaLiters = accumulatedFuelL
+                            ).copy(
+                                isPaused = true,
+                                segmentCount = totalSegmentsCount,
+                                currentSegmentIndex = currentSegmentIndex
+                            )
+                            _tripRunMetrics.value = currentTrip
+                            _liveValues.update { TripRunCalculator.applyToLiveValues(it, currentTrip) }
+                            checkpointCurrentSegmentAndSession(
+                                checkpointMs = nowMs,
+                                closeSegment = true,
+                                endSession = false
+                            )
+                            flushActiveVehicleStats()
                             wasPaused = true
                         }
                         prevGps = null
-                        val pausedTrip = currentTrip.copy(isPaused = true)
-                        currentTrip = pausedTrip
-                        _tripRunMetrics.value = pausedTrip
-                        _liveValues.update { TripRunCalculator.applyToLiveValues(it, pausedTrip) }
                         delay(250L)
                         continue
                     }
 
                     if (wasPaused) {
+                        // Resuming from pause -> open a new TripSegmentEntity sub-record (Leg N+1)
+                        currentSegmentIndex++
+                        totalSegmentsCount = maxOf(totalSegmentsCount, currentSegmentIndex)
                         segmentFuelBaseline = curTotalFuel
+                        segStartedAtMs = nowMs
+                        segStartDistKm = currentTrip.distanceKm
+                        segStartFuelL = accumulatedFuelL
+                        segStartElapsedMs = activeElapsedMs
+                        segMaxSpeed = 0.0
+                        segPeakRpm = 0.0
+                        segSampleCount = 0
+                        currentSegmentRowId = tripDao.insertSegment(
+                            TripSegmentEntity(
+                                sessionId = sessionId,
+                                segmentIndex = currentSegmentIndex,
+                                startedAtMs = segStartedAtMs
+                            )
+                        )
+                        _activeRunSegments.value = tripDao.getSegmentsForSession(sessionId)
                         lastGpsMoveMs = nowMs
                         prevGps = null
                         wasPaused = false
@@ -1355,6 +1618,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     val rpm = vals["rpm"] ?: 0.0
                     if (speed > maxSpeed) maxSpeed = speed
                     if (rpm > peakRpm) peakRpm = rpm
+                    if (speed > segMaxSpeed) segMaxSpeed = speed
+                    if (rpm > segPeakRpm) segPeakRpm = rpm
 
                     val prev = prevGps
                     val gpsDeltaKm = if (
@@ -1379,7 +1644,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         dtMs = dtMs,
                         elapsedMs = activeElapsedMs,
                         fuelDeltaLiters = totalFuelUsed
-                    ).copy(isPaused = false)
+                    ).copy(
+                        isPaused = false,
+                        segmentCount = totalSegmentsCount,
+                        currentSegmentIndex = currentSegmentIndex
+                    )
                     _tripRunMetrics.value = currentTrip
                     _liveValues.update { TripRunCalculator.applyToLiveValues(it, currentTrip) }
 
@@ -1389,40 +1658,23 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         latitude = if (gps.hasRealFix) gps.latitude else null,
                         longitude = if (gps.hasRealFix) gps.longitude else null,
                         gpsSpeedKmh = speed,
-                        payloadJson = TripExporter.encodePayload(vals)
+                        payloadJson = TripExporter.encodePayload(vals),
+                        segmentIndex = currentSegmentIndex
                     )
                     totalCount++
+                    segSampleCount++
 
                     if (batch.size >= 10) {
-                        tripDao.insertSamples(batch.toList())
-                        batch.clear()
-                        tripDao.updateSession(
-                            TripSessionEntity(
-                                id = sessionId,
-                                startedAtMs = startMs,
-                                endedAtMs = null,
-                                distanceKm = currentTrip.distanceKm,
-                                avgSpeedKmh = currentTrip.avgSpeedKmh ?: 0.0,
-                                maxSpeedKmh = maxSpeed,
-                                peakRpm = peakRpm,
-                                best0100Sec = _timer0100.value.bestRunSec,
-                                sampleCount = totalCount,
-                                vehicleId = vehicleId,
-                                fuelUsedLiters = currentTrip.fuelUsedLiters,
-                                avgKpl = currentTrip.avgKpl ?: 0.0,
-                                activeDurationSec = activeElapsedMs / 1000L,
-                                isSaved = false
-                            )
+                        checkpointCurrentSegmentAndSession(
+                            checkpointMs = nowMs,
+                            closeSegment = false,
+                            endSession = false
                         )
                     }
                     delay(250L)
                 }
             } finally {
                 withContext(NonCancellable) {
-                    if (batch.isNotEmpty()) {
-                        tripDao.insertSamples(batch.toList())
-                        batch.clear()
-                    }
                     val endMs = System.currentTimeMillis()
                     val curTotalFuel = _fuelMetrics.value?.totalFuelUsedLiters ?: segmentFuelBaseline
                     val finalFuel = if (wasPaused) {
@@ -1430,6 +1682,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     } else {
                         accumulatedFuelL + (curTotalFuel - segmentFuelBaseline).coerceAtLeast(0.0)
                     }.coerceAtLeast(0.0)
+                    val explicitlyEnded = endRecordingRequested || !_isRecording.value
                     val finalStep = TripRunCalculator.computeStep(
                         previousDistanceKm = currentTrip.distanceKm,
                         gpsDeltaKm = null,
@@ -1440,46 +1693,73 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         dtMs = 0L,
                         elapsedMs = activeElapsedMs.coerceAtLeast(0L),
                         fuelDeltaLiters = finalFuel
-                    ).copy(isRecording = false, isPaused = false)
+                    ).copy(
+                        isRecording = !explicitlyEnded,
+                        isPaused = !explicitlyEnded,
+                        segmentCount = totalSegmentsCount,
+                        currentSegmentIndex = currentSegmentIndex
+                    )
+                    currentTrip = finalStep
                     _tripRunMetrics.value = finalStep
                     _liveValues.update { TripRunCalculator.applyToLiveValues(it, finalStep) }
 
-                    val finalSession = TripSessionEntity(
-                        id = sessionId,
-                        startedAtMs = startMs,
-                        endedAtMs = endMs,
-                        distanceKm = finalStep.distanceKm,
-                        avgSpeedKmh = finalStep.avgSpeedKmh ?: 0.0,
-                        maxSpeedKmh = maxSpeed,
-                        peakRpm = peakRpm,
-                        best0100Sec = _timer0100.value.bestRunSec,
-                        sampleCount = totalCount,
-                        vehicleId = vehicleId,
-                        fuelUsedLiters = finalStep.fuelUsedLiters,
-                        avgKpl = finalStep.avgKpl ?: 0.0,
-                        activeDurationSec = activeElapsedMs / 1000L,
-                        isSaved = false
+                    val savedSession = checkpointCurrentSegmentAndSession(
+                        checkpointMs = endMs,
+                        closeSegment = true,
+                        endSession = explicitlyEnded
                     )
-                    tripDao.updateSession(finalSession)
                     flushActiveVehicleStats()
-                    _pendingSaveTrip.value = finalSession
+                    if (explicitlyEnded) {
+                        _pendingSaveSegments.value = tripDao.getSegmentsForSession(sessionId)
+                        _pendingSaveTrip.value = savedSession
+                    }
                 }
             }
         }
     }
 
     private fun stopRecording() {
+        val sid = activeSessionId
+        val jobActive = loggingJob?.isActive == true
+        endRecordingRequested = true
         _isRecording.value = false
         _isRecordingPaused.value = false
         if (!_backgroundServiceActive.value) {
             LoggingForegroundService.stop(getApplication())
         }
         activeSessionId = null
+        if (!jobActive && sid != null) {
+            // Stopping a restored paused session whose coroutine was not actively running
+            viewModelScope.launch(Dispatchers.IO) {
+                val endMs = System.currentTimeMillis()
+                val existing = tripDao.getSessionById(sid) ?: return@launch
+                val segments = tripDao.getSegmentsForSession(sid).map { seg ->
+                    if (seg.endedAtMs == null) {
+                        val closed = seg.copy(endedAtMs = maxOf(seg.startedAtMs, endMs))
+                        tripDao.updateSegment(closed)
+                        closed
+                    } else seg
+                }
+                val finalSession = existing.copy(
+                    endedAtMs = endMs,
+                    segmentCount = maxOf(existing.segmentCount, segments.size, 1),
+                    isSaved = false
+                )
+                tripDao.updateSession(finalSession)
+                val finalMetrics = _tripRunMetrics.value.copy(isRecording = false, isPaused = false)
+                _tripRunMetrics.value = finalMetrics
+                _liveValues.update { TripRunCalculator.applyToLiveValues(it, finalMetrics) }
+                _pendingSaveSegments.value = segments
+                _pendingSaveTrip.value = finalSession
+            }
+        }
     }
 
     fun savePendingTrip() {
         val pending = _pendingSaveTrip.value ?: return
         _pendingSaveTrip.value = null
+        _pendingSaveSegments.value = emptyList()
+        _activeRunSegments.value = emptyList()
         viewModelScope.launch(Dispatchers.IO) {
             tripDao.markSessionSaved(pending.id)
         }
@@ -1488,6 +1768,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     fun discardPendingTrip() {
         val pending = _pendingSaveTrip.value ?: return
         _pendingSaveTrip.value = null
+        _pendingSaveSegments.value = emptyList()
+        _activeRunSegments.value = emptyList()
         val reset = TripRunMetrics()
         _tripRunMetrics.value = reset
         _liveValues.update { TripRunCalculator.applyToLiveValues(it, reset) }
@@ -1500,7 +1782,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     fun exportSession(session: TripSessionEntity, asJson: Boolean) {
         viewModelScope.launch(Dispatchers.IO) {
             val samples = tripDao.getSamplesForSession(session.id)
-            val content = if (asJson) TripExporter.toJson(session, samples) else TripExporter.toCsv(session, samples)
+            val segments = tripDao.getSegmentsForSession(session.id)
+            val content = if (asJson) TripExporter.toJson(session, samples, segments) else TripExporter.toCsv(session, samples)
             val ext = if (asJson) "json" else "csv"
             val mime = if (asJson) "application/json" else "text/csv"
             TripExporter.shareFile(getApplication(), "apex_trip_${session.id}.$ext", mime, content)
