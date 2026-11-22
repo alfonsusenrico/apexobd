@@ -71,31 +71,7 @@ Choose from four dedicated RPM radial gauges scaled automatically to your vehicl
 
 ## Download & Install
 
-1. Download the latest signed release APK (`ApexOBD-v1.0.0-release.apk`) from the [**Releases**](../../releases) page.
+1. Download the latest signed release APK from the [**Releases**](../../releases) page.
 2. Open the APK on your Android 8.0+ phone.
    > **Note on direct APK installs:** Android requires a one-time *"Allow from this source"* confirmation when installing any APK outside Google Play. ApexOBD release APKs are permanently signed with the official release certificate so future updates install cleanly in place.
 3. Pair or connect your OBD-II adapter, set up your car profile on the Home Menu, and tap **Open HUD**.
-
----
-
-<details>
-<summary><strong>For Developers: Building & Signing From Source</strong></summary>
-
-### Requirements
-- JDK 17 (`JAVA_HOME`) and Android SDK Platform 35 (`sdk.dir` in `local.properties`)
-- Gradle 8+ / 9+
-
-### Run Tests & Lint
-```bash
-gradle :obd-core:test :app:testDebugUnitTest :app:lintDebug
-```
-
-### Build Signed Release APK & Play Store Bundle (`.aab`)
-1. Copy `keystore.properties.example` to `keystore.properties` (gitignored) and point it to your PKCS12 `.jks` keystore (or export `APEX_KEYSTORE_PATH`, `APEX_KEYSTORE_PASSWORD`, `APEX_KEY_ALIAS`, `APEX_KEY_PASSWORD`).
-2. Build signed release artifacts:
-   ```bash
-   gradle :app:assembleRelease :app:bundleRelease
-   ```
-   Outputs are written to `app/build/outputs/apk/release/app-release.apk` and `app/build/outputs/bundle/release/app-release.aab`.
-
-</details>
