@@ -13,18 +13,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.mandatorySystemGestures
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -59,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.apexobd.app.platform.TripCardRenderer
 import com.apexobd.app.platform.TripExporter
 import com.apexobd.app.ui.components.ApexBrandLogo
 import com.apexobd.app.ui.components.DualMapCanvas
@@ -66,6 +72,9 @@ import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
+import com.apexobd.core.model.VehicleBodyType
+import com.apexobd.core.protocol.FuelEconomyTracker
+import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.transport.ObdConnectionType
 import java.io.File
 import java.text.SimpleDateFormat
@@ -103,6 +112,9 @@ fun HomeMenuScreen(
     val bleScannedDevices by viewModel.bleScannedDevices.collectAsStateWithLifecycle()
     val bleScanning by viewModel.bleScanning.collectAsStateWithLifecycle()
     val usbDevices by viewModel.usbDevices.collectAsStateWithLifecycle()
+    val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
+    val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
+    val backgroundServiceActive by viewModel.backgroundServiceActive.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
     var startAddingNewVehicle by remember { mutableStateOf(false) }
@@ -116,22 +128,41 @@ fun HomeMenuScreen(
     LaunchedEffect(latestTrip?.id) {
         if (latestTrip != null) {
             val samples = viewModel.getSamplesForSession(latestTrip.id)
-            lastTripTrail = samples.mapNotNull { s ->
-                if (s.latitude != null && s.longitude != null) s.latitude to s.longitude else null
-            }
+            lastTripTrail = TripCardRenderer.extractValidGpsPoints(samples)
         } else {
             lastTripTrail = emptyList()
         }
     }
 
     val allTimeAvgKpl = activeVehicle?.allTimeAvgKpl() ?: 0.0
-    val dteAvgKpl = activeVehicle?.recentDteKpl?.takeIf { it > 0.1 } ?: allTimeAvgKpl.takeIf { it > 0.1 }
+    val dteAvgKpl = activeVehicle?.let { v ->
+        FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = allTimeAvgKpl.takeIf { it > 0.1 },
+            recentDteKpl = v.recentDteKpl?.takeIf { it > 0.1 },
+            remainingFuelLiters = v.estimatedRemainingFuelLiters,
+            tankCapacityLiters = v.tankCapacityLiters
+        )
+    }
     val (dispAvg, avgSym) = UnitConverter.convertFuelEconomy(allTimeAvgKpl, unitPrefs, fuelType)
     val (dispOdo, distSym) = UnitConverter.convertDistanceKm(activeVehicle?.allTimeOdometerKm ?: 0.0, unitPrefs)
-    val estRangeKm: Double? = dteAvgKpl?.let { kpl -> (activeVehicle?.estimatedRemainingFuelLiters ?: 0.0) * kpl }
+    val estRangeKm: Double? = activeVehicle?.let { v ->
+        FuelEconomyTracker.computeEstimatedRangeKm(
+            remainingFuelLiters = v.estimatedRemainingFuelLiters,
+            tankCapacityLiters = v.tankCapacityLiters,
+            dteKpl = dteAvgKpl
+        )
+    }
     val dispRange: Double? = estRangeKm?.let { UnitConverter.convertDistanceKm(it, unitPrefs).first }
     val (dispRemFuel, volSym) = UnitConverter.convertVolume(activeVehicle?.estimatedRemainingFuelLiters ?: 0.0, unitPrefs, fuelType)
-    val (dispCapFuel, _) = UnitConverter.convertVolume(activeVehicle?.tankCapacityLiters ?: 45.0, unitPrefs, fuelType)
+    val fuelLeftPct: Double? = activeVehicle?.let { v ->
+        val cap = v.tankCapacityLiters.coerceAtLeast(1.0)
+        ((v.estimatedRemainingFuelLiters / cap) * 100.0).coerceIn(0.0, 100.0)
+    }
+    val fuelLeftText = if (activeVehicle != null && fuelLeftPct != null) {
+        "%.1f%s (%.1f%%)".format(dispRemFuel, volSym, fuelLeftPct)
+    } else {
+        "—"
+    }
 
     val latestRefuel = refuels.firstOrNull()
     val refuelSub = if (latestRefuel != null) {
@@ -153,7 +184,9 @@ fun HomeMenuScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(TorqueEvoColors.HomeBg)
-            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .windowInsetsPadding(
+                WindowInsets.safeDrawing.union(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+            )
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         val isLandscape = maxWidth > maxHeight
@@ -164,7 +197,12 @@ fun HomeMenuScreen(
                 ObdConnectionType.BLUETOOTH_CLASSIC, ObdConnectionType.BLUETOOTH_LE -> Icons.Default.Bluetooth
                 ObdConnectionType.USB_SERIAL -> Icons.Default.Usb
             }
-            val adapterTint = TorqueEvoColors.ElectricBlue
+            val adapterTint = when (connectionState) {
+                is ConnectionState.Connected -> TorqueEvoColors.NominalGreen
+                is ConnectionState.Connecting -> TorqueEvoColors.ElectricBlue
+                is ConnectionState.Reconnecting -> TorqueEvoColors.WarnAmber
+                is ConnectionState.Disconnected -> if (backgroundServiceActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.CriticalRed
+            }
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
@@ -176,15 +214,21 @@ fun HomeMenuScreen(
                         Row(
                             modifier = Modifier
                                 .heightIn(min = 32.dp)
-                                .widthIn(max = 166.dp)
+                                .widthIn(max = 178.dp)
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(Color(0xFF101620))
-                                .border(1.dp, adapterTint.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+                                .border(1.dp, adapterTint.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
                                 .clickable { activeSheet = ActiveHomeSheet.ADAPTER }
                                 .padding(horizontal = 8.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(adapterTint)
+                            )
                             Icon(adapterIcon, contentDescription = "OBD2 Adapter", tint = adapterTint, modifier = Modifier.size(13.dp))
                             Text(
                                 text = settings.adapterChipLabel(),
@@ -431,16 +475,16 @@ fun HomeMenuScreen(
                         }
                         Column {
                             Text(activeVehicle?.name ?: "My Vehicle", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextPrimary)
-                            val ccTxt = activeVehicle?.let { if (it.engineCc > 0) "${it.engineCc} cc · " else "" } ?: ""
-                            val yearTxt = activeVehicle?.modelYear?.takeIf { it > 0 }?.let { "$it · " } ?: ""
+                            val carTypeLabel = activeVehicle?.let {
+                                runCatching { VehicleBodyType.valueOf(it.carType).label }.getOrNull()
+                            } ?: VehicleBodyType.MPV.label
+                            val profileSubtitle = buildList {
+                                activeVehicle?.engineCc?.takeIf { it > 0 }?.let { add("$it cc") }
+                                activeVehicle?.modelYear?.takeIf { it > 0 }?.let { add("$it") }
+                                add(carTypeLabel)
+                            }.joinToString(" · ")
                             Text(
-                                "%s%sTank %.1f/%.0f %s".format(
-                                    ccTxt,
-                                    yearTxt,
-                                    dispRemFuel,
-                                    dispCapFuel,
-                                    volSym
-                                ),
+                                text = profileSubtitle,
                                 fontSize = 10.sp,
                                 color = TorqueEvoColors.TextSecondary,
                                 maxLines = 1
@@ -463,6 +507,12 @@ fun HomeMenuScreen(
         }
 
         val statStripCard: @Composable () -> Unit = {
+            val fuelLeftColor = when {
+                fuelLeftPct == null -> TorqueEvoColors.TextPrimary
+                fuelLeftPct < 15.0 -> TorqueEvoColors.CriticalRed
+                fuelLeftPct < 25.0 -> TorqueEvoColors.WarnAmber
+                else -> TorqueEvoColors.TextPrimary
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -471,12 +521,12 @@ fun HomeMenuScreen(
                     .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
                     .clickable { activeSheet = ActiveHomeSheet.VEHICLE }
                     .padding(horizontal = 10.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                StatCell("All time avg", if (allTimeAvgKpl > 0.1) "%.1f %s".format(dispAvg, avgSym) else "— $avgSym", TorqueEvoColors.ElectricBlue, Modifier.weight(1f))
-                StatCell("Odometer", "${dispOdo.roundToInt()} $distSym", TorqueEvoColors.TextPrimary, Modifier.weight(1f))
-                StatCell("Est. Range", dispRange?.let { "${it.roundToInt()} $distSym" } ?: "— $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(1f))
-                StatCell("Best 0–100", activeVehicle?.best0100Sec?.let { "%.2f s".format(it) } ?: "—", TorqueEvoColors.TextPrimary, Modifier.weight(0.9f))
+                StatCell("All time avg", if (allTimeAvgKpl > 0.1) "%.1f %s".format(dispAvg, avgSym) else "— $avgSym", TorqueEvoColors.ElectricBlue, Modifier.weight(0.95f))
+                StatCell("Odometer", "${dispOdo.roundToInt()} $distSym", TorqueEvoColors.TextPrimary, Modifier.weight(0.95f))
+                StatCell("Est. Range", dispRange?.let { "${it.roundToInt()} $distSym" } ?: "— $distSym", TorqueEvoColors.NominalGreen, Modifier.weight(0.85f))
+                StatCell("Fuel Left", fuelLeftText, fuelLeftColor, Modifier.weight(1.35f))
             }
         }
 
@@ -612,6 +662,7 @@ fun HomeMenuScreen(
             fuelType = fuelType,
             onExport = { s, asJson -> viewModel.exportSession(s, asJson) },
             onShareCard = { s -> viewModel.exportSessionShareCard(s) },
+            isPreparingCard = shareCardPreparing,
             onOpenOfflineMaps = { activeSheet = ActiveHomeSheet.OFFLINE_MAPS },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
@@ -649,7 +700,7 @@ fun HomeMenuScreen(
             hasEcuDump = ecuDumpReady,
             onDiscoverExplorer = { viewModel.forceConnectAndDiscoverForExplorer() },
             onStopExplorer = { viewModel.restoreVisibleCanvasPolling() },
-            onAddCustomPid = { n, hex, form, u -> viewModel.addManualCustomPid(n, hex, form, u) },
+            onAddCustomPid = { n, hex, form, u, hdr -> viewModel.addManualCustomPid(n, hex, form, u, hdr) },
             onImportCsv = { viewModel.importTorqueCsv(it) },
             onRunDeepDump = { viewModel.runDeepEcuDump() },
             onShareDeepDump = { viewModel.shareEcuDump() },
@@ -657,6 +708,8 @@ fun HomeMenuScreen(
         )
         ActiveHomeSheet.ADAPTER -> AdapterConnectionSheet(
             settings = settings,
+            connectionState = connectionState,
+            backgroundServiceActive = backgroundServiceActive,
             btPairedDevices = btPairedDevices,
             bleScannedDevices = bleScannedDevices,
             bleScanning = bleScanning,
@@ -669,6 +722,8 @@ fun HomeMenuScreen(
             onSelectBleDevice = { viewModel.selectBleDevice(it) },
             onSelectUsbDevice = { id, baud -> viewModel.selectUsbDevice(id, baud) },
             onRequestUsbPermission = { viewModel.requestUsbAdapterPermission(it) },
+            onResumeBackgroundService = { viewModel.resumeBackgroundService() },
+            onTerminateBackgroundService = { viewModel.terminateBackgroundService() },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
         )
         ActiveHomeSheet.SETTINGS -> SettingsSheet(
@@ -676,6 +731,7 @@ fun HomeMenuScreen(
             onOpenAdapterConnection = { activeSheet = ActiveHomeSheet.ADAPTER },
             onSelectPolling = { viewModel.setPollingProfile(it) },
             onSelectGaugeSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+            onToggleLiveMicroMotion = { viewModel.setLiveMicroMotion(!settings.liveMicroMotion) },
             onSelectFuelCoasting = { viewModel.setFuelCoastingMode(it) },
             onSelectGridScale = { viewModel.setHudGridScale(it) },
             onSelectMapStylePreset = { viewModel.setMapStylePreset(it) },
@@ -709,7 +765,9 @@ private fun StatCell(label: String, value: String, color: Color, modifier: Modif
             fontWeight = FontWeight.Bold,
             color = color,
             style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-            maxLines = 1
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

@@ -3,9 +3,11 @@ package com.apexobd.app
 import com.apexobd.app.data.db.TelemetrySampleEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.prefs.MapCursorStyle
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
 import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
+import com.apexobd.app.platform.TripCardRenderer
 import com.apexobd.app.platform.TripShareStatsCalculator
 import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.UnitPreferences
@@ -179,5 +181,73 @@ class TripShareStatsCalculatorTest {
         ).associateBy { it.metric }
         assertEquals(rendered[ShareCardMetric.PEAK_AVG_HP]?.value, fromSummary[ShareCardMetric.PEAK_AVG_HP]?.value)
         assertEquals(rendered[ShareCardMetric.MAX_G_FORCE]?.value, fromSummary[ShareCardMetric.MAX_G_FORCE]?.value)
+    }
+
+    @Test
+    fun `Route Card supports 1x1, 4x3, and 9x16 aspect ratios, custom photo, and surrounding roads config`() {
+        assertEquals(1080 to 1080, ShareCardAspectRatio.SQUARE_1_1.widthPx to ShareCardAspectRatio.SQUARE_1_1.heightPx)
+        assertEquals(1440 to 1080, ShareCardAspectRatio.LANDSCAPE_4_3.widthPx to ShareCardAspectRatio.LANDSCAPE_4_3.heightPx)
+        assertEquals(1080 to 1920, ShareCardAspectRatio.STORY_9_16.widthPx to ShareCardAspectRatio.STORY_9_16.heightPx)
+
+        val customCfg = TripCardConfig(
+            backgroundMode = ShareCardBackgroundMode.CUSTOM_PHOTO,
+            customPhotoPath = "/tmp/custom_ride.jpg",
+            aspectRatio = ShareCardAspectRatio.STORY_9_16,
+            showSurroundingRoads = true
+        )
+        assertEquals(ShareCardBackgroundMode.CUSTOM_PHOTO, customCfg.backgroundMode)
+        assertTrue(customCfg.showSurroundingRoads)
+
+        val sqBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.SQUARE_1_1))
+        val wideBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.LANDSCAPE_4_3))
+        val storyBox = TripCardRenderer.routeCanvasSizeForConfig(TripCardConfig(aspectRatio = ShareCardAspectRatio.STORY_9_16))
+        assertTrue("Expected wider route box in 4:3 (${wideBox.first} vs ${sqBox.first})", wideBox.first > sqBox.first)
+        assertTrue("Expected taller route box in 9:16 (${storyBox.second} vs ${sqBox.second})", storyBox.second > sqBox.second)
+
+        assertEquals("1:1", ShareCardAspectRatio.SQUARE_1_1.label)
+        assertEquals("4:3", ShareCardAspectRatio.LANDSCAPE_4_3.label)
+        assertEquals("9:16", ShareCardAspectRatio.STORY_9_16.label)
+        assertEquals(25, TripCardConfig().surroundingRoadsOpacityPct)
+        assertEquals(true, TripCardConfig().surroundingRoadsMainOnly)
+    }
+
+    @Test
+    fun `extractValidGpsPoints strips unfixed default sentinel points so partial-GPS trips plot real road path`() {
+        val mixedSamples = buildList {
+            repeat(5) { idx ->
+                add(
+                    TelemetrySampleEntity(
+                        sessionId = 14L,
+                        timestampMs = 1_000L + idx * 250L,
+                        latitude = -6.2088,
+                        longitude = 106.8456,
+                        gpsSpeedKmh = 15.0,
+                        payloadJson = "{}"
+                    )
+                )
+            }
+            for (i in 0 until 25) {
+                add(
+                    TelemetrySampleEntity(
+                        sessionId = 14L,
+                        timestampMs = 10_000L + i * 500L,
+                        latitude = -7.309 + i * 0.0005,
+                        longitude = 112.678 - i * 0.0004,
+                        gpsSpeedKmh = 40.0,
+                        payloadJson = "{}"
+                    )
+                )
+            }
+        }
+        val clean = TripCardRenderer.extractValidGpsPoints(mixedSamples)
+        assertEquals(25, clean.size)
+        assertTrue(clean.all { (lat, _) -> lat < -7.0 })
+
+        // Single-region synthetic trip in Jakarta remains intact
+        val jakartaSamples = listOf(
+            TelemetrySampleEntity(sessionId = 2L, timestampMs = 1_000L, latitude = -6.2088, longitude = 106.8456, gpsSpeedKmh = 20.0, payloadJson = "{}"),
+            TelemetrySampleEntity(sessionId = 2L, timestampMs = 2_000L, latitude = -6.2092, longitude = 106.8461, gpsSpeedKmh = 25.0, payloadJson = "{}")
+        )
+        assertEquals(2, TripCardRenderer.extractValidGpsPoints(jakartaSamples).size)
     }
 }

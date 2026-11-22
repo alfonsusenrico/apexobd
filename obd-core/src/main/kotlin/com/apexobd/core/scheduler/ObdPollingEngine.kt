@@ -15,6 +15,9 @@ import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.PidDefinition
 import com.apexobd.core.protocol.PollTier
+import com.apexobd.core.protocol.ToyotaMeterCapabilities
+import com.apexobd.core.protocol.ToyotaMeterDiscoveryResult
+import com.apexobd.core.protocol.ToyotaMeterProtocol
 import com.apexobd.core.transport.ObdTransport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -242,8 +245,22 @@ class ObdPollingEngine(
     private val _avgLatencyMs = MutableStateFlow(0)
     val avgLatencyMs: StateFlow<Int> = _avgLatencyMs.asStateFlow()
 
+    private val _ecuOdometerKm = MutableStateFlow<Double?>(null)
+    val ecuOdometerKm: StateFlow<Double?> = _ecuOdometerKm.asStateFlow()
+
+    private val _ecuFuelLiters = MutableStateFlow<Double?>(null)
+    val ecuFuelLiters: StateFlow<Double?> = _ecuFuelLiters.asStateFlow()
+
+    @Volatile
+    private var latestMeterFuelLiters: Double? = null
+
+    private val meterFuelFilter = com.apexobd.core.protocol.FuelFloatSloshFilter()
+
     @Volatile
     private var activeSensorKeys: Set<String> = emptySet()
+
+    @Volatile
+    private var backgroundRecordKeys: Set<String> = emptySet()
 
     @Volatile
     private var customPids: Map<String, CustomPidDefinition> = emptyMap()
@@ -266,10 +283,21 @@ class ObdPollingEngine(
     @Volatile
     private var externalRoadGradePct: Double = 0.0
 
+    @Volatile
+    private var backgroundIdleMode: Boolean = false
+
     private var pollJob: Job? = null
 
     fun setActiveSensors(keys: Set<String>) {
         activeSensorKeys = keys
+    }
+
+    fun setBackgroundIdleMode(idle: Boolean) {
+        backgroundIdleMode = idle
+    }
+
+    fun setBackgroundRecordKeys(keys: Set<String>) {
+        backgroundRecordKeys = keys
     }
 
     fun setCustomPids(defs: List<CustomPidDefinition>) {
@@ -317,12 +345,32 @@ class ObdPollingEngine(
                     transport.connect()
                     val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
                     val discovered = ObdPidRegistry.discoverSupportedPids(client)
-                    _supportedPids.value = discovered
-                    _availableSensorKeys.value = computeAvailableSensorKeys(discovered)
-                    _connectionState.value = ConnectionState.Connected(handshake, discovered.size)
+                    val meterDiscovery = if (handshake.isCanProtocol) {
+                        ToyotaMeterProtocol.discover(client)
+                    } else {
+                        ToyotaMeterDiscoveryResult(ToyotaMeterCapabilities())
+                    }
+                    val allCapabilities = discovered + meterDiscovery.capabilities.capabilityTokens()
+                    _supportedPids.value = allCapabilities
+                    _availableSensorKeys.value = computeAvailableSensorKeys(allCapabilities)
+
+                    meterFuelFilter.reset()
+                    latestMeterFuelLiters = meterDiscovery.initialFuelLiters?.let { raw ->
+                        meterFuelFilter.seed(raw, vehicleProfile.tankCapacityLiters)
+                    }
+                    latestMeterFuelLiters?.let { liters ->
+                        _ecuFuelLiters.value = liters
+                        fuelTracker.syncFuelRemainingFromEcu(liters, vehicleProfile.tankCapacityLiters)
+                    }
+                    meterDiscovery.initialOdometerKm?.let { odo ->
+                        _ecuOdometerKm.value = odo.toDouble()
+                        fuelTracker.syncOdometerFromEcu(odo.toDouble())
+                    }
+
+                    _connectionState.value = ConnectionState.Connected(handshake, allCapabilities.size)
                     attempt = 0
 
-                    runPollingLoop(handshake, discovered)
+                    runPollingLoop(handshake, discovered, meterDiscovery)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
@@ -354,7 +402,8 @@ class ObdPollingEngine(
     private fun computeAvailableSensorKeys(discovered: Set<String>): Set<String> {
         val out = linkedSetOf<String>()
         for (pid in ObdPidRegistry.standardPids) {
-            if (discovered.isEmpty() || pid.pidHex in discovered) {
+            val fuelViaMeter = pid.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in discovered
+            if (discovered.isEmpty() || pid.pidHex in discovered || fuelViaMeter) {
                 out.add(pid.key)
             }
         }
@@ -367,79 +416,147 @@ class ObdPollingEngine(
         return out
     }
 
-    private suspend fun runPollingLoop(handshake: ElmHandshakeInfo, discovered: Set<String>) {
+    private fun slowCooldownMs(key: String, isVisible: Boolean): Long = when (key) {
+        "voltage" -> if (isVisible) 2200L else 4000L
+        "lambda", "o2_b1s1_lambda", "o2_b1s1_wr_lambda", "o2_b1s1_v", "o2_b1s2_v" ->
+            if (isVisible) 850L else 1200L
+        "fuel_system_status", "stft_b1", "ltft_b1", "stft_b2", "ltft_b2", "throttle" ->
+            if (isVisible) 700L else 1200L
+        "timing_advance", "fuel_pressure" -> if (isVisible) 450L else 1500L
+        else -> if (isVisible) 1800L else 2800L
+    }
+
+    private fun selectNextDueSecondary(
+        slowAll: List<PidDefinition>,
+        requested: Set<String>,
+        lastPollMs: Map<String, Long>,
+        nowMs: Long
+    ): PidDefinition? {
+        var best: PidDefinition? = null
+        var bestScore = Long.MIN_VALUE
+        for (pid in slowAll) {
+            val isVisible = pid.key in requested
+            val cooldown = slowCooldownMs(pid.key, isVisible)
+            val last = lastPollMs[pid.key] ?: 0L
+            val elapsed = nowMs - last
+            if (last == 0L || elapsed >= cooldown) {
+                val overdue = if (last == 0L) 10_000L else (elapsed - cooldown).coerceAtMost(9_000L)
+                val tierBonus = if (isVisible) 20_000L else 0L
+                val unpolledBonus = if (last == 0L) 5_000L else 0L
+                val speedPriority = if (cooldown <= 900L) 500L else 0L
+                val score = tierBonus + unpolledBonus + speedPriority + overdue
+                if (score > bestScore) {
+                    bestScore = score
+                    best = pid
+                }
+            }
+        }
+        return best
+    }
+
+    private suspend fun runPollingLoop(
+        handshake: ElmHandshakeInfo,
+        discovered: Set<String>,
+        meterDiscovery: ToyotaMeterDiscoveryResult
+    ) {
         var cycle = 0
-        var slowCursor = 0
         var samplesInSec = 0
         var latencyAccumMs = 0L
         var rttCount = 0
         var windowStart = System.currentTimeMillis()
-        var supportsMultiPid = handshake.isCanProtocol
+        var multiPidFailStreak = 0
+        var multiPidEverSucceeded = false
+        var multiPidRetryAtMs = 0L
+        val lastSlowPollMs = HashMap<String, Long>(24)
+        val lastCustomPollMs = HashMap<String, Long>(16)
+        val meterCaps = meterDiscovery.capabilities
+        var lastMeterFuelMs = if (meterDiscovery.initialFuelLiters != null) windowStart else 0L
+        var lastMeterOdoMs = if (meterDiscovery.initialOdometerKm != null) windowStart else 0L
+        var lastMeterFastMs = windowStart
+        var lastMeterCoolantMs = windowStart
         val values = _liveValues.value.toMutableMap()
-        val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "obd_speed", "engine_load", "map", "maf", "throttle")
+        latestMeterFuelLiters?.let { liters ->
+            val cap = vehicleProfile.tankCapacityLiters.coerceAtLeast(1.0)
+            values["fuel_level"] = ((liters / cap) * 100.0).coerceIn(0.0, 100.0)
+            values["fuel_remaining"] = liters.coerceIn(0.0, cap)
+        }
+        meterDiscovery.initialOdometerKm?.let { values["ecu_odometer"] = it.toDouble() }
+        // Only expose cluster comparison channels when actively requested on the HUD so trip logs never carry frozen connect snapshots.
+        if ("cluster_speed" in activeSensorKeys) {
+            meterDiscovery.initialClusterSpeedKmh?.let { values["cluster_speed"] = it }
+        } else {
+            values.remove("cluster_speed")
+        }
+        if ("cluster_rpm" in activeSensorKeys) {
+            meterDiscovery.initialClusterRpm?.let { values["cluster_rpm"] = it }
+        } else {
+            values.remove("cluster_rpm")
+        }
+        if ("cluster_coolant" in activeSensorKeys) {
+            meterDiscovery.initialClusterCoolantC?.let { values["cluster_coolant"] = it }
+        } else {
+            values.remove("cluster_coolant")
+        }
+        if (meterCaps.hasAny) {
+            emitDerivedAndSnapshot(values)
+        }
+        val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "engine_load", "obd_speed", "map", "maf", "throttle")
+        val liveTimeoutMs = if (handshake.isCanProtocol) 650L else 1400L
 
         while (currentCoroutineContext().isActive && transport.isConnected.value) {
             val profile = pollingProfile
             val requested = activeSensorKeys.ifEmpty {
                 setOf("rpm", "obd_speed", "voltage", "iat", "coolant", "rel_throttle", "maf", "timing_advance")
             }
+            val background = backgroundRecordKeys
 
-            val expandedKeys = expandDependencies(requested, discovered)
+            val expandedKeys = expandDependencies(requested + background, discovered)
             val allAvailableTargets = expandedKeys
                 .mapNotNull { ObdPidRegistry.findByKey(it) }
                 .distinctBy { it.pidHex }
                 .filter { discovered.isEmpty() || it.pidHex in discovered }
 
             val relThrSupported = "45" in discovered || discovered.isEmpty()
-            val promotedFallbackKeys = buildSet {
-                if (!relThrSupported) add("throttle")
-                if ("boost_kpa" in requested || "boost_bar" in requested) add("map")
+            val mafSupported = "10" in discovered || discovered.isEmpty()
+            val coreFuelAirKeys = buildSet {
+                add("rpm")
+                add("obd_speed")
+                add(if (relThrSupported) "rel_throttle" else "throttle")
+                if (mafSupported) add("maf") else add("engine_load")
+                if (!mafSupported && "0B" in discovered) add("map")
             }
 
+            val isHighTarget: (PidDefinition) -> Boolean = { pid ->
+                pid.defaultTier == PollTier.HIGH && (pid.key in requested || pid.key in coreFuelAirKeys)
+            }
             val highTargets = allAvailableTargets
-                .filter { it.defaultTier == PollTier.HIGH || it.key in promotedFallbackKeys }
+                .filter(isHighTarget)
                 .sortedBy { pid ->
                     val idx = fastPriorityOrder.indexOf(pid.key)
                     if (idx >= 0) idx else 100
                 }
-            val slowAll = allAvailableTargets.filter { it.defaultTier != PollTier.HIGH && it.key !in promotedFallbackKeys }
-            // Split visible HUD secondary PIDs vs background fuel helpers so visible dials/bars update frequently without blocking RPM/Throttle.
-            val visibleSecondary = slowAll.filter { it.key in requested }
-            val helperSecondary = slowAll.filter { it.key !in requested }
-            val slowDue = when {
-                slowAll.isEmpty() -> emptyList()
-                cycle == 0 -> slowAll
-                visibleSecondary.isNotEmpty() && cycle % 2 == 1 -> {
-                    val item = visibleSecondary[slowCursor % visibleSecondary.size]
-                    slowCursor++
-                    listOf(item)
-                }
-                helperSecondary.isNotEmpty() && cycle % 6 == 0 -> {
-                    val item = helperSecondary[slowCursor % helperSecondary.size]
-                    slowCursor++
-                    listOf(item)
-                }
-                visibleSecondary.isEmpty() && cycle % 4 == 0 -> {
-                    val item = slowAll[slowCursor % slowAll.size]
-                    slowCursor++
-                    listOf(item)
-                }
-                else -> emptyList()
-            }
-            val standardTargets = (highTargets + slowDue).distinctBy { it.pidHex }
+            val slowAll = allAvailableTargets.filterNot(isHighTarget)
+            val loopNowMs = System.currentTimeMillis()
+            val dueSlowPid = selectNextDueSecondary(slowAll, requested, lastSlowPollMs, loopNowMs)
 
-            if (supportsMultiPid && standardTargets.size >= 2) {
-                for (chunk in ObdPidRegistry.packSingleFrameCanChunks(standardTargets)) {
+            if (multiPidFailStreak >= 3 && multiPidEverSucceeded && loopNowMs >= multiPidRetryAtMs) {
+                multiPidFailStreak = 0
+            }
+            val canUseMultiPid = handshake.isCanProtocol && multiPidFailStreak < 3
+
+            if (canUseMultiPid && highTargets.size >= 2) {
+                for (chunk in ObdPidRegistry.packSingleFrameCanChunks(highTargets)) {
                     if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
                     if (chunk.size == 1) {
-                        val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values)
+                        val (ok, rtt) = pollSingleAndEmit(chunk.first(), handshake.isCanProtocol, values, liveTimeoutMs)
                         if (ok) samplesInSec++
                         latencyAccumMs += rtt
                         rttCount++
                     } else {
-                        val cmd = "01" + chunk.joinToString("") { it.pidHex }
+                        // Trailing '1' instructs ELM327 CAN to return immediately after 1 frame (~40ms vs ~100ms ATST wait)
+                        val cmd = "01" + chunk.joinToString("") { it.pidHex } + "1"
                         val t0 = System.currentTimeMillis()
-                        val res = client.execute(cmd)
+                        val res = client.execute(cmd, timeoutMs = liveTimeoutMs)
                         latencyAccumMs += (System.currentTimeMillis() - t0)
                         rttCount++
 
@@ -448,42 +565,69 @@ class ObdPollingEngine(
                         } else emptyList()
 
                         if (decodedList.isEmpty()) {
-                            supportsMultiPid = false
+                            multiPidFailStreak++
+                            if (multiPidFailStreak >= 3) {
+                                // Only retry after 15s if multi-PID previously succeeded on this ECU;
+                                // otherwise keep disabled for this session so unsupported ECUs never stall periodically.
+                                multiPidRetryAtMs = if (multiPidEverSucceeded) {
+                                    System.currentTimeMillis() + 15_000L
+                                } else {
+                                    Long.MAX_VALUE
+                                }
+                            }
                             for (pid in chunk) {
-                                val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
+                                val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values, liveTimeoutMs)
                                 if (ok) samplesInSec++
                                 latencyAccumMs += rtt
                                 rttCount++
                             }
                         } else {
+                            multiPidEverSucceeded = true
+                            multiPidFailStreak = 0
+                            val decodedHexes = HashSet<String>(chunk.size)
                             for (item in decodedList) {
                                 values[item.key] = item.value
+                                decodedHexes += item.pidHex
                                 samplesInSec++
                             }
                             emitDerivedAndSnapshot(values)
+                            for (pid in chunk) {
+                                if (pid.pidHex !in decodedHexes) {
+                                    val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values, liveTimeoutMs)
+                                    if (ok) samplesInSec++
+                                    latencyAccumMs += rtt
+                                    rttCount++
+                                }
+                            }
                         }
                     }
                 }
             } else {
-                // Interleave primary RPM / high-priority PID every 2nd step for 2x smoother gauge updates
-                val rpmPid = standardTargets.firstOrNull { it.key == "rpm" }
-                val others = standardTargets.filter { it.key != "rpm" }
+                val rpmPid = highTargets.firstOrNull { it.key == "rpm" }
+                val others = highTargets.filter { it.key != "rpm" }
 
                 if (others.isEmpty() && rpmPid != null) {
-                    val (ok, rtt) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
+                    val (ok, rtt) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values, liveTimeoutMs)
                     if (ok) samplesInSec++
                     latencyAccumMs += rtt
                     rttCount++
                 } else {
+                    val midRpmIndex = if (others.size >= 4) others.size / 2 else -1
+                    if (rpmPid != null) {
+                        val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values, liveTimeoutMs)
+                        if (okRpm) samplesInSec++
+                        latencyAccumMs += rttRpm
+                        rttCount++
+                    }
                     for ((idx, pid) in others.withIndex()) {
                         if (!currentCoroutineContext().isActive || !transport.isConnected.value) break
-                        if (rpmPid != null && idx % 2 == 0) {
-                            val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values)
+                        if (rpmPid != null && midRpmIndex >= 1 && idx == midRpmIndex) {
+                            val (okRpm, rttRpm) = pollSingleAndEmit(rpmPid, handshake.isCanProtocol, values, liveTimeoutMs)
                             if (okRpm) samplesInSec++
                             latencyAccumMs += rttRpm
                             rttCount++
                         }
-                        val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values)
+                        val (ok, rtt) = pollSingleAndEmit(pid, handshake.isCanProtocol, values, liveTimeoutMs)
                         if (ok) samplesInSec++
                         latencyAccumMs += rtt
                         rttCount++
@@ -491,22 +635,76 @@ class ObdPollingEngine(
                 }
             }
 
-            val customTargets = expandedKeys
-                .mapNotNull { customPids[it] }
-                .filter { cycle % 3 == 0 }
+            if (dueSlowPid != null && currentCoroutineContext().isActive && transport.isConnected.value) {
+                lastSlowPollMs[dueSlowPid.key] = System.currentTimeMillis()
+                val (ok, rtt) = pollSingleAndEmit(dueSlowPid, handshake.isCanProtocol, values, liveTimeoutMs)
+                if (ok) samplesInSec++
+                latencyAccumMs += rtt
+                rttCount++
+            }
 
-            for (custom in customTargets) {
-                if (!transport.isConnected.value) break
+            val customNowMs = System.currentTimeMillis()
+            val dueCustom = expandedKeys
+                .mapNotNull { customPids[it] }
+                .firstOrNull { custom ->
+                    val cooldown = if (!custom.headerHex.isNullOrBlank()) 2500L else 450L
+                    val last = lastCustomPollMs[custom.key] ?: 0L
+                    last == 0L || (customNowMs - last) >= cooldown
+                }
+
+            if (dueCustom != null && currentCoroutineContext().isActive && transport.isConnected.value) {
+                lastCustomPollMs[dueCustom.key] = customNowMs
                 val t0 = System.currentTimeMillis()
-                val res = client.execute(custom.modeAndPidHex)
+                val res = executeCustomPidWithHeader(
+                    custom = dueCustom,
+                    isCanProtocol = handshake.isCanProtocol,
+                    timeoutMs = liveTimeoutMs,
+                    explicitEcmRxFallback = meterDiscovery.requiresExplicitEcmRxFilter
+                )
                 latencyAccumMs += (System.currentTimeMillis() - t0)
                 rttCount++
                 if (res is ObdCommandResult.Success) {
-                    val decoded = FormulaEvaluator.decodeCustomPid(custom, res)
+                    val decoded = FormulaEvaluator.decodeCustomPid(dueCustom, res)
                     if (decoded != null) {
-                        values[custom.key] = decoded
+                        values[dueCustom.key] = decoded
                         samplesInSec++
                     }
+                }
+            }
+
+            if (meterCaps.hasAny && handshake.isCanProtocol && currentCoroutineContext().isActive && transport.isConnected.value) {
+                val meterNowMs = System.currentTimeMillis()
+                val needFuel = meterCaps.fuelLevel && "2F" !in discovered && (meterNowMs - lastMeterFuelMs >= 12_000L)
+                val needOdo = meterCaps.odometer && (meterNowMs - lastMeterOdoMs >= 30_000L)
+                val wantClsSpd = meterCaps.clusterSpeed && "cluster_speed" in requested
+                val wantClsRpm = meterCaps.clusterRpm && "cluster_rpm" in requested
+                val wantClsCool = meterCaps.clusterCoolant && "cluster_coolant" in requested
+                if (!wantClsSpd) values.remove("cluster_speed")
+                if (!wantClsRpm) values.remove("cluster_rpm")
+                if (!wantClsCool) values.remove("cluster_coolant")
+                val needClsSpd = wantClsSpd && (meterNowMs - lastMeterFastMs >= 450L)
+                val needClsRpm = wantClsRpm && (meterNowMs - lastMeterFastMs >= 450L)
+                val needClsCool = wantClsCool && (meterNowMs - lastMeterCoolantMs >= 2500L)
+
+                if (needFuel || needOdo || needClsSpd || needClsRpm || needClsCool) {
+                    val t0 = System.currentTimeMillis()
+                    val polledCount = pollToyotaMeterBatch(
+                        needFuel = needFuel,
+                        needOdo = needOdo,
+                        needClsSpd = needClsSpd,
+                        needClsRpm = needClsRpm,
+                        needClsCool = needClsCool,
+                        values = values,
+                        timeoutMs = maxOf(liveTimeoutMs, 800L),
+                        explicitEcmRxFallback = meterDiscovery.requiresExplicitEcmRxFilter
+                    )
+                    if (needFuel) lastMeterFuelMs = meterNowMs
+                    if (needOdo) lastMeterOdoMs = meterNowMs
+                    if (needClsSpd || needClsRpm) lastMeterFastMs = meterNowMs
+                    if (needClsCool) lastMeterCoolantMs = meterNowMs
+                    samplesInSec += polledCount
+                    latencyAccumMs += (System.currentTimeMillis() - t0)
+                    rttCount++
                 }
             }
 
@@ -522,9 +720,121 @@ class ObdPollingEngine(
                 windowStart = now
             }
             cycle++
-            if (profile.cycleDelayMs > 0L) {
-                delay(profile.cycleDelayMs)
+            val effectiveDelayMs = when {
+                backgroundIdleMode -> maxOf(profile.cycleDelayMs, 140L)
+                else -> profile.cycleDelayMs
             }
+            if (effectiveDelayMs > 0L) {
+                delay(effectiveDelayMs)
+            }
+        }
+    }
+
+    private suspend fun pollToyotaMeterBatch(
+        needFuel: Boolean,
+        needOdo: Boolean,
+        needClsSpd: Boolean,
+        needClsRpm: Boolean,
+        needClsCool: Boolean,
+        values: MutableMap<String, Double>,
+        timeoutMs: Long,
+        explicitEcmRxFallback: Boolean = false
+    ): Int {
+        var count = 0
+        try {
+            client.execute("ATSH${ToyotaMeterCapabilities.HEADER_TX}", timeoutMs = 800L)
+            client.execute("ATCRA${ToyotaMeterCapabilities.HEADER_RX}", timeoutMs = 800L)
+
+            if (needFuel) {
+                val res = client.execute("2129", timeoutMs = timeoutMs)
+                if (res is ObdCommandResult.Success) {
+                    ToyotaMeterProtocol.decodeFuelLiters(res.lines)?.let { rawLiters ->
+                        val curSpeed = values["obd_speed"] ?: externalGpsSpeedKmh ?: 0.0
+                        val curAccelG = externalImuAccelG ?: 0.0
+                        val cap = vehicleProfile.tankCapacityLiters.coerceAtLeast(1.0)
+                        val smoothed = meterFuelFilter.onRawSample(
+                            rawLiters = rawLiters,
+                            speedKmh = curSpeed,
+                            accelG = curAccelG,
+                            tankCapacityLiters = cap
+                        )
+                        latestMeterFuelLiters = smoothed
+                        _ecuFuelLiters.value = smoothed
+                        values["fuel_level"] = ((smoothed / cap) * 100.0).coerceIn(0.0, 100.0)
+                        count++
+                    }
+                }
+            }
+            if (needOdo) {
+                val res = client.execute("21E1", timeoutMs = maxOf(timeoutMs, 850L))
+                if (res is ObdCommandResult.Success) {
+                    ToyotaMeterProtocol.decodeOdometerKm(res.lines)?.let { odoKm ->
+                        val odoD = odoKm.toDouble()
+                        values["ecu_odometer"] = odoD
+                        _ecuOdometerKm.value = odoD
+                        fuelTracker.syncOdometerFromEcu(odoD)
+                        count++
+                    }
+                }
+            }
+            if (needClsSpd) {
+                val res = client.execute("2121", timeoutMs = timeoutMs)
+                if (res is ObdCommandResult.Success) {
+                    ToyotaMeterProtocol.decodeClusterSpeedKmh(res.lines)?.let {
+                        values["cluster_speed"] = it
+                        count++
+                    }
+                }
+            }
+            if (needClsRpm) {
+                val res = client.execute("2122", timeoutMs = timeoutMs)
+                if (res is ObdCommandResult.Success) {
+                    ToyotaMeterProtocol.decodeClusterRpm(res.lines)?.let {
+                        values["cluster_rpm"] = it
+                        count++
+                    }
+                }
+            }
+            if (needClsCool) {
+                val res = client.execute("2123", timeoutMs = timeoutMs)
+                if (res is ObdCommandResult.Success) {
+                    ToyotaMeterProtocol.decodeClusterCoolantC(res.lines)?.let {
+                        values["cluster_coolant"] = it
+                        count++
+                    }
+                }
+            }
+        } finally {
+            client.restoreDefaultCanHeaderAndFilter(
+                explicitEcmRxFallback = explicitEcmRxFallback,
+                timeoutMs = 800L
+            )
+        }
+        return count
+    }
+
+    private suspend fun executeCustomPidWithHeader(
+        custom: CustomPidDefinition,
+        isCanProtocol: Boolean,
+        timeoutMs: Long,
+        explicitEcmRxFallback: Boolean = false
+    ): ObdCommandResult {
+        val rawHeader = custom.headerHex?.replace(" ", "")?.uppercase()?.takeIf { it.isNotBlank() }
+        if (!isCanProtocol || rawHeader == null || rawHeader == "7DF") {
+            return client.execute(custom.modeAndPidHex, timeoutMs = timeoutMs)
+        }
+        val replyFilter = computeStandardCanReplyHeader(rawHeader)
+        return try {
+            client.execute("ATSH$rawHeader", timeoutMs = 800L)
+            if (replyFilter != null) {
+                client.execute("ATCRA$replyFilter", timeoutMs = 800L)
+            }
+            client.execute(custom.modeAndPidHex, timeoutMs = maxOf(timeoutMs, 900L))
+        } finally {
+            client.restoreDefaultCanHeaderAndFilter(
+                explicitEcmRxFallback = explicitEcmRxFallback,
+                timeoutMs = 800L
+            )
         }
     }
 
@@ -581,11 +891,12 @@ class ObdPollingEngine(
     private suspend fun pollSingleAndEmit(
         pid: PidDefinition,
         isCanProtocol: Boolean,
-        values: MutableMap<String, Double>
+        values: MutableMap<String, Double>,
+        timeoutMs: Long = if (isCanProtocol) 650L else 1400L
     ): Pair<Boolean, Long> {
         val cmd = if (isCanProtocol) "01${pid.pidHex}1" else "01${pid.pidHex}"
         val t0 = System.currentTimeMillis()
-        val res = client.execute(cmd)
+        val res = client.execute(cmd, timeoutMs = timeoutMs)
         val rtt = System.currentTimeMillis() - t0
         if (res is ObdCommandResult.Success) {
             val decodedList = ObdPidRegistry.decodeAllMode01Responses(pid.pidHex, res.lines)
@@ -598,6 +909,17 @@ class ObdPollingEngine(
             }
         }
         return false to rtt
+    }
+
+    companion object {
+        internal fun computeStandardCanReplyHeader(txHeaderHex: String): String? {
+            if (txHeaderHex.length != 3) return null
+            val tx = txHeaderHex.toIntOrNull(16) ?: return null
+            if (tx in 0x700..0x7F7) {
+                return "%03X".format(tx + 8)
+            }
+            return null
+        }
     }
 
     private fun averageTrim(b1: Double?, b2: Double?): Double? = when {
@@ -673,6 +995,12 @@ class ObdPollingEngine(
             iatCelsius = iat
         )?.let { values["ve_pct"] = it }
 
+        val meterFuelLiters = latestMeterFuelLiters
+        if (meterFuelLiters != null) {
+            val cap = vp.tankCapacityLiters.coerceAtLeast(1.0)
+            values["fuel_level"] = ((meterFuelLiters / cap) * 100.0).coerceIn(0.0, 100.0)
+        }
+
         val ecuFuelRate = values["fuel_rate"]
         val effectiveLambda = values["lambda"] ?: values["o2_b1s1_lambda"] ?: values["o2_b1s1_wr_lambda"]
         val fuelStatus = values["fuel_system_status"]
@@ -694,7 +1022,8 @@ class ObdPollingEngine(
                 stftPct = averageTrim(values["stft_b1"], values["stft_b2"]),
                 ltftPct = averageTrim(values["ltft_b1"], values["ltft_b2"]),
                 ecuFuelRateLph = ecuFuelRate,
-                ecuFuelLevelPct = values["fuel_level"],
+                ecuFuelLevelPct = if (meterFuelLiters == null) values["fuel_level"] else null,
+                ecuFuelLiters = meterFuelLiters,
                 wheelPowerKw = wheelKw,
                 fuelSystemStatus = fuelStatus,
                 fuelCoastingMode = fuelCoastingMode
@@ -719,13 +1048,26 @@ class ObdPollingEngine(
             )
             _fuelMetrics.value = fuel
         } else {
-            // Only expose DTE if real fuel economy history already exists (no fabricated 12.0 default)
+            // Only expose DTE if real fuel economy history already exists (conservative cumulative-anchored model)
             fuelTracker.seedFromProfile(vp)
-            values["fuel_remaining"] = vp.estimatedRemainingFuelLiters
-            val estAvg = vp.recentDteKpl?.takeIf { it > 0.5 }
-                ?: if (vp.allTimeTotalFuelLiters > 0.01) (vp.allTimeTotalDistanceKm / vp.allTimeTotalFuelLiters).takeIf { it > 0.5 } else null
-            if (estAvg != null) {
-                values["range_dte"] = vp.estimatedRemainingFuelLiters * estAvg
+            val effectiveRemL = meterFuelLiters?.coerceIn(0.0, vp.tankCapacityLiters) ?: vp.estimatedRemainingFuelLiters
+            values["fuel_remaining"] = effectiveRemL
+            val allTimeTotalAvg = if (vp.allTimeTotalFuelLiters > 0.01) {
+                (vp.allTimeTotalDistanceKm / vp.allTimeTotalFuelLiters).takeIf { it > 0.5 }
+            } else null
+            val estAvg = FuelEconomyTracker.computeConservativeDteKpl(
+                allTimeTotalAvgKpl = allTimeTotalAvg,
+                recentDteKpl = vp.recentDteKpl,
+                remainingFuelLiters = effectiveRemL,
+                tankCapacityLiters = vp.tankCapacityLiters
+            )
+            val dteKm = FuelEconomyTracker.computeEstimatedRangeKm(
+                remainingFuelLiters = effectiveRemL,
+                tankCapacityLiters = vp.tankCapacityLiters,
+                dteKpl = estAvg
+            )
+            if (dteKm != null) {
+                values["range_dte"] = dteKm
             } else {
                 values.remove("range_dte")
             }

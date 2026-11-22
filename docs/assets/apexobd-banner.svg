@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" width="900" height="220">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="45%" r="55%">
+      <stop offset="0%" stop-color="#00A8FF" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00A8FF" stop-opacity="0.65"/>
+      <stop offset="50%" stop-color="#00A8FF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#00A8FF" stop-opacity="0.55"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="896" height="216" rx="20" fill="#000000" stroke="url(#borderGrad)" stroke-width="2"/>
+  <rect x="2" y="2" width="896" height="216" rx="20" fill="url(#glow)"/>
+    <path fill="#FFFFFF" fill-rule="evenodd" d="M203.06,54.00 L218.60,54.00 L224.52,128.00 L206.76,128.00 L206.23,108.76 L178.11,108.76 L167.54,128.00 L152.00,128.00 Z M204.75,71.76 L187.02,95.44 L206.26,95.44 Z"/>
+  <path fill="#00A8FF" d="M175.71,96.18 L218.63,96.18 L219.01,108.02 L168.69,108.02 Z"/>
+  <path fill="#FFFFFF" fill-rule="evenodd" d="M251.90,54.00 L306.66,54.00 L315.60,64.36 L309.18,87.30 L294.44,97.66 L256.70,97.66 L248.20,128.00 L231.18,128.00 Z M264.98,68.06 L296.80,68.06 L292.45,83.60 L260.63,83.60 Z"/>
+  <path fill="#FFFFFF" d="M324.42,54.00 L388.06,54.00 L384.12,68.06 L337.50,68.06 L333.15,83.60 L370.89,83.60 L366.96,97.66 L329.22,97.66 L324.66,113.94 L371.28,113.94 L367.34,128.00 L303.70,128.00 Z"/>
+  <path fill="#FFFFFF" d="M396.20,54.00 L414.70,54.00 L444.30,128.00 L425.80,128.00 Z"/>
+  <path fill="#FFFFFF" d="M448.00,54.00 L465.76,54.00 L392.50,128.00 L374.74,128.00 Z"/>
+  <path fill="#00A8FF" d="M480.50,43.64 L724.70,43.64 L698.18,138.36 L453.98,138.36 Z"/>
+  <path fill="#05080D" fill-rule="evenodd" d="M507.20,54.00 L545.68,54.00 L555.27,67.32 L542.01,114.68 L524.96,128.00 L486.48,128.00 L476.89,114.68 L490.15,67.32 Z M507.50,68.80 L537.10,68.80 L524.66,113.20 L495.06,113.20 Z"/>
+  <path fill="#05080D" fill-rule="evenodd" d="M567.14,54.00 L618.94,54.00 L627.67,65.10 L622.49,83.60 L611.75,90.26 L620.04,97.66 L614.65,116.90 L599.70,128.00 L546.42,128.00 Z M580.43,67.32 L609.29,67.32 L604.94,82.86 L576.08,82.86 Z M572.14,96.92 L603.22,96.92 L598.25,114.68 L567.17,114.68 Z"/>
+  <path fill="#05080D" fill-rule="evenodd" d="M640.40,54.00 L690.72,54.00 L701.38,68.80 L688.94,113.20 L670.00,128.00 L619.68,128.00 Z M653.28,68.80 L683.62,68.80 L671.18,113.20 L640.84,113.20 Z"/>
+  <text x="450" y="176" text-anchor="middle" fill="#94A3B8" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" font-size="15" font-weight="700" letter-spacing="4.2">OLED OBD-II COCKPIT · REALTIME TELEMETRY · OFFLINE MAPS</text>
+</svg>

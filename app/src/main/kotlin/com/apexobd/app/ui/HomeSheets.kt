@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,9 +29,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.mandatorySystemGestures
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -41,6 +45,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -56,13 +61,19 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -73,6 +84,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -80,6 +92,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.apexobd.app.data.db.RefuelLogEntity
+import com.apexobd.app.data.db.TelemetrySampleEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import com.apexobd.app.data.db.VehicleProfileEntity
 import com.apexobd.app.data.prefs.HudCanvasBackdrop
@@ -90,6 +103,7 @@ import com.apexobd.app.data.prefs.MapCameraMode
 import com.apexobd.app.data.prefs.MapCursorStyle
 import com.apexobd.app.data.prefs.MapProvider
 import com.apexobd.app.data.prefs.MapStylePreset
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
 import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
@@ -124,14 +138,19 @@ import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.model.VolumeUnit
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.GaugeSmoothingMode
+import com.apexobd.core.protocol.ToyotaMeterCapabilities
+import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.scheduler.PollingProfile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToInt
 
 @Composable
 fun ApexFilterChip(
@@ -139,12 +158,14 @@ fun ApexFilterChip(
     onClick: () -> Unit,
     label: String,
     enabled: Boolean = true,
-    compact: Boolean = false
+    compact: Boolean = false,
+    trailingIcon: (@Composable () -> Unit)? = null
 ) {
     FilterChip(
         selected = selected,
         enabled = enabled,
         onClick = onClick,
+        trailingIcon = trailingIcon,
         label = {
             Text(
                 text = label,
@@ -173,6 +194,30 @@ fun ApexFilterChip(
     )
 }
 
+/** Configures Android `Dialog` window bounds edge-to-edge so `WindowInsets` apply cleanly above navigation/gesture bars. */
+@Composable
+private fun ConfigureEdgeToEdgeDialogWindow() {
+    val view = LocalView.current
+    SideEffect {
+        val window = (view.parent as? DialogWindowProvider)?.window ?: return@SideEffect
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.setLayout(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        window.setGravity(android.view.Gravity.FILL)
+        if (android.os.Build.VERSION.SDK_INT < 35) {
+            @Suppress("DEPRECATION")
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            @Suppress("DEPRECATION")
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode =
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+    }
+}
+
 /**
  * Non-swipe-dismissing sheet wrapper immune to downward scroll drags and accidental scrim taps.
  * Users close only via explicit header close controls or intentional system Back.
@@ -192,24 +237,29 @@ private fun ApexLockedSheet(
             decorFitsSystemWindows = false
         )
     ) {
+        ConfigureEdgeToEdgeDialogWindow()
+        val safeInsets = WindowInsets.safeDrawing.union(
+            WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom)
+        )
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(0x99000000))
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .imePadding(),
+                .windowInsetsPadding(safeInsets)
+                .imePadding()
+                .padding(bottom = 6.dp),
             contentAlignment = Alignment.BottomCenter
         ) {
             val shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 12.dp, bottomEnd = 12.dp)
             val baseModifier = Modifier
                 .widthIn(max = 640.dp)
                 .fillMaxWidth()
-                .heightIn(max = maxHeight * 0.92f)
+                .heightIn(max = maxHeight * 0.94f)
                 .padding(horizontal = 6.dp)
                 .clip(shape)
                 .background(TorqueEvoColors.ElevatedDark)
                 .border(1.dp, TorqueEvoColors.SubtleBorder, shape)
-                .padding(top = 14.dp, start = 16.dp, end = 16.dp, bottom = 18.dp)
+                .padding(top = 14.dp, start = 16.dp, end = 16.dp, bottom = 16.dp)
             Column(
                 modifier = if (scrollable) baseModifier.verticalScroll(rememberScrollState()) else baseModifier,
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -1107,6 +1157,7 @@ fun RunLogsAndMapsSheet(
     fuelType: FuelType,
     onExport: (TripSessionEntity, Boolean) -> Unit,
     onShareCard: (TripSessionEntity) -> Unit,
+    isPreparingCard: Boolean = false,
     onOpenOfflineMaps: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1193,9 +1244,20 @@ fun RunLogsAndMapsSheet(
                         OutlinedButton(onClick = { onExport(s, true) }, modifier = Modifier.weight(0.8f)) { Text("JSON", fontSize = 11.sp) }
                         Button(
                             onClick = { onShareCard(s) },
+                            enabled = !isPreparingCard,
                             colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
                             modifier = Modifier.weight(1.5f)
-                        ) { Text("Preview & Share", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1) }
+                        ) {
+                            if (isPreparingCard) {
+                                CircularProgressIndicator(
+                                    color = Color.Black,
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Create Card", fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                            }
+                        }
                     }
                 }
             }
@@ -1541,7 +1603,7 @@ fun EcuPidsSheet(
     hasEcuDump: Boolean = false,
     onDiscoverExplorer: () -> Unit,
     onStopExplorer: () -> Unit,
-    onAddCustomPid: (name: String, hex: String, formula: String, unit: String) -> Unit,
+    onAddCustomPid: (name: String, hex: String, formula: String, unit: String, headerHex: String?) -> Unit,
     onImportCsv: (String) -> Unit,
     onRunDeepDump: () -> Unit,
     onShareDeepDump: () -> Unit = {},
@@ -1549,6 +1611,7 @@ fun EcuPidsSheet(
 ) {
     var name by remember { mutableStateOf("") }
     var hex by remember { mutableStateOf("") }
+    var headerHex by remember { mutableStateOf("") }
     var formula by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("") }
     var csvText by remember { mutableStateOf("") }
@@ -1596,8 +1659,15 @@ fun EcuPidsSheet(
             }
 
             ObdPidRegistry.standardPids
-                .filter { supportedPids.isEmpty() || it.pidHex in supportedPids }
+                .filter {
+                    supportedPids.isEmpty() || it.pidHex in supportedPids ||
+                        (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supportedPids)
+                }
                 .forEach { pid ->
+                    val viaMeter = pid.key == "fuel_level" &&
+                        ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supportedPids &&
+                        pid.pidHex !in supportedPids
+                    val tag = if (viaMeter) "7C0 2129" else "01${pid.pidHex}"
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1606,7 +1676,7 @@ fun EcuPidsSheet(
                             .padding(horizontal = 10.dp, vertical = 7.dp),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("01${pid.pidHex} · ${pid.name}", fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        Text("$tag · ${pid.name}", fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
                         val v = liveValues[pid.key]
                         Text(
                             if (v != null) "%.1f %s".format(v, pid.unit) else "—",
@@ -1617,11 +1687,49 @@ fun EcuPidsSheet(
                     }
                 }
 
+            val meterSpecs = listOf(
+                Triple(ToyotaMeterCapabilities.TOKEN_ODOMETER, "ecu_odometer", "7C0 21E1 · Cluster Odometer" to "km"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_SPEED, "cluster_speed", "7C0 2121 · Cluster Speed" to "km/h"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_RPM, "cluster_rpm", "7C0 2122 · Cluster RPM" to "RPM"),
+                Triple(ToyotaMeterCapabilities.TOKEN_CLUSTER_COOLANT, "cluster_coolant", "7C0 2123 · Cluster Coolant" to "°C")
+            ).filter { (token, _, _) -> token in supportedPids }
+
+            if (meterSpecs.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text("Combination Meter (7C0) Live PIDs", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TorqueEvoColors.SkyBlue)
+                meterSpecs.forEach { (_, key, labelUnit) ->
+                    val (label, unitStr) = labelUnit
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(label, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
+                        val v = liveValues[key]
+                        val formatted = when {
+                            v == null -> "—"
+                            key == "ecu_odometer" || key == "cluster_rpm" -> "%.0f %s".format(v, unitStr)
+                            else -> "%.1f %s".format(v, unitStr)
+                        }
+                        Text(
+                            formatted,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.NominalGreen
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(6.dp))
             Text("Add Custom / UDS Mode 21–22 PID", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = TorqueEvoColors.TextPrimary)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(value = hex, onValueChange = { hex = it }, label = { Text("Mode/PID e.g. 221E1C") }, singleLine = true, modifier = Modifier.weight(1f))
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.weight(1.1f))
+                OutlinedTextField(value = hex, onValueChange = { hex = it }, label = { Text("Mode/PID e.g. 2129") }, singleLine = true, modifier = Modifier.weight(0.95f))
+                OutlinedTextField(value = headerHex, onValueChange = { headerHex = it }, label = { Text("Hdr (7C0)") }, singleLine = true, modifier = Modifier.weight(0.65f))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedTextField(value = formula, onValueChange = { formula = it }, label = { Text("Formula e.g. (A*256+B)/10") }, singleLine = true, modifier = Modifier.weight(1.4f))
@@ -1629,8 +1737,8 @@ fun EcuPidsSheet(
             }
             Button(
                 onClick = {
-                    onAddCustomPid(name, hex, formula, unit)
-                    name = ""; hex = ""; formula = ""; unit = ""
+                    onAddCustomPid(name, hex, formula, unit, headerHex.ifBlank { null })
+                    name = ""; hex = ""; headerHex = ""; formula = ""; unit = ""
                 },
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Add Custom PID") }
@@ -1655,6 +1763,8 @@ fun EcuPidsSheet(
 @Composable
 fun AdapterConnectionSheet(
     settings: UserSettings,
+    connectionState: ConnectionState,
+    backgroundServiceActive: Boolean,
     btPairedDevices: List<BtDeviceCandidate>,
     bleScannedDevices: List<BtDeviceCandidate>,
     bleScanning: Boolean,
@@ -1667,18 +1777,81 @@ fun AdapterConnectionSheet(
     onSelectBleDevice: (BtDeviceCandidate) -> Unit,
     onSelectUsbDevice: (deviceId: Int, baudRate: Int) -> Unit,
     onRequestUsbPermission: (Int) -> Unit,
+    onResumeBackgroundService: () -> Unit,
+    onTerminateBackgroundService: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var host by remember(settings.wifiHost) { mutableStateOf(settings.wifiHost) }
     var port by remember(settings.wifiPort) { mutableStateOf("${settings.wifiPort}") }
-    var dualCell by remember(settings.dualCellularKeepalive) { mutableStateOf(settings.dualCellularKeepalive) }
     var manualBtMac by remember(settings.btDeviceAddress) { mutableStateOf(settings.btDeviceAddress) }
     var selectedBaud by remember(settings.usbBaudRate) { mutableStateOf(settings.usbBaudRate) }
 
     LaunchedEffect(Unit) { onRefreshLocalAdapters() }
 
+    val statusColor = when (connectionState) {
+        is ConnectionState.Connected -> TorqueEvoColors.NominalGreen
+        is ConnectionState.Connecting -> TorqueEvoColors.ElectricBlue
+        is ConnectionState.Reconnecting -> TorqueEvoColors.WarnAmber
+        is ConnectionState.Disconnected -> if (backgroundServiceActive) TorqueEvoColors.ElectricBlue else TorqueEvoColors.CriticalRed
+    }
+    val statusText = when (connectionState) {
+        is ConnectionState.Connected -> "Connected · ${connectionState.handshake.protocolName}"
+        is ConnectionState.Connecting -> "Connecting to ${settings.adapterDetailedEndpoint()}..."
+        is ConnectionState.Reconnecting -> "Reconnecting (#${connectionState.attempt}) · ${settings.adapterDetailedEndpoint()}"
+        is ConnectionState.Disconnected -> if (backgroundServiceActive) "Starting background listener..." else "Background listener stopped"
+    }
+
     ApexLockedSheet(onBackRequest = onDismiss) {
         ApexSheetHeader(title = "OBD2 Adapter Connection", onClose = onDismiss)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(TorqueEvoColors.CardSurface)
+                .border(1.dp, statusColor.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(9.dp)
+                    .clip(CircleShape)
+                    .background(statusColor)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = statusText,
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary
+                )
+                Text(
+                    text = if (backgroundServiceActive) "Runs in background · Tap notification to stop" else "Tap Connect to start background listener",
+                    fontSize = 10.sp,
+                    color = TorqueEvoColors.TextSecondary
+                )
+            }
+            Text(
+                text = if (backgroundServiceActive) "Stop" else "Connect",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (backgroundServiceActive) TorqueEvoColors.CriticalRed else Color.Black,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(if (backgroundServiceActive) TorqueEvoColors.CriticalRed.copy(alpha = 0.14f) else TorqueEvoColors.ElectricBlue)
+                    .border(
+                        1.dp,
+                        if (backgroundServiceActive) TorqueEvoColors.CriticalRed.copy(alpha = 0.5f) else TorqueEvoColors.ElectricBlue,
+                        RoundedCornerShape(7.dp)
+                    )
+                    .clickable {
+                        if (backgroundServiceActive) onTerminateBackgroundService() else onResumeBackgroundService()
+                    }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+        }
 
         Text("Connection Mechanism", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1714,13 +1887,14 @@ fun AdapterConnectionSheet(
                         modifier = Modifier.weight(0.7f)
                     )
                 }
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Keep Mobile Data Active", color = TorqueEvoColors.TextPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = dualCell, onCheckedChange = { dualCell = it })
-                }
+                Text(
+                    text = "Dedicated Low-Latency Wi-Fi · Dual mobile-data keepalive is disabled while connected for maximum OBD speed.",
+                    color = TorqueEvoColors.TextSecondary,
+                    fontSize = 11.sp
+                )
                 Button(
                     onClick = {
-                        onSaveWifiConnection(host.ifBlank { "192.168.0.10" }, port.toIntOrNull() ?: 35000, dualCell)
+                        onSaveWifiConnection(host.ifBlank { "192.168.0.10" }, port.toIntOrNull() ?: 35000, false)
                         onDismiss()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
@@ -1930,6 +2104,7 @@ fun SettingsSheet(
     onOpenAdapterConnection: () -> Unit,
     onSelectPolling: (PollingProfile) -> Unit,
     onSelectGaugeSmoothing: (GaugeSmoothingMode) -> Unit,
+    onToggleLiveMicroMotion: () -> Unit = {},
     onSelectFuelCoasting: (FuelCoastingMode) -> Unit,
     onSelectGridScale: (HudGridScale) -> Unit,
     onSelectMapStylePreset: (MapStylePreset) -> Unit,
@@ -2018,6 +2193,21 @@ fun SettingsSheet(
                         compact = true
                     )
                 }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Text("Live Display Micro-Pulse (Test)", color = TorqueEvoColors.TextPrimary, fontSize = 12.5.sp)
+                    Text(
+                        "Sub-unit visual motion on live engine metrics without changing logged data",
+                        color = TorqueEvoColors.TextSecondary,
+                        fontSize = 10.sp
+                    )
+                }
+                Switch(checked = settings.liveMicroMotion, onCheckedChange = { onToggleLiveMicroMotion() })
             }
 
             Text("Coasting Fuel Cut", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
@@ -2113,6 +2303,8 @@ fun HudAppearanceControlsColumn(
     onSelectGridScale: ((HudGridScale) -> Unit)? = null,
     selectedSmoothing: GaugeSmoothingMode? = null,
     onSelectSmoothing: ((GaugeSmoothingMode) -> Unit)? = null,
+    liveMicroMotion: Boolean? = null,
+    onToggleLiveMicroMotion: (() -> Unit)? = null,
     hudMirror: Boolean? = null,
     onToggleHudMirror: (() -> Unit)? = null
 ) {
@@ -2200,6 +2392,16 @@ fun HudAppearanceControlsColumn(
                     )
                 }
             }
+            if (liveMicroMotion != null && onToggleLiveMicroMotion != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Live Display Micro-Pulse (Test)", color = TorqueEvoColors.TextPrimary, fontSize = 12.sp)
+                    Switch(checked = liveMicroMotion, onCheckedChange = { onToggleLiveMicroMotion() })
+                }
+            }
         }
 
         if (hudMirror != null && onToggleHudMirror != null) {
@@ -2219,49 +2421,174 @@ fun HudAppearanceControlsColumn(
 @Composable
 fun ShareCardComposerDialog(
     draft: HudViewModel.ShareCardDraft,
-    initialMetrics: List<ShareCardMetric>,
+    initialConfig: TripCardConfig,
     unitPrefs: UnitPreferences,
     fuelType: FuelType,
-    onConfirmShare: (TripCardConfig) -> Unit,
+    isExporting: Boolean,
+    onConfigChanged: (TripCardConfig) -> Unit,
+    onPickBackgroundPhoto: (Uri, (String?) -> Unit) -> Unit,
+    onLoadSurroundingRoads: suspend (List<TelemetrySampleEntity>, Int, Int, Boolean) -> TripCardRenderer.RoadContextLayer?,
+    onConfirmExport: (TripCardConfig, HudViewModel.ShareCardExportAction, TripCardRenderer.RoadContextLayer?) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val defaultBg = if (!draft.vehicle?.photoUri.isNullOrBlank()) {
-        ShareCardBackgroundMode.CAR_PHOTO
-    } else {
-        ShareCardBackgroundMode.PLAIN_DARK
+    val defaultBg = when {
+        initialConfig.backgroundMode == ShareCardBackgroundMode.CUSTOM_PHOTO && !initialConfig.customPhotoPath.isNullOrBlank() ->
+            ShareCardBackgroundMode.CUSTOM_PHOTO
+        initialConfig.backgroundMode == ShareCardBackgroundMode.CAR_PHOTO && draft.vehicle?.photoUri.isNullOrBlank() ->
+            ShareCardBackgroundMode.PLAIN_DARK
+        else -> initialConfig.backgroundMode
     }
     var config by remember(draft.session.id) {
         mutableStateOf(
-            TripCardConfig(
+            initialConfig.copy(
                 backgroundMode = defaultBg,
-                selectedMetrics = initialMetrics.ifEmpty { ShareCardMetric.DEFAULT_SELECTION }
+                selectedMetrics = initialConfig.selectedMetrics.ifEmpty { ShareCardMetric.DEFAULT_SELECTION }
             )
         )
     }
 
-    val previewBitmap = remember(draft, config, unitPrefs, fuelType) {
-        TripCardRenderer.renderTripCardBitmap(
-            session = draft.session,
-            samples = draft.samples,
-            vehicle = draft.vehicle,
-            unitPrefs = unitPrefs,
-            fuelType = fuelType,
-            selectedMetrics = config.selectedMetrics,
-            config = config,
-            precomputedStats = draft.stats
-        ).asImageBitmap()
+    fun updateConfig(next: TripCardConfig) {
+        config = next
+        onConfigChanged(next)
+    }
+
+    var previewBitmap by remember(draft.session.id) { mutableStateOf<ImageBitmap?>(null) }
+    var roadContextCache by remember(draft.session.id) { mutableStateOf<TripCardRenderer.RoadContextLayer?>(null) }
+    var roadOpacityDraft by remember(config.surroundingRoadsOpacityPct) {
+        mutableStateOf(config.surroundingRoadsOpacityPct.toFloat())
+    }
+    var isRenderingPreview by remember(draft.session.id) { mutableStateOf(true) }
+    var isPickingBgPhoto by remember(draft.session.id) { mutableStateOf(false) }
+    var showExportChooser by remember { mutableStateOf(false) }
+
+    val cardBgPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            isPickingBgPhoto = true
+            onPickBackgroundPhoto(uri) { savedPath ->
+                isPickingBgPhoto = false
+                if (!savedPath.isNullOrBlank()) {
+                    updateConfig(
+                        config.copy(
+                            backgroundMode = ShareCardBackgroundMode.CUSTOM_PHOTO,
+                            customPhotoPath = savedPath
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(draft, config, unitPrefs, fuelType) {
+        isRenderingPreview = true
+        try {
+            val activeRoadLayer = if (config.showSurroundingRoads) {
+                val (reqW, reqH) = TripCardRenderer.routeCanvasSizeForConfig(config)
+                val cached = roadContextCache
+                if (
+                    cached != null &&
+                    !cached.roadsAlphaBitmap.isRecycled &&
+                    cached.boxWidth == reqW &&
+                    cached.boxHeight == reqH &&
+                    cached.mainRoadsOnly == config.surroundingRoadsMainOnly
+                ) {
+                    cached
+                } else {
+                    val captured = onLoadSurroundingRoads(draft.samples, reqW, reqH, config.surroundingRoadsMainOnly)
+                    if (captured != null) {
+                        roadContextCache = captured
+                    }
+                    captured
+                }
+            } else null
+
+            val rendered = withContext(Dispatchers.Default) {
+                TripCardRenderer.renderTripCardBitmap(
+                    session = draft.session,
+                    samples = draft.samples,
+                    vehicle = draft.vehicle,
+                    unitPrefs = unitPrefs,
+                    fuelType = fuelType,
+                    selectedMetrics = config.selectedMetrics,
+                    config = config,
+                    precomputedStats = draft.stats,
+                    roadContextLayer = activeRoadLayer
+                ).asImageBitmap()
+            }
+            previewBitmap = rendered
+        } finally {
+            isRenderingPreview = false
+        }
+    }
+
+    if (showExportChooser) {
+        AlertDialog(
+            onDismissRequest = { if (!isExporting) showExportChooser = false },
+            containerColor = TorqueEvoColors.ElevatedDark,
+            title = {
+                Text(
+                    "Export Route Card (${config.aspectRatio.label})",
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary
+                )
+            },
+            text = {
+                Text(
+                    "Share directly to Instagram Stories, chats, or other apps, or save the PNG file to Pictures/ApexOBD.",
+                    color = TorqueEvoColors.TextSecondary,
+                    fontSize = 12.5.sp
+                )
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = !isExporting,
+                        onClick = {
+                            showExportChooser = false
+                            onConfirmExport(config, HudViewModel.ShareCardExportAction.DOWNLOAD_PNG, roadContextCache)
+                        }
+                    ) {
+                        Text("Download PNG", color = TorqueEvoColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+                    }
+                    Button(
+                        enabled = !isExporting,
+                        onClick = {
+                            showExportChooser = false
+                            onConfirmExport(config, HudViewModel.ShareCardExportAction.SHARE_TO_APPS, roadContextCache)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black)
+                    ) {
+                        Text("Share to Apps", fontWeight = FontWeight.ExtraBold)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !isExporting, onClick = { showExportChooser = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     ApexLockedSheet(onBackRequest = onDismiss, scrollable = false) {
         ApexSheetHeader(
-            title = "Customize Share Route Card",
+            title = "Create Route Card",
             onClose = onDismiss,
             actions = {
                 TextButton(
                     onClick = {
-                        config = TripCardConfig(
-                            backgroundMode = defaultBg,
-                            selectedMetrics = ShareCardMetric.DEFAULT_SELECTION
+                        val resetBg = if (!draft.vehicle?.photoUri.isNullOrBlank()) {
+                            ShareCardBackgroundMode.CAR_PHOTO
+                        } else {
+                            ShareCardBackgroundMode.PLAIN_DARK
+                        }
+                        updateConfig(
+                            TripCardConfig(
+                                backgroundMode = resetBg,
+                                aspectRatio = ShareCardAspectRatio.SQUARE_1_1,
+                                selectedMetrics = ShareCardMetric.DEFAULT_SELECTION
+                            )
                         )
                     }
                 ) {
@@ -2270,12 +2597,15 @@ fun ShareCardComposerDialog(
             }
         )
 
+        val ratioFloat = config.aspectRatio.widthPx.toFloat() / config.aspectRatio.heightPx.toFloat()
         val previewCard: @Composable (Modifier) -> Unit = { boxMod ->
             Box(
                 modifier = boxMod
-                    .aspectRatio(1080f / 1350f)
+                    .heightIn(max = 228.dp)
+                    .aspectRatio(ratioFloat)
                     .clip(RoundedCornerShape(14.dp))
-                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(14.dp))
+                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center
             ) {
                 if (config.backgroundMode == ShareCardBackgroundMode.TRANSPARENT) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -2294,12 +2624,43 @@ fun ShareCardComposerDialog(
                         }
                     }
                 }
-                Image(
-                    bitmap = previewBitmap,
-                    contentDescription = "Share Card Preview",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize()
-                )
+                previewBitmap?.let { bmp ->
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = "Route Card Preview",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                if (isRenderingPreview || isPickingBgPhoto || isExporting || previewBitmap == null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color(0x9905080E)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = TorqueEvoColors.ElectricBlue,
+                                modifier = Modifier.size(26.dp),
+                                strokeWidth = 2.5.dp
+                            )
+                            Text(
+                                text = when {
+                                    isPickingBgPhoto -> "Loading photo..."
+                                    isExporting -> "Exporting PNG..."
+                                    else -> "Generating..."
+                                },
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -2308,14 +2669,47 @@ fun ShareCardComposerDialog(
                 modifier = scrollMod.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text("Background Style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                Text("Card Aspect Ratio", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ShareCardBackgroundMode.entries.forEach { mode ->
+                    ShareCardAspectRatio.entries.forEach { ratioOpt ->
                         ApexFilterChip(
-                            selected = config.backgroundMode == mode,
-                            onClick = { config = config.copy(backgroundMode = mode) },
-                            label = mode.label,
+                            selected = config.aspectRatio == ratioOpt,
+                            onClick = { updateConfig(config.copy(aspectRatio = ratioOpt)) },
+                            label = ratioOpt.label,
                             compact = true
+                        )
+                    }
+                }
+
+                Text("Background Style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ShareCardBackgroundMode.entries.forEach { mode ->
+                        val isCustom = mode == ShareCardBackgroundMode.CUSTOM_PHOTO
+                        val hasCustomImg = !config.customPhotoPath.isNullOrBlank()
+                        val isSelected = config.backgroundMode == mode
+                        ApexFilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                if (isCustom && (!hasCustomImg || isSelected)) {
+                                    cardBgPicker.launch("image/*")
+                                } else {
+                                    updateConfig(config.copy(backgroundMode = mode))
+                                }
+                            },
+                            label = mode.label,
+                            compact = true,
+                            trailingIcon = if (isCustom && hasCustomImg) {
+                                {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Change custom image",
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            } else null
                         )
                     }
                 }
@@ -2326,13 +2720,13 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "App Brand Icon",
                             checked = config.showAppMark,
-                            onCheckedChange = { config = config.copy(showAppMark = it) },
+                            onCheckedChange = { updateConfig(config.copy(showAppMark = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Vehicle Name",
                             checked = config.showVehicleName,
-                            onCheckedChange = { config = config.copy(showVehicleName = it) },
+                            onCheckedChange = { updateConfig(config.copy(showVehicleName = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2340,13 +2734,13 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "Vehicle Specs",
                             checked = config.showVehicleSpecs,
-                            onCheckedChange = { config = config.copy(showVehicleSpecs = it) },
+                            onCheckedChange = { updateConfig(config.copy(showVehicleSpecs = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Date",
                             checked = config.showDate,
-                            onCheckedChange = { config = config.copy(showDate = it) },
+                            onCheckedChange = { updateConfig(config.copy(showDate = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2354,36 +2748,96 @@ fun ShareCardComposerDialog(
                         ComposerCheckboxItem(
                             label = "Time",
                             checked = config.showTime,
-                            onCheckedChange = { config = config.copy(showTime = it) },
+                            onCheckedChange = { updateConfig(config.copy(showTime = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
                             label = "Route Path",
                             checked = config.showRouteLine,
-                            onCheckedChange = { config = config.copy(showRouteLine = it) },
+                            onCheckedChange = { updateConfig(config.copy(showRouteLine = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
                     Row(modifier = Modifier.fillMaxWidth()) {
                         ComposerCheckboxItem(
-                            label = "Start / End Dots",
-                            checked = config.showStartEndMarkers,
-                            onCheckedChange = { config = config.copy(showStartEndMarkers = it) },
+                            label = "Surrounding Roads",
+                            checked = config.showSurroundingRoads,
+                            onCheckedChange = { updateConfig(config.copy(showSurroundingRoads = it)) },
                             modifier = Modifier.weight(1f)
                         )
                         ComposerCheckboxItem(
-                            label = "Metrics Backing",
-                            checked = config.showMetricsPanelBg,
-                            onCheckedChange = { config = config.copy(showMetricsPanelBg = it) },
+                            label = "Start / End Dots",
+                            checked = config.showStartEndMarkers,
+                            onCheckedChange = { updateConfig(config.copy(showStartEndMarkers = it)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
-                    ComposerCheckboxItem(
-                        label = "Show Telemetry Metrics Grid",
-                        checked = config.showMetrics,
-                        onCheckedChange = { config = config.copy(showMetrics = it) },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        ComposerCheckboxItem(
+                            label = "Metrics Backing",
+                            checked = config.showMetricsPanelBg,
+                            onCheckedChange = { updateConfig(config.copy(showMetricsPanelBg = it)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        ComposerCheckboxItem(
+                            label = "Telemetry Metrics",
+                            checked = config.showMetrics,
+                            onCheckedChange = { updateConfig(config.copy(showMetrics = it)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                if (config.showSurroundingRoads) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Surrounding Road Opacity",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                            Text(
+                                "${roadOpacityDraft.roundToInt()}%",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.ElectricBlue
+                            )
+                        }
+                        Slider(
+                            value = roadOpacityDraft,
+                            onValueChange = { roadOpacityDraft = it },
+                            onValueChangeFinished = {
+                                val snapped = roadOpacityDraft.roundToInt().coerceIn(10, 60)
+                                updateConfig(config.copy(surroundingRoadsOpacityPct = snapped))
+                            },
+                            valueRange = 10f..60f,
+                            steps = 9,
+                            colors = SliderDefaults.colors(
+                                thumbColor = TorqueEvoColors.ElectricBlue,
+                                activeTrackColor = TorqueEvoColors.ElectricBlue,
+                                inactiveTrackColor = TorqueEvoColors.SubtleBorder
+                            )
+                        )
+                        ComposerCheckboxItem(
+                            label = "Main Roads Only",
+                            checked = config.surroundingRoadsMainOnly,
+                            onCheckedChange = { updateConfig(config.copy(surroundingRoadsMainOnly = it)) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 if (config.showMetrics) {
@@ -2396,10 +2850,10 @@ fun ShareCardComposerDialog(
                             } else {
                                 if (cur.size < ShareCardMetric.MAX_SELECTED) cur + metric else cur
                             }
-                            config = config.copy(selectedMetrics = next)
+                            updateConfig(config.copy(selectedMetrics = next))
                         },
                         onResetDefault = {
-                            config = config.copy(selectedMetrics = ShareCardMetric.DEFAULT_SELECTION)
+                            updateConfig(config.copy(selectedMetrics = ShareCardMetric.DEFAULT_SELECTION))
                         }
                     )
                 }
@@ -2414,7 +2868,7 @@ fun ShareCardComposerDialog(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.Top
                 ) {
-                    previewCard(Modifier.width(176.dp))
+                    previewCard(Modifier.widthIn(min = 126.dp, max = 220.dp))
                     controlsBody(Modifier.weight(1f).fillMaxHeight())
                 }
             } else {
@@ -2423,7 +2877,7 @@ fun ShareCardComposerDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        previewCard(Modifier.width(184.dp))
+                        previewCard(Modifier.widthIn(min = 126.dp, max = 236.dp))
                     }
                     HorizontalDivider(color = TorqueEvoColors.SubtleBorder)
                     controlsBody(Modifier.weight(1f, fill = true).fillMaxWidth())
@@ -2437,17 +2891,27 @@ fun ShareCardComposerDialog(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             OutlinedButton(
+                enabled = !isExporting,
                 onClick = onDismiss,
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Cancel")
             }
             Button(
-                onClick = { onConfirmShare(config) },
+                enabled = !isExporting,
+                onClick = { showExportChooser = true },
                 colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black),
                 modifier = Modifier.weight(1.4f)
             ) {
-                Text("Share Image (PNG)", fontWeight = FontWeight.ExtraBold)
+                if (isExporting) {
+                    CircularProgressIndicator(
+                        color = Color.Black,
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("Export", fontWeight = FontWeight.ExtraBold)
+                }
             }
         }
     }
@@ -2507,13 +2971,27 @@ fun SaveTripSummaryDialog(
 
     Dialog(
         onDismissRequest = {},
-        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false, usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
     ) {
+        ConfigureEdgeToEdgeDialogWindow()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.union(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+                ),
+            contentAlignment = Alignment.Center
+        ) {
         Column(
             modifier = Modifier
                 .widthIn(max = 520.dp)
                 .fillMaxWidth(0.92f)
-                .heightIn(max = 560.dp)
+                .heightIn(max = 540.dp)
                 .clip(RoundedCornerShape(16.dp))
                 .background(TorqueEvoColors.ElevatedDark)
                 .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
@@ -2568,9 +3046,10 @@ fun SaveTripSummaryDialog(
                     onClick = onSaveAndShareCard,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Save & Share Route Card (PNG)", fontWeight = FontWeight.Bold, color = TorqueEvoColors.SkyBlue)
+                    Text("Save & Create Card", fontWeight = FontWeight.Bold, color = TorqueEvoColors.SkyBlue)
                 }
             }
+        }
         }
     }
 }

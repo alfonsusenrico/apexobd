@@ -1,6 +1,22 @@
 package com.apexobd.app.ui
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.apexobd.app.ui.components.formatTelemetryValue
+import com.google.android.gms.common.api.ResolvableApiException
+import com.google.android.gms.location.LocationServices
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -47,10 +63,14 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -64,6 +84,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.isActive
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -80,6 +102,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -98,11 +121,18 @@ import com.apexobd.app.ui.components.DataLoggerWidget
 import com.apexobd.app.ui.components.DigitalReadoutWidget
 import com.apexobd.app.ui.components.DtcCheckerWidget
 import com.apexobd.app.ui.components.FuelControlWidget
+import com.apexobd.app.ui.components.MetricAlertFrameOverlay
 import com.apexobd.app.ui.components.MiniMapWidget
 import com.apexobd.app.ui.components.PerfTimerWidget
+import com.apexobd.app.ui.components.RpmTachChronoWidget
+import com.apexobd.app.ui.components.RpmTachF1LedsWidget
+import com.apexobd.app.ui.components.RpmTachGtWidget
+import com.apexobd.app.ui.components.RpmTachHaloWidget
 import com.apexobd.app.ui.components.SegmentedBarGaugeWidget
 import com.apexobd.app.ui.components.SemiDigitalArcWidget
 import com.apexobd.app.ui.components.SparklineChartWidget
+import com.apexobd.app.ui.components.defaultAlertBelowForSensor
+import com.apexobd.app.ui.components.isRpmSensorKey
 import com.apexobd.app.ui.theme.LocalHudVisualStyle
 import com.apexobd.app.ui.theme.TorqueEvoColors
 import com.apexobd.app.ui.theme.hudCanvasBackdrop
@@ -124,6 +154,8 @@ fun ApexAppRoot(
     var onHudPage by remember { mutableStateOf(false) }
     val pendingSaveTrip by viewModel.pendingSaveTrip.collectAsStateWithLifecycle()
     val shareCardDraft by viewModel.shareCardDraft.collectAsStateWithLifecycle()
+    val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
+    val shareCardExporting by viewModel.shareCardExporting.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
 
@@ -167,12 +199,50 @@ fun ApexAppRoot(
                 ?: FuelType.GASOLINE
             ShareCardComposerDialog(
                 draft = draft,
-                initialMetrics = settings.shareCardMetrics,
+                initialConfig = settings.tripCardConfig,
                 unitPrefs = settings.toUnitPreferences(),
                 fuelType = fuelType,
-                onConfirmShare = { cfg -> viewModel.confirmShareCardExport(cfg) },
+                isExporting = shareCardExporting,
+                onConfigChanged = { cfg -> viewModel.updateSavedTripCardConfig(cfg) },
+                onPickBackgroundPhoto = { uri, cb -> viewModel.copyPickedCardBackgroundPhoto(uri, cb) },
+                onLoadSurroundingRoads = { samples, w, h, mainOnly -> viewModel.loadSurroundingRoadsForCard(samples, w, h, mainOnly) },
+                onConfirmExport = { cfg, action, roadLayer ->
+                    viewModel.confirmShareCardExport(cfg, action, roadLayer)
+                },
                 onDismiss = { viewModel.dismissShareCardComposer() }
             )
+        }
+
+        if (shareCardPreparing) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x99000000))
+                    .zIndex(50f),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(TorqueEvoColors.ElevatedDark)
+                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
+                        .padding(horizontal = 24.dp, vertical = 18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(
+                        color = TorqueEvoColors.ElectricBlue,
+                        modifier = Modifier.size(30.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Text(
+                        "Generating route card...",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.TextPrimary
+                    )
+                }
+            }
         }
     }
 }
@@ -185,16 +255,100 @@ fun HudCanvasScreen(
     val scope = rememberCoroutineScope()
 
     val settings by viewModel.settings.collectAsStateWithLifecycle()
+    val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
     val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
-    val liveValues by viewModel.displayValues.collectAsStateWithLifecycle()
-    val historyBuffers by viewModel.historyBuffers.collectAsStateWithLifecycle()
-    val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
-    val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
-    val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
     val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
-    val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+    val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    // Drive C1 SmoothDamp animation strictly on display VSync frames
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            withFrameNanos { frameNanos ->
+                viewModel.stepVisualDisplayFrame(frameNanos / 1_000_000L)
+            }
+        }
+    }
+
+    fun hasLocPerm(): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    var hasLocationPermission by remember { mutableStateOf(hasLocPerm()) }
+    var dismissGpsPrompt by remember { mutableStateOf(false) }
+
+    val locationSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) {
+        hasLocationPermission = hasLocPerm()
+        if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+            viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+        }
+    }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        hasLocationPermission = hasLocPerm()
+        if (hasLocationPermission) {
+            viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+        }
+    }
+
+    val enableGpsAction: () -> Unit = {
+        if (!hasLocPerm()) {
+            locationPermissionLauncher.launch(
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            )
+        } else {
+            val req = viewModel.locationTracker.buildHighAccuracySettingsRequest()
+            LocationServices.getSettingsClient(context)
+                .checkLocationSettings(req)
+                .addOnSuccessListener {
+                    viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+                }
+                .addOnFailureListener { ex ->
+                    if (ex is ResolvableApiException) {
+                        runCatching {
+                            locationSettingsLauncher.launch(IntentSenderRequest.Builder(ex.resolution).build())
+                        }.onFailure {
+                            runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                        }
+                    } else {
+                        runCatching { context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+                    }
+                }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        hasLocationPermission = hasLocPerm()
+        if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+            viewModel.locationTracker.requestImmediateFix()
+        }
+    }
+
+    LaunchedEffect(isGpsEnabled, hasLocationPermission) {
+        if (isGpsEnabled && hasLocationPermission) {
+            dismissGpsPrompt = false
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasLocationPermission = hasLocPerm()
+                if (viewModel.locationTracker.refreshLocationEnabledState() && hasLocationPermission) {
+                    viewModel.locationTracker.restartUpdatesAndFetchCurrent()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
 
     var showConnectedToast by remember { mutableStateOf(false) }
     var wasNotConnected by remember { mutableStateOf(true) }
@@ -283,8 +437,6 @@ fun HudCanvasScreen(
                     gridScale = settings.hudGridScale,
                     pageIndex = pageIdx,
                     viewModel = viewModel,
-                    liveValues = liveValues,
-                    historyBuffers = historyBuffers,
                     onLongPressCanvas = { showContextMenu = true },
                     onHoldWidget = { w ->
                         selectedWidgetId = w.id
@@ -301,9 +453,11 @@ fun HudCanvasScreen(
                     onUpdateFreeformPos = { w, xf, yf, mxf, myf ->
                         viewModel.updateWidgetFreeformPosition(w, xf, yf, mxf, myf)
                     },
-                    renderContextExtras = Triple(gps, diagReport, timer0100),
-                    extraFlags = Triple(settings.mapProvider, settings.pauseFuelCalculation, isRecording to (sessions.firstOrNull()?.sampleCount ?: 0)),
-                    isRecordingPaused = isRecordingPaused
+                    mapProvider = settings.mapProvider,
+                    fuelPaused = settings.pauseFuelCalculation,
+                    isRecording = isRecording,
+                    isRecordingPaused = isRecordingPaused,
+                    onEnableGps = enableGpsAction
                 )
             }
         }
@@ -395,18 +549,45 @@ fun HudCanvasScreen(
             }
         }
 
-        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Drag & Drop, Remove)
+        // HOLD-COMPONENT EDIT MENU (Style, Dynamic Resize, Optional Shift/Warning Thresholds, Drag & Drop, Remove)
         val editingPage = pages.getOrNull(pagerState.currentPage)
         val editingWidget = editingWidgetId?.let { targetId ->
             editingPage?.widgets?.firstOrNull { it.id == targetId }
         }
         if (editingWidget != null && editingPage != null) {
+            val editMeta = viewModel.catalogItemFor(editingWidget.sensorKey)
+            val editUnitPrefs = settings.toUnitPreferences()
+            val editFuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            val editUnitLabel = if (editMeta.quantity == SensorQuantity.RAW) {
+                editMeta.unit
+            } else {
+                com.apexobd.core.model.UnitConverter.convert(0.0, editMeta.quantity, editUnitPrefs, editFuelType).second
+            }
+            val editWarnDisp = editingWidget.warnThreshold?.let {
+                viewModel.convertValueOnly(it, editMeta.quantity, editUnitPrefs, editFuelType)
+            }
+            val editCritDisp = editingWidget.critThreshold?.let {
+                viewModel.convertValueOnly(it, editMeta.quantity, editUnitPrefs, editFuelType)
+            }
             ComponentEditDialog(
                 widget = editingWidget,
-                widgetLabel = viewModel.catalogItemFor(editingWidget.sensorKey).label,
+                widgetLabel = editMeta.label,
+                unitLabel = editUnitLabel,
+                redlineRpm = activeVehicle?.redlineRpm ?: 7000,
+                initialWarnDisplay = editWarnDisp,
+                initialCritDisplay = editCritDisp,
                 gridScale = settings.hudGridScale,
                 onSelectDisplayType = { dt -> viewModel.updateWidgetDisplayType(editingWidget, dt) },
                 onResize = { c, r -> viewModel.updateWidgetSize(editingWidget, c, r) },
+                onUpdateThresholds = { warnDisp, critDisp, alertBelow ->
+                    val warnMetric = warnDisp?.let {
+                        viewModel.displayToInternalValue(it, editMeta.quantity, editUnitPrefs, editFuelType)
+                    }
+                    val critMetric = critDisp?.let {
+                        viewModel.displayToInternalValue(it, editMeta.quantity, editUnitPrefs, editFuelType)
+                    }
+                    viewModel.updateWidgetThresholds(editingWidget, warnMetric, critMetric, alertBelow)
+                },
                 onEnterMoveMode = {
                     editingWidgetId = null
                     selectedWidgetId = editingWidget.id
@@ -432,15 +613,9 @@ fun HudCanvasScreen(
                 FullscreenComponentPickerDialog(
                     viewModel = viewModel,
                     gridScale = settings.hudGridScale,
-                    liveValues = liveValues,
-                    historyBuffers = historyBuffers,
-                    gps = gps,
-                    diagReport = diagReport,
-                    timer0100 = timer0100,
                     mapProvider = settings.mapProvider,
                     fuelPaused = settings.pauseFuelCalculation,
                     isRecording = isRecording,
-                    sampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
                     onToggleRecord = { viewModel.toggleRecording() },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
                     onScanDtc = { viewModel.scanDiagnostics() },
@@ -614,9 +789,66 @@ fun HudCanvasScreen(
                     onSelectGridScale = { viewModel.setHudGridScale(it) },
                     selectedSmoothing = settings.gaugeSmoothingMode,
                     onSelectSmoothing = { viewModel.setGaugeSmoothingMode(it) },
+                    liveMicroMotion = settings.liveMicroMotion,
+                    onToggleLiveMicroMotion = { viewModel.setLiveMicroMotion(!settings.liveMicroMotion) },
                     hudMirror = settings.hudMirror,
                     onToggleHudMirror = { viewModel.toggleHudMirror() }
                 )
+            }
+        }
+    }
+
+    if ((!isGpsEnabled || !hasLocationPermission) && !dismissGpsPrompt) {
+        Dialog(onDismissRequest = { dismissGpsPrompt = true }) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 420.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xF50E1219))
+                    .border(1.5.dp, TorqueEvoColors.WarnAmber, RoundedCornerShape(16.dp))
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = if (!hasLocationPermission) "Location Permission Required" else "GPS Location Is Turned Off",
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.WarnAmber
+                )
+                Text(
+                    text = if (!hasLocationPermission) {
+                        "ApexOBD needs Location access to read GPS speed, show the live map, and record your driving route."
+                    } else {
+                        "Turn on GPS so speed, live navigation map, and route tracking update properly."
+                    },
+                    fontSize = 12.5.sp,
+                    color = TorqueEvoColors.TextPrimary
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { dismissGpsPrompt = true },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Later", color = TorqueEvoColors.TextSecondary)
+                    }
+                    Button(
+                        onClick = enableGpsAction,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = TorqueEvoColors.WarnAmber,
+                            contentColor = Color.Black
+                        ),
+                        modifier = Modifier.weight(1.4f)
+                    ) {
+                        Text(
+                            if (!hasLocationPermission) "Allow Location" else "Enable GPS",
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
             }
         }
     }
@@ -771,8 +1003,6 @@ private fun ProportionalHudPageCanvas(
     gridScale: HudGridScale,
     pageIndex: Int,
     viewModel: HudViewModel,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
     onLongPressCanvas: () -> Unit,
     onHoldWidget: (HudWidgetEntity) -> Unit,
     onSelectWidget: (HudWidgetEntity) -> Unit,
@@ -784,9 +1014,11 @@ private fun ProportionalHudPageCanvas(
     onScanDtc: () -> Unit,
     onReset0100: () -> Unit,
     onUpdateFreeformPos: (HudWidgetEntity, Float, Float, Float, Float) -> Unit,
-    renderContextExtras: Triple<com.apexobd.app.platform.GpsSnapshot, com.apexobd.core.protocol.DiagnosticReport?, com.apexobd.core.scheduler.Timer0100State>,
-    extraFlags: Triple<com.apexobd.app.data.prefs.MapProvider, Boolean, Pair<Boolean, Int>>,
-    isRecordingPaused: Boolean = false
+    mapProvider: com.apexobd.app.data.prefs.MapProvider,
+    fuelPaused: Boolean,
+    isRecording: Boolean,
+    isRecordingPaused: Boolean = false,
+    onEnableGps: (() -> Unit)? = null
 ) {
     val density = LocalDensity.current
     var snapPreview by remember { mutableStateOf<SnapDragPreview?>(null) }
@@ -1020,21 +1252,16 @@ private fun ProportionalHudPageCanvas(
                         RenderWidgetContent(
                             widget = w,
                             viewModel = viewModel,
-                            liveValues = liveValues,
-                            historyBuffers = historyBuffers,
-                            gps = renderContextExtras.first,
-                            diagReport = renderContextExtras.second,
-                            timer0100 = renderContextExtras.third,
-                            mapProvider = extraFlags.first,
-                            fuelPaused = extraFlags.second,
-                            isRecording = extraFlags.third.first,
+                            mapProvider = mapProvider,
+                            fuelPaused = fuelPaused,
+                            isRecording = isRecording,
                             isRecordingPaused = isRecordingPaused,
-                            sampleCount = extraFlags.third.second,
                             onToggleRecord = onToggleRecord,
                             onTogglePauseResume = onTogglePauseResume,
                             onToggleFuelPause = onToggleFuelPause,
                             onScanDtc = onScanDtc,
-                            onReset0100 = onReset0100
+                            onReset0100 = onReset0100,
+                            onEnableGps = onEnableGps
                         )
                     }
                 }
@@ -1086,28 +1313,25 @@ private fun HudWidgetSlotWrapper(
 private fun RenderWidgetContent(
     widget: HudWidgetEntity,
     viewModel: HudViewModel,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
-    gps: com.apexobd.app.platform.GpsSnapshot,
-    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
-    timer0100: com.apexobd.core.scheduler.Timer0100State,
     mapProvider: com.apexobd.app.data.prefs.MapProvider,
     fuelPaused: Boolean,
     isRecording: Boolean,
     isRecordingPaused: Boolean = false,
-    sampleCount: Int,
     onToggleRecord: () -> Unit,
     onTogglePauseResume: (() -> Unit)? = null,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
-    onReset0100: () -> Unit
+    onReset0100: () -> Unit,
+    onEnableGps: (() -> Unit)? = null
 ) {
     val type = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
 
     when (widget.sensorKey) {
         "minimap" -> {
             val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
             val tripState by viewModel.tripRunMetrics.collectAsStateWithLifecycle()
+            val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
             val recLabel = if (isRecording) {
                 val clock = TripRunCalculator.formatDurationClock(tripState.elapsedSec)
                 val (dVal, dUnit) = viewModel.convertForDisplay(
@@ -1130,52 +1354,156 @@ private fun RenderWidgetContent(
                 isPaused = isRecordingPaused,
                 recordingStatusLabel = recLabel,
                 onToggleRecord = onToggleRecord,
-                onTogglePauseResume = onTogglePauseResume
+                onTogglePauseResume = onTogglePauseResume,
+                isGpsEnabled = isGpsEnabled,
+                onEnableGps = onEnableGps
             )
         }
         "fuel_ctrl" -> {
-            val (kplVal, kplSym) = viewModel.convertForDisplay(
-                liveValues["kpl_road_avg"],
-                com.apexobd.core.model.SensorQuantity.FUEL_ECONOMY_KPL,
-                "km/L"
-            )
-            val (dteVal, dteSym) = viewModel.convertForDisplay(
-                liveValues["range_dte"],
-                com.apexobd.core.model.SensorQuantity.DISTANCE_KM,
-                "km"
-            )
+            val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
+            val unitPrefs = remember(activeSettings) { activeSettings.toUnitPreferences() }
+            val fuelType = remember(activeVehicle?.fuelType) {
+                activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            }
+            val (_, kplSym) = remember(unitPrefs, fuelType) {
+                com.apexobd.core.model.UnitConverter.convert(0.0, SensorQuantity.FUEL_ECONOMY_KPL, unitPrefs, fuelType)
+            }
+            val kplState = viewModel.hudLiveValues.valueStateFor("kpl_road_avg")
+            val kplProvider: () -> Double? = remember(kplState, unitPrefs, fuelType) {
+                { viewModel.convertValueOnly(kplState.value, SensorQuantity.FUEL_ECONOMY_KPL, unitPrefs, fuelType) }
+            }
             FuelControlWidget(
-                kplValue = kplVal,
+                kplProvider = kplProvider,
                 kplUnit = kplSym,
-                estRangeValue = dteVal,
-                estRangeUnit = dteSym,
                 paused = fuelPaused,
                 onTogglePause = onToggleFuelPause
             )
         }
-        "dtc_checker" -> DtcCheckerWidget(report = diagReport, onScan = onScanDtc)
-        "timer_0100" -> PerfTimerWidget(timer = timer0100, onReset = onReset0100)
-        "data_logger" -> DataLoggerWidget(isRecording = isRecording, latestSampleCount = sampleCount, onToggleRecord = onToggleRecord)
+        "dtc_checker" -> {
+            val diagReport by viewModel.diagnosticReport.collectAsStateWithLifecycle()
+            DtcCheckerWidget(report = diagReport, onScan = onScanDtc)
+        }
+        "timer_0100" -> {
+            val timer0100 by viewModel.timer0100.collectAsStateWithLifecycle()
+            PerfTimerWidget(timer = timer0100, onReset = onReset0100)
+        }
+        "data_logger" -> {
+            val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+            DataLoggerWidget(
+                isRecording = isRecording,
+                latestSampleCount = sessions.firstOrNull()?.sampleCount ?: 0,
+                onToggleRecord = onToggleRecord
+            )
+        }
         else -> {
-            val meta = viewModel.catalogItemFor(widget.sensorKey)
-            val rawVal = liveValues[widget.sensorKey]
-            val (dispVal, dispUnit) = viewModel.convertForDisplay(rawVal, meta.quantity, meta.unit)
-            val (cMin, cMax) = viewModel.convertBounds(meta.minValue, meta.maxValue, meta.quantity)
-            val warnConv = widget.warnThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
-            val critConv = widget.critThreshold?.let { viewModel.convertForDisplay(it, meta.quantity, meta.unit).first }
+            val activeSettings by viewModel.settings.collectAsStateWithLifecycle()
+            val activeVehicle by viewModel.activeVehicle.collectAsStateWithLifecycle()
+            val supportedPids by viewModel.supportedPids.collectAsStateWithLifecycle()
+            val customPids by viewModel.customPids.collectAsStateWithLifecycle()
+
+            val meta = remember(widget.sensorKey, supportedPids, customPids) {
+                viewModel.catalogItemFor(widget.sensorKey)
+            }
+            val unitPrefs = remember(activeSettings) { activeSettings.toUnitPreferences() }
+            val fuelType = remember(activeVehicle?.fuelType) {
+                activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            }
+            val dispUnit = remember(meta.quantity, meta.unit, unitPrefs, fuelType) {
+                if (meta.quantity == SensorQuantity.RAW) meta.unit
+                else com.apexobd.core.model.UnitConverter.convert(0.0, meta.quantity, unitPrefs, fuelType).second
+            }
+            val (cMin, cMax) = remember(meta.minValue, meta.maxValue, meta.quantity, unitPrefs, fuelType) {
+                viewModel.convertBounds(meta.minValue, meta.maxValue, meta.quantity)
+            }
+            val warnConv = remember(widget.warnThreshold, meta.quantity, unitPrefs, fuelType) {
+                widget.warnThreshold?.let { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) }
+            }
+            val critConv = remember(widget.critThreshold, meta.quantity, unitPrefs, fuelType) {
+                widget.critThreshold?.let { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) }
+            }
+            val rawState = viewModel.hudLiveValues.valueStateFor(widget.sensorKey)
+            val valueProvider: () -> Double? = remember(rawState, meta.quantity, unitPrefs, fuelType) {
+                { viewModel.convertValueOnly(rawState.value, meta.quantity, unitPrefs, fuelType) }
+            }
+            val redlineRpm = activeVehicle?.redlineRpm ?: 7000
 
             when (type) {
-                WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.BAR -> BarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
-                WidgetDisplayType.CHART -> {
-                    val hist = (historyBuffers[widget.sensorKey] ?: emptyList()).map {
-                        viewModel.convertForDisplay(it, meta.quantity, meta.unit).first ?: it
+                WidgetDisplayType.RPM_TACH_GT -> RpmTachGtWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_F1_LEDS -> RpmTachF1LedsWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_CHRONO -> RpmTachChronoWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                WidgetDisplayType.RPM_TACH_HALO -> RpmTachHaloWidget(
+                    valueProvider = valueProvider,
+                    redlineRpm = redlineRpm,
+                    shiftRpm = widget.critThreshold
+                )
+                else -> {
+                    val overlayRadius = when (type) {
+                        WidgetDisplayType.ANALOG_DIAL, WidgetDisplayType.SEMI_DIGITAL -> 12.dp
+                        WidgetDisplayType.BAR, WidgetDisplayType.SEGMENTED_BAR -> 8.dp
+                        else -> 10.dp
                     }
-                    SparklineChartWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, hist)
+                    MetricAlertFrameOverlay(
+                        valueProvider = valueProvider,
+                        warnThreshold = warnConv,
+                        critThreshold = critConv,
+                        alertBelow = widget.alertBelow,
+                        cornerRadiusDp = overlayRadius
+                    ) {
+                        when (type) {
+                            WidgetDisplayType.ANALOG_DIAL -> AnalogDialWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.SEMI_DIGITAL -> SemiDigitalArcWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.BAR -> BarGaugeWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.SEGMENTED_BAR -> SegmentedBarGaugeWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                            WidgetDisplayType.CHART -> {
+                                val histState = viewModel.hudLiveValues.historyStateFor(widget.sensorKey)
+                                val convertedHist = remember(histState, meta.quantity, unitPrefs, fuelType) {
+                                    androidx.compose.runtime.derivedStateOf {
+                                        val list = histState.value
+                                        if (meta.quantity == SensorQuantity.RAW) list
+                                        else list.map { viewModel.convertValueOnly(it, meta.quantity, unitPrefs, fuelType) ?: it }
+                                    }
+                                }
+                                val historyProvider: () -> List<Double> = remember(convertedHist) { { convertedHist.value } }
+                                SparklineChartWidget(
+                                    meta.shortLabel, valueProvider, dispUnit, cMin, cMax, historyProvider,
+                                    sensorKey = widget.sensorKey,
+                                    warnThreshold = warnConv,
+                                    critThreshold = critConv,
+                                    alertBelow = widget.alertBelow
+                                )
+                            }
+                            else -> DigitalReadoutWidget(
+                                meta.shortLabel, valueProvider, dispUnit, cMin, cMax, warnConv, critConv,
+                                sensorKey = widget.sensorKey, alertBelow = widget.alertBelow
+                            )
+                        }
+                    }
                 }
-                else -> DigitalReadoutWidget(meta.shortLabel, dispVal, dispUnit, cMin, cMax, warnConv, critConv)
             }
         }
     }
@@ -1220,6 +1548,20 @@ private fun ContextMenuButton(
     )
 }
 
+private val RPM_DISPLAY_STYLE_OPTIONS = listOf(
+    WidgetDisplayType.RPM_TACH_GT to "GT Tach",
+    WidgetDisplayType.RPM_TACH_F1_LEDS to "F1 LEDs",
+    WidgetDisplayType.RPM_TACH_CHRONO to "Track Chrono",
+    WidgetDisplayType.RPM_TACH_HALO to "OLED Halo"
+)
+
+private val RPM_DEDICATED_TYPES = setOf(
+    WidgetDisplayType.RPM_TACH_GT,
+    WidgetDisplayType.RPM_TACH_F1_LEDS,
+    WidgetDisplayType.RPM_TACH_CHRONO,
+    WidgetDisplayType.RPM_TACH_HALO
+)
+
 private val DISPLAY_STYLE_OPTIONS = listOf(
     WidgetDisplayType.ANALOG_DIAL to "Radial",
     WidgetDisplayType.SEMI_DIGITAL to "Semi-Arc",
@@ -1231,14 +1573,19 @@ private val DISPLAY_STYLE_OPTIONS = listOf(
 
 @Composable
 private fun VisualStyleChipsRow(
+    sensorKey: String,
     selectedType: WidgetDisplayType,
     onSelect: (WidgetDisplayType) -> Unit
 ) {
+    val options = remember(sensorKey) {
+        if (isRpmSensorKey(sensorKey)) RPM_DISPLAY_STYLE_OPTIONS + DISPLAY_STYLE_OPTIONS
+        else DISPLAY_STYLE_OPTIONS
+    }
     Row(
         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        DISPLAY_STYLE_OPTIONS.forEach { (dt, lbl) ->
+        options.forEach { (dt, lbl) ->
             ApexFilterChip(
                 selected = selectedType == dt,
                 onClick = { onSelect(dt) },
@@ -1417,14 +1764,29 @@ private fun StepperBadge(symbol: String, enabled: Boolean, onClick: () -> Unit) 
     }
 }
 
+private fun formatThresholdInput(value: Double?): String {
+    if (value == null || !value.isFinite()) return ""
+    val rounded = value.roundToInt().toDouble()
+    return if (kotlin.math.abs(value - rounded) < 0.005) {
+        value.roundToInt().toString()
+    } else {
+        "%.2f".format(value).trimEnd('0').trimEnd('.')
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ComponentEditDialog(
     widget: HudWidgetEntity,
     widgetLabel: String,
+    unitLabel: String,
+    redlineRpm: Int,
+    initialWarnDisplay: Double?,
+    initialCritDisplay: Double?,
     gridScale: HudGridScale,
     onSelectDisplayType: (WidgetDisplayType) -> Unit,
     onResize: (Int, Int) -> Unit,
+    onUpdateThresholds: (warnDisplay: Double?, critDisplay: Double?, alertBelow: Boolean) -> Unit,
     onEnterMoveMode: () -> Unit,
     onOpenCanvasMenu: () -> Unit,
     onRemove: () -> Unit,
@@ -1432,8 +1794,36 @@ private fun ComponentEditDialog(
 ) {
     val currentType = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrDefault(WidgetDisplayType.DIGITAL)
     val canStyle = !isFixedLayoutSpecialWidget(widget.sensorKey)
+    val isRpm = isRpmSensorKey(widget.sensorKey)
     val safeCols = widget.spanCols.coerceIn(1, gridScale.cols)
     val safeRows = widget.spanRows.coerceIn(1, gridScale.rows)
+
+    val defaultBelow = remember(widget.sensorKey) { defaultAlertBelowForSensor(widget.sensorKey) }
+    val effectiveInitialBelow = if (initialWarnDisplay == null && initialCritDisplay == null) {
+        defaultBelow
+    } else {
+        widget.alertBelow
+    }
+
+    var alertBelowState by remember(widget.id, widget.alertBelow, initialWarnDisplay, initialCritDisplay) {
+        mutableStateOf(effectiveInitialBelow)
+    }
+    var warnText by remember(widget.id, initialWarnDisplay) {
+        mutableStateOf(formatThresholdInput(initialWarnDisplay))
+    }
+    var critText by remember(widget.id, initialCritDisplay) {
+        mutableStateOf(formatThresholdInput(initialCritDisplay))
+    }
+
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = TorqueEvoColors.ElectricBlue,
+        unfocusedBorderColor = TorqueEvoColors.SubtleBorder,
+        focusedTextColor = TorqueEvoColors.TextPrimary,
+        unfocusedTextColor = TorqueEvoColors.TextPrimary,
+        focusedLabelColor = TorqueEvoColors.ElectricBlue,
+        unfocusedLabelColor = TorqueEvoColors.TextSecondary,
+        cursorColor = TorqueEvoColors.ElectricBlue
+    )
 
     Box(
         modifier = Modifier
@@ -1446,9 +1836,9 @@ private fun ComponentEditDialog(
     ) {
         Column(
             modifier = Modifier
-                .widthIn(max = 560.dp)
+                .widthIn(max = 580.dp)
                 .fillMaxWidth()
-                .heightIn(max = 355.dp)
+                .heightIn(max = 390.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(Color(0xFF0E1116))
                 .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
@@ -1504,7 +1894,11 @@ private fun ComponentEditDialog(
             if (canStyle) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Display Type", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                    VisualStyleChipsRow(selectedType = currentType, onSelect = onSelectDisplayType)
+                    VisualStyleChipsRow(
+                        sensorKey = widget.sensorKey,
+                        selectedType = currentType,
+                        onSelect = onSelectDisplayType
+                    )
                 }
             }
 
@@ -1524,6 +1918,201 @@ private fun ComponentEditDialog(
                 )
             }
 
+            if (canStyle) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(TorqueEvoColors.PureBlack)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                ) {
+                    if (isRpm) {
+                        val activeShift = initialCritDisplay?.roundToInt()
+                        val redlineMinus500 = (redlineRpm - 500).coerceAtLeast(2500)
+                        val presets = remember(redlineMinus500) {
+                            listOf(4500, 5500, 6000, redlineMinus500).distinct().sorted()
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Shift Light Threshold (Optional)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextSecondary
+                            )
+                            Text(
+                                text = if (activeShift != null) "$activeShift RPM · Active" else "Off",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (activeShift != null) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextSecondary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ApexFilterChip(
+                                selected = activeShift == null,
+                                onClick = {
+                                    critText = ""
+                                    onUpdateThresholds(null, null, false)
+                                },
+                                label = "Off",
+                                compact = true
+                            )
+                            presets.forEach { preset ->
+                                val tag = if (preset == redlineMinus500) "$preset (Redline-500)" else "$preset"
+                                ApexFilterChip(
+                                    selected = activeShift == preset,
+                                    onClick = {
+                                        critText = preset.toString()
+                                        onUpdateThresholds(null, preset.toDouble(), false)
+                                    },
+                                    label = tag,
+                                    compact = true
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = critText,
+                                onValueChange = { next ->
+                                    if (next.length <= 6 && next.all { it.isDigit() }) critText = next
+                                },
+                                label = { Text("Custom Shift RPM", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            EditActionPill(
+                                label = "Apply",
+                                tint = Color(0xFF020810),
+                                bg = TorqueEvoColors.ElectricBlue
+                            ) {
+                                val parsed = critText.trim().toDoubleOrNull()?.takeIf { it > 0.0 }
+                                onUpdateThresholds(null, parsed, false)
+                            }
+                        }
+                        Text(
+                            text = "Shift lamp scales Green (60%) → Yellow (80%) → Red Flash (100%) · Redline $redlineRpm RPM",
+                            fontSize = 10.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                    } else {
+                        val hasAlert = initialWarnDisplay != null || initialCritDisplay != null
+                        val unitSuffix = if (unitLabel.isNotBlank()) " ($unitLabel)" else ""
+                        val summaryText = if (!hasAlert) {
+                            "Off"
+                        } else {
+                            val dir = if (widget.alertBelow) "≤" else "≥"
+                            val parts = buildList {
+                                initialWarnDisplay?.let { add("W ${formatThresholdInput(it)}") }
+                                initialCritDisplay?.let { add("C ${formatThresholdInput(it)}") }
+                            }.joinToString(" · ")
+                            "$dir $parts${if (unitLabel.isNotBlank()) " $unitLabel" else ""}"
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Warning Threshold (Optional)",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TorqueEvoColors.TextSecondary
+                            )
+                            Text(
+                                text = summaryText,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (hasAlert) TorqueEvoColors.WarnAmber else TorqueEvoColors.TextSecondary
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Trigger:", fontSize = 10.5.sp, color = TorqueEvoColors.TextSecondary)
+                            ApexFilterChip(
+                                selected = !alertBelowState,
+                                onClick = { alertBelowState = false },
+                                label = "Above (≥)",
+                                compact = true
+                            )
+                            ApexFilterChip(
+                                selected = alertBelowState,
+                                onClick = { alertBelowState = true },
+                                label = "Below (≤)",
+                                compact = true
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = warnText,
+                                onValueChange = { next ->
+                                    if (next.length <= 8 && next.all { it.isDigit() || it == '.' || it == '-' }) {
+                                        warnText = next
+                                    }
+                                },
+                                label = { Text("Warn$unitSuffix", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = critText,
+                                onValueChange = { next ->
+                                    if (next.length <= 8 && next.all { it.isDigit() || it == '.' || it == '-' }) {
+                                        critText = next
+                                    }
+                                },
+                                label = { Text("Critical$unitSuffix", fontSize = 10.5.sp) },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                colors = fieldColors,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                EditActionPill(
+                                    label = "Apply",
+                                    tint = Color(0xFF020810),
+                                    bg = TorqueEvoColors.ElectricBlue
+                                ) {
+                                    val wVal = warnText.trim().toDoubleOrNull()
+                                    val cVal = critText.trim().toDoubleOrNull()
+                                    onUpdateThresholds(wVal, cVal, alertBelowState)
+                                }
+                                EditActionPill(
+                                    label = "Clear",
+                                    tint = TorqueEvoColors.TextSecondary
+                                ) {
+                                    warnText = ""
+                                    critText = ""
+                                    onUpdateThresholds(null, null, defaultBelow)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -1541,15 +2130,9 @@ private fun ComponentEditDialog(
 private fun FullscreenComponentPickerDialog(
     viewModel: HudViewModel,
     gridScale: HudGridScale,
-    liveValues: Map<String, Double>,
-    historyBuffers: Map<String, List<Double>>,
-    gps: com.apexobd.app.platform.GpsSnapshot,
-    diagReport: com.apexobd.core.protocol.DiagnosticReport?,
-    timer0100: com.apexobd.core.scheduler.Timer0100State,
     mapProvider: com.apexobd.app.data.prefs.MapProvider,
     fuelPaused: Boolean,
     isRecording: Boolean,
-    sampleCount: Int,
     onToggleRecord: () -> Unit,
     onToggleFuelPause: () -> Unit,
     onScanDtc: () -> Unit,
@@ -1678,7 +2261,7 @@ private fun FullscreenComponentPickerDialog(
                             val item = opt.item
                             val isSelected = item.key == selectedItem.key
                             val enabled = opt.available
-                            val rawLive = liveValues[item.key]
+                            val rawLive = viewModel.hudLiveValues.valueStateFor(item.key).value
                             val (dispVal, dispUnit) = viewModel.convertForDisplay(rawLive, item.quantity, item.unit)
 
                             val valueStr = when {
@@ -1687,11 +2270,7 @@ private fun FullscreenComponentPickerDialog(
                                 item.quantity == SensorQuantity.DURATION_SEC ->
                                     TripRunCalculator.formatDurationClock((dispVal ?: 0.0).roundToLong())
                                 dispVal != null -> {
-                                    val numTxt = when {
-                                        item.maxValue - item.minValue <= 5.0 -> "%.2f".format(dispVal)
-                                        item.maxValue >= 200.0 && item.unit == "RPM" -> "%.0f".format(dispVal)
-                                        else -> "%.1f".format(dispVal)
-                                    }
+                                    val numTxt = formatTelemetryValue(dispVal, item.minValue, item.maxValue, unit = dispUnit, sensorKey = item.key)
                                     if (dispUnit.isNotBlank()) "$numTxt $dispUnit" else numTxt
                                 }
                                 dispUnit.isNotBlank() -> "— $dispUnit"
@@ -1728,6 +2307,16 @@ private fun FullscreenComponentPickerDialog(
                                                             selectedRows = 1
                                                         }
                                                     }
+                                                } else if (isRpmSensorKey(item.key)) {
+                                                    if (selectedType !in RPM_DEDICATED_TYPES) {
+                                                        selectedType = WidgetDisplayType.RPM_TACH_GT
+                                                    }
+                                                    if (selectedRows < 2 && gridScale.rows >= 2) {
+                                                        selectedCols = 2.coerceIn(1, gridScale.cols)
+                                                        selectedRows = 2.coerceIn(1, gridScale.rows)
+                                                    }
+                                                } else if (selectedType in RPM_DEDICATED_TYPES) {
+                                                    selectedType = WidgetDisplayType.DIGITAL
                                                 }
                                             }
                                         } else Modifier
@@ -1760,7 +2349,11 @@ private fun FullscreenComponentPickerDialog(
                     if (!selectedItem.isSpecialWidget) {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text("2. Component Visual", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.TextSecondary)
-                            VisualStyleChipsRow(selectedType = selectedType, onSelect = { selectedType = it })
+                            VisualStyleChipsRow(
+                                sensorKey = selectedItem.key,
+                                selectedType = selectedType,
+                                onSelect = { selectedType = it }
+                            )
                         }
                     } else {
                         Text(
@@ -1833,15 +2426,9 @@ private fun FullscreenComponentPickerDialog(
                             RenderWidgetContent(
                                 widget = previewWidget,
                                 viewModel = viewModel,
-                                liveValues = liveValues,
-                                historyBuffers = historyBuffers,
-                                gps = gps,
-                                diagReport = diagReport,
-                                timer0100 = timer0100,
                                 mapProvider = mapProvider,
                                 fuelPaused = fuelPaused,
                                 isRecording = isRecording,
-                                sampleCount = sampleCount,
                                 onToggleRecord = onToggleRecord,
                                 onToggleFuelPause = onToggleFuelPause,
                                 onScanDtc = onScanDtc,

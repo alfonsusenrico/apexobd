@@ -3,7 +3,13 @@ package com.apexobd.app.ui
 import android.app.Application
 import android.net.Uri
 import android.widget.Toast
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
 import com.apexobd.app.data.prefs.MapCursorStyle
+import com.apexobd.app.data.prefs.ShareCardAspectRatio
+import com.apexobd.app.data.prefs.ShareCardBackgroundMode
 import com.apexobd.app.data.prefs.ShareCardMetric
 import com.apexobd.app.data.prefs.TripCardConfig
 import androidx.lifecycle.AndroidViewModel
@@ -53,10 +59,12 @@ import com.apexobd.core.protocol.DerivedSensorCatalog
 import com.apexobd.core.protocol.DiagnosticReport
 import com.apexobd.core.protocol.DtcDecoder
 import com.apexobd.core.protocol.EcuDiscoveryDumper
+import com.apexobd.core.protocol.FuelEconomyTracker
 import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.GaugeSmoothingMode
 import com.apexobd.core.protocol.ObdPidRegistry
 import com.apexobd.core.protocol.TelemetryDisplaySmoother
+import com.apexobd.core.protocol.ToyotaMeterCapabilities
 import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.protocol.TripRunMetrics
 import com.apexobd.core.scheduler.ConnectionState
@@ -127,6 +135,42 @@ data class PickerSensorOption(
     val available: Boolean
 )
 
+/**
+ * Per-channel Compose [State] holder updated strictly on display VSync so rapid telemetry
+ * updates invalidate only matching leaf digits/Canvas gauges rather than the entire HUD tree.
+ */
+@Stable
+class HudLiveValueStore {
+    private val valueStates = HashMap<String, MutableState<Double?>>(32)
+    private val historyStates = HashMap<String, MutableState<List<Double>>>(8)
+
+    fun valueStateFor(key: String): State<Double?> =
+        valueStates.getOrPut(key) { mutableStateOf(null) }
+
+    fun historyStateFor(key: String): State<List<Double>> =
+        historyStates.getOrPut(key) { mutableStateOf(emptyList()) }
+
+    fun updateValuesFrom(values: Map<String, Double>) {
+        for ((k, v) in values) {
+            val slot = valueStates.getOrPut(k) { mutableStateOf(v) }
+            if (slot.value != v) slot.value = v
+        }
+        for ((k, slot) in valueStates) {
+            if (k !in values && slot.value != null) slot.value = null
+        }
+    }
+
+    fun updateHistoryFrom(history: Map<String, List<Double>>) {
+        for ((k, list) in history) {
+            val slot = historyStates.getOrPut(k) { mutableStateOf(list) }
+            if (slot.value != list) slot.value = list
+        }
+        for ((k, slot) in historyStates) {
+            if (k !in history && slot.value.isNotEmpty()) slot.value = emptyList()
+        }
+    }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class HudViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -196,8 +240,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _onHudScreen = MutableStateFlow(false)
     val onHudScreen: StateFlow<Boolean> = _onHudScreen.asStateFlow()
 
+    private val _isAppInForeground = MutableStateFlow(true)
+    private val _backgroundServiceActive = MutableStateFlow(true)
+    val backgroundServiceActive: StateFlow<Boolean> = _backgroundServiceActive.asStateFlow()
+
     private val _visiblePageIndex = MutableStateFlow(0)
     private val _chartKeys = MutableStateFlow<Set<String>>(emptySet())
+    @Volatile
+    private var hasVisibleTimer0100 = false
+    @Volatile
+    private var cachedCatalogLookup: Map<String, SensorCatalogItem> = buildAllKnownCatalogLookup(emptyList())
 
     private val _connectionState = MutableStateFlow<ConnectionState>(ConnectionState.Disconnected)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -211,16 +263,19 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _liveValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
     val liveValues: StateFlow<Map<String, Double>> = _liveValues.asStateFlow()
 
-    // Visual-only smoothed display values for smooth HUD gauge needle & numeric transitions;
+    // Per-sensor UI display store driven on hardware VSync via `stepVisualDisplayFrame`;
     // raw telemetry logging (`telemetry_samples`) and trip math strictly read `_liveValues`.
-    private val _displayValues = MutableStateFlow<Map<String, Double>>(mapOf("trip_time" to 0.0))
-    val displayValues: StateFlow<Map<String, Double>> = _displayValues.asStateFlow()
+    val hudLiveValues = HudLiveValueStore()
+    private var lastVisualFrameMs = 0L
+    private var lastPublishedHistoryRef: Map<String, List<Double>>? = null
 
     private val _tripRunMetrics = MutableStateFlow(TripRunMetrics())
     val tripRunMetrics: StateFlow<TripRunMetrics> = _tripRunMetrics.asStateFlow()
 
     private val _pendingSaveTrip = MutableStateFlow<TripSessionEntity?>(null)
     val pendingSaveTrip: StateFlow<TripSessionEntity?> = _pendingSaveTrip.asStateFlow()
+
+    enum class ShareCardExportAction { SHARE_TO_APPS, DOWNLOAD_PNG }
 
     data class ShareCardDraft(
         val session: TripSessionEntity,
@@ -231,6 +286,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _shareCardDraft = MutableStateFlow<ShareCardDraft?>(null)
     val shareCardDraft: StateFlow<ShareCardDraft?> = _shareCardDraft.asStateFlow()
+
+    private val _shareCardPreparing = MutableStateFlow(false)
+    val shareCardPreparing: StateFlow<Boolean> = _shareCardPreparing.asStateFlow()
+
+    private val _shareCardExporting = MutableStateFlow(false)
+    val shareCardExporting: StateFlow<Boolean> = _shareCardExporting.asStateFlow()
 
     private val _fuelMetrics = MutableStateFlow<FuelMetricsSnapshot?>(null)
     val fuelMetrics: StateFlow<FuelMetricsSnapshot?> = _fuelMetrics.asStateFlow()
@@ -295,13 +356,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val usbDevices: StateFlow<List<UsbSerialCandidate>> = _usbDevices.asStateFlow()
 
     val wifiConnected = wifiBinder.wifiConnected
-    val cellularOnline = wifiBinder.cellularOnline
 
     private var activeSessionId: Long? = null
     private val mutableHistory = mutableMapOf<String, ArrayDeque<Double>>()
 
     init {
         wifiBinder.register()
+        LoggingForegroundService.setTerminateListener {
+            terminateBackgroundService()
+        }
         viewModelScope.launch(Dispatchers.IO) {
             ApexDatabase.seedDefaults(hudDao, vehicleDao)
             tripDao.deleteDraftSessions()
@@ -356,19 +419,46 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Start/stop OBD + Sensors + Cellular keepalive strictly according to active HUD or recording state
+        // Keep OBD adapter connected whenever the background listener service is active (Home, HUD, or background)
         viewModelScope.launch {
-            combine(_onHudScreen, _isRecording, settings) { onHud, recording, st ->
-                Triple(onHud || recording, recording, st)
-            }.collect { (shouldPoll, _, st) ->
+            combine(
+                _backgroundServiceActive,
+                _onHudScreen,
+                _isRecording,
+                _isAppInForeground,
+                settings
+            ) { serviceActive, onHud, recording, inForeground, st ->
+                BackgroundLifecycleState(
+                    serviceActive = serviceActive,
+                    onHud = onHud,
+                    recording = recording,
+                    inForeground = inForeground,
+                    settings = st
+                )
+            }.collect { state ->
+                val st = state.settings
+                val isWifiAdapter = st.connectionType == ObdConnectionType.WIFI_TCP
                 engine?.setFuelCalculationPaused(st.pauseFuelCalculation)
                 engine?.setPollingProfile(st.pollingProfile)
-                wifiBinder.setKeepCellularActive(
-                    shouldPoll && st.connectionType == ObdConnectionType.WIFI_TCP && st.dualCellularKeepalive
+                wifiBinder.setLowLatencyLocks(
+                    wifiLockEnabled = state.serviceActive && isWifiAdapter,
+                    wakeLockEnabled = state.serviceActive
                 )
+                locationTracker.setPreferPureGnss(state.serviceActive && isWifiAdapter)
 
-                if (shouldPoll) {
-                    accelTracker.start()
+                if (state.serviceActive) {
+                    if (!LoggingForegroundService.isRunning && (state.inForeground || state.recording)) {
+                        val (title, text) = buildBackgroundNotificationText(
+                            connectionState = _connectionState.value,
+                            isRecording = state.recording,
+                            endpoint = st.adapterDetailedEndpoint()
+                        )
+                        LoggingForegroundService.start(getApplication(), title, text)
+                    }
+                    val needsImu = (state.onHud && state.inForeground) || state.recording
+                    if (needsImu) accelTracker.start() else accelTracker.stop()
+                    val idleInBackground = !(state.onHud && state.inForeground) && !state.recording && !explorerOpen
+                    engine?.setBackgroundIdleMode(idleInBackground)
                     if (!suppressAutoConnect && engine == null) {
                         reconnectTransport(st)
                     }
@@ -385,6 +475,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         activeEngineVehicleId = null
                     }
+                    LoggingForegroundService.stop(getApplication())
                     _fuelMetrics.value = null
                     _connectionState.value = ConnectionState.Disconnected
                     _pollingHz.value = 0
@@ -392,61 +483,194 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Visible page only polling set (plus logged baseline PIDs while Run Recording is active)
+        // Keep foreground notification text synchronized with live connection & recording status
         viewModelScope.launch {
-            combine(pagesWithWidgets, _visiblePageIndex, _isRecording, settings, _onHudScreen) { pages, pageIdx, recording, st, onHud ->
-                val visibleWidgets = if (onHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
+            combine(_backgroundServiceActive, _connectionState, _isRecording, settings) { active, conn, rec, st ->
+                Triple(active, rec, conn to st.adapterDetailedEndpoint())
+            }.collect { (active, rec, pair) ->
+                if (!active) return@collect
+                val (conn, endpoint) = pair
+                val (title, text) = buildBackgroundNotificationText(conn, rec, endpoint)
+                LoggingForegroundService.updateIfRunning(getApplication(), title, text)
+            }
+        }
+
+        viewModelScope.launch {
+            customPids.collect { list ->
+                cachedCatalogLookup = buildAllKnownCatalogLookup(list)
+            }
+        }
+
+        // Visible HUD page polling set; lightweight keepalive set on Home/Background; Run Recording uses logger queue
+        viewModelScope.launch {
+            combine(
+                pagesWithWidgets,
+                _visiblePageIndex,
+                _isRecording,
+                combine(_onHudScreen, _isAppInForeground, _backgroundServiceActive) { h, fg, svc -> Triple(h, fg, svc) },
+                settings
+            ) { pages, pageIdx, recording, flags, st ->
+                val (onHud, inForeground, serviceActive) = flags
+                val activeHud = onHud && inForeground
+                val visibleWidgets = if (activeHud) pages.getOrNull(pageIdx)?.widgets.orEmpty() else emptyList()
                 _chartKeys.value = visibleWidgets
                     .filter { it.displayType == WidgetDisplayType.CHART.name }
                     .map { it.sensorKey }
                     .toSet()
+                hasVisibleTimer0100 = visibleWidgets.any { it.sensorKey == "timer_0100" }
 
-                val activeKeys = buildSet {
-                    visibleWidgets.forEach { widget ->
-                        add(widget.sensorKey)
-                        if (widget.sensorKey == "fuel_ctrl") add("kpl_road_avg")
+                val visibleKeys = when {
+                    explorerOpen -> ObdPidRegistry.standardPids.map { it.key }.toSet()
+                    activeHud -> buildSet {
+                        visibleWidgets.forEach { widget ->
+                            add(widget.sensorKey)
+                            if (widget.sensorKey == "fuel_ctrl") add("kpl_road_avg")
+                        }
                     }
-                    if (recording) {
-                        addAll(listOf("rpm", "obd_speed", "throttle", "rel_throttle", "maf", "map", "iat", "baro", "engine_load", "stft_b1", "ltft_b1", "coolant", "voltage", "timing_advance", "kpl_road_avg"))
-                    }
+                    else -> BACKGROUND_KEEPALIVE_KEYS
                 }
-                val needsHighFreqGps = recording || (onHud && st.pollingProfile != PollingProfile.ECO_BATTERY && activeKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
-                if (onHud || recording) {
+                val backgroundKeys = if (recording) RECORDING_EXTRA_KEYS else emptySet()
+                val needsGps = serviceActive && (activeHud || recording)
+                val needsHighFreqGps = recording || (activeHud && st.pollingProfile != PollingProfile.ECO_BATTERY && visibleKeys.any { it in setOf("gps_speed", "minimap", "timer_0100") })
+                if (needsGps) {
                     locationTracker.startUpdates(highFrequency = needsHighFreqGps)
+                } else {
+                    locationTracker.stopUpdates()
                 }
-                activeKeys
-            }.collect { keys ->
-                engine?.setActiveSensors(keys)
+                visibleKeys to backgroundKeys
+            }.collect { (visibleKeys, backgroundKeys) ->
+                engine?.setActiveSensors(visibleKeys)
+                engine?.setBackgroundRecordKeys(backgroundKeys)
             }
         }
 
-        // UI-only 60Hz display pipeline active while HUD Canvas is visible (Raw Instant / Light Damper / Adaptive Glide)
+        // Direct 0ms-overhead GPS speed emission independent of OBD poll cycle cadence
+        viewModelScope.launch {
+            combine(_onHudScreen, _isRecording, locationTracker.gps) { onHud, recording, gps ->
+                Triple(onHud || recording, recording, gps)
+            }.collect { (active, recording, gps) ->
+                if (active && gps.hasRealFix) {
+                    val imuG = accelTracker.accelG.value
+                    engine?.updateExternalTelemetry(gps.speedKmh, imuG, gps.roadGradePct)
+                    _liveValues.update { cur ->
+                        val prevSpeed = cur["gps_speed"]
+                        if (prevSpeed == gps.speedKmh) cur else cur.toMutableMap().apply { put("gps_speed", gps.speedKmh) }
+                    }
+                    if (!recording && !onHudScreen.value) Unit else {
+                        _ecuExplorerValues.value = _liveValues.value
+                    }
+                }
+            }
+        }
+
+        // Reset C1 spring track state whenever the HUD exits
         viewModelScope.launch {
             _onHudScreen.collectLatest { onHud ->
                 if (!onHud) {
+                    lastVisualFrameMs = 0L
+                    lastPublishedHistoryRef = null
                     smootherSession.reset()
-                    _displayValues.value = _liveValues.value
-                    return@collectLatest
-                }
-                var lastFrameMs = System.currentTimeMillis()
-                while (currentCoroutineContext().isActive && _onHudScreen.value) {
-                    val nowMs = System.currentTimeMillis()
-                    val dtMs = (nowMs - lastFrameMs).coerceAtLeast(12L)
-                    lastFrameMs = nowMs
-                    _displayValues.value = smootherSession.step(
-                        rawTargets = _liveValues.value,
-                        dtMs = dtMs,
-                        nowMs = nowMs,
-                        mode = settings.value.gaugeSmoothingMode
-                    )
-                    delay(16L)
+                    hudLiveValues.updateValuesFrom(_liveValues.value)
                 }
             }
         }
     }
 
+    /**
+     * Driven directly by Compose `withFrameNanos` on the Main thread so visual gauges advance
+     * strictly in phase with hardware display VSync without allocating or waking background loops.
+     */
+    fun stepVisualDisplayFrame(frameTimeMs: Long) {
+        val dtMs = if (lastVisualFrameMs <= 0L) 16L else (frameTimeMs - lastVisualFrameMs).coerceIn(1L, 120L)
+        lastVisualFrameMs = frameTimeMs
+        val curSettings = settings.value
+        val smoothed = smootherSession.step(
+            rawTargets = _liveValues.value,
+            dtMs = dtMs,
+            nowMs = frameTimeMs,
+            mode = curSettings.gaugeSmoothingMode,
+            liveMicroMotion = curSettings.liveMicroMotion
+        )
+        hudLiveValues.updateValuesFrom(smoothed)
+        val hist = _historyBuffers.value
+        if (hist !== lastPublishedHistoryRef) {
+            lastPublishedHistoryRef = hist
+            hudLiveValues.updateHistoryFrom(hist)
+        }
+    }
+
     fun setOnHudScreen(active: Boolean) {
         _onHudScreen.value = active
+        if (active && !_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        }
+    }
+
+    fun onAppForegrounded() {
+        _isAppInForeground.value = true
+        if (!_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        } else if (!LoggingForegroundService.isRunning) {
+            val (title, text) = buildBackgroundNotificationText(
+                connectionState = _connectionState.value,
+                isRecording = _isRecording.value,
+                endpoint = settings.value.adapterDetailedEndpoint()
+            )
+            LoggingForegroundService.start(getApplication(), title, text)
+        }
+    }
+
+    fun onAppBackgrounded() {
+        _isAppInForeground.value = false
+    }
+
+    fun onPermissionsUpdated() {
+        if (_backgroundServiceActive.value) {
+            val (title, text) = buildBackgroundNotificationText(
+                connectionState = _connectionState.value,
+                isRecording = _isRecording.value,
+                endpoint = settings.value.adapterDetailedEndpoint()
+            )
+            LoggingForegroundService.start(getApplication(), title, text)
+        }
+    }
+
+    fun resumeBackgroundService() {
+        _backgroundServiceActive.value = true
+        val (title, text) = buildBackgroundNotificationText(
+            connectionState = _connectionState.value,
+            isRecording = _isRecording.value,
+            endpoint = settings.value.adapterDetailedEndpoint()
+        )
+        LoggingForegroundService.start(getApplication(), title, text)
+    }
+
+    fun terminateBackgroundService() {
+        if (_isRecording.value) {
+            stopRecording()
+        }
+        _backgroundServiceActive.value = false
+        LoggingForegroundService.stop(getApplication())
+    }
+
+    private fun buildBackgroundNotificationText(
+        connectionState: ConnectionState,
+        isRecording: Boolean,
+        endpoint: String
+    ): Pair<String, String> {
+        val title = if (isRecording) {
+            "ApexOBD · Recording & Listening"
+        } else {
+            "ApexOBD Background Listener"
+        }
+        val stateText = when (connectionState) {
+            is ConnectionState.Connected -> "Connected ($endpoint)"
+            is ConnectionState.Connecting -> "Connecting to $endpoint"
+            is ConnectionState.Reconnecting -> "Reconnecting #${connectionState.attempt} ($endpoint)"
+            is ConnectionState.Disconnected -> "Listener active ($endpoint)"
+        }
+        val body = "$stateText · Active in background · Tap to stop"
+        return title to body
     }
 
     fun setVisiblePageIndex(index: Int) {
@@ -455,6 +679,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun forceConnectAndDiscoverForExplorer() {
         explorerOpen = true
+        if (!_backgroundServiceActive.value) {
+            resumeBackgroundService()
+        }
         if (_deepScanRunning.value) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -479,6 +706,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     _explorerStatus.value = null
                 }
                 val explorerKeys = ObdPidRegistry.standardPids.map { it.key }.toSet()
+                engine?.setBackgroundIdleMode(false)
                 engine?.setActiveSensors(explorerKeys)
             } catch (e: CancellationException) {
                 throw e
@@ -490,7 +718,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreVisibleCanvasPolling() {
         explorerOpen = false
-        if (!_onHudScreen.value && !_isRecording.value) {
+        if (!_backgroundServiceActive.value) {
             viewModelScope.launch {
                 transportMutex.withLock {
                     engineCollectorsJob?.cancel()
@@ -500,10 +728,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 _connectionState.value = ConnectionState.Disconnected
                 _pollingHz.value = 0
             }
-        } else {
-            val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
-            engine?.setActiveSensors(visible.map { it.sensorKey }.toSet())
+            return
         }
+        val activeHud = _onHudScreen.value && _isAppInForeground.value
+        val nextKeys = if (activeHud) {
+            pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+                .map { it.sensorKey }.toSet()
+        } else {
+            BACKGROUND_KEEPALIVE_KEYS
+        }
+        engine?.setBackgroundIdleMode(!activeHud && !_isRecording.value)
+        engine?.setActiveSensors(nextKeys)
     }
 
     fun runDeepEcuDump(host: String = settings.value.wifiHost, port: Int = settings.value.wifiPort) {
@@ -553,10 +788,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 wifiHost = host,
                 wifiPort = port
             )
-            if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(nextSettings)
-            } else if (explorerOpen) {
+            if (explorerOpen) {
                 forceConnectAndDiscoverForExplorer()
+            } else if (_backgroundServiceActive.value) {
+                reconnectTransport(nextSettings)
             }
         }
     }
@@ -625,18 +860,35 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         )
         engine = newEngine
 
-        val visible = pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
-        newEngine.setActiveSensors(visible.map { it.sensorKey }.toSet())
+        val activeHud = _onHudScreen.value && _isAppInForeground.value
+        val initialKeys = when {
+            explorerOpen -> ObdPidRegistry.standardPids.map { it.key }.toSet()
+            activeHud -> pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty()
+                .map { it.sensorKey }.toSet()
+            else -> BACKGROUND_KEEPALIVE_KEYS
+        }
+        newEngine.setBackgroundIdleMode(!activeHud && !_isRecording.value && !explorerOpen)
+        newEngine.setActiveSensors(initialKeys)
+        newEngine.setBackgroundRecordKeys(if (_isRecording.value) RECORDING_EXTRA_KEYS else emptySet())
 
         engineCollectorsJob = viewModelScope.launch {
             launch { newEngine.connectionState.collect { _connectionState.value = it } }
             launch {
                 newEngine.supportedPids.collect { pids ->
-                    _supportedPids.value = pids
-                    if (pids.isNotEmpty()) {
-                        val csv = pids.sorted().joinToString(",")
-                        val targetId = activeEngineVehicleId
-                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                    val targetId = activeEngineVehicleId
+                    val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                    val prevSaved = cur?.savedSupportedPids().orEmpty()
+                    val prevMode01 = prevSaved.filterNot { it.startsWith("7C0_") }.toSet()
+                    val curMode01 = pids.filterNot { it.startsWith("7C0_") }.toSet()
+                    val mergedPids = if (curMode01.isNotEmpty() && curMode01 == prevMode01) {
+                        // Keep previously confirmed 7C0 meter capabilities if a brief reconnect happened while cluster slept.
+                        pids + prevSaved.filter { it.startsWith("7C0_") }
+                    } else {
+                        pids
+                    }
+                    _supportedPids.value = mergedPids
+                    if (mergedPids.isNotEmpty()) {
+                        val csv = mergedPids.sorted().joinToString(",")
                         if (cur != null && cur.supportedPidsCsv != csv) {
                             vehicleDao.updateVehicle(cur.copy(supportedPidsCsv = csv))
                         }
@@ -646,6 +898,31 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch { newEngine.availableSensorKeys.collect { _availableSensorKeys.value = it } }
             launch { newEngine.pollingHz.collect { _pollingHz.value = it } }
             launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
+            launch {
+                newEngine.ecuOdometerKm.collect { ecuOdo ->
+                    if (ecuOdo != null && ecuOdo in 1.0..999_999.0) {
+                        val targetId = activeEngineVehicleId
+                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        if (cur != null && kotlin.math.abs(cur.allTimeOdometerKm - ecuOdo) >= 1.0) {
+                            vehicleDao.updateVehicle(cur.copy(allTimeOdometerKm = ecuOdo))
+                        }
+                    }
+                }
+            }
+            launch {
+                newEngine.ecuFuelLiters.collect { ecuLiters ->
+                    if (ecuLiters != null && ecuLiters >= 0.0) {
+                        val targetId = activeEngineVehicleId
+                        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+                        if (cur != null) {
+                            val clamped = ecuLiters.coerceIn(0.0, cur.tankCapacityLiters)
+                            if (kotlin.math.abs(cur.estimatedRemainingFuelLiters - clamped) >= 0.25) {
+                                vehicleDao.updateVehicle(cur.copy(estimatedRemainingFuelLiters = clamped))
+                            }
+                        }
+                    }
+                }
+            }
             launch {
                 newEngine.fuelMetrics.collect { fm ->
                     _fuelMetrics.value = fm
@@ -674,7 +951,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     _ecuExplorerValues.value = withCentralTrip
                     appendChartHistoryOnly(withCentralTrip)
 
-                    if ("timer_0100" in pagesWithWidgets.value.getOrNull(_visiblePageIndex.value)?.widgets.orEmpty().map { it.sensorKey } || _isRecording.value) {
+                    if (hasVisibleTimer0100 || _isRecording.value) {
                         val nextTimer = timer0100Tracker.onSpeedSample(if (obdSpd > 0.5) obdSpd else speedGps)
                         _timer0100.value = nextTimer
                         updateBest0100IfBetter(nextTimer.bestRunSec)
@@ -697,7 +974,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 allTimeTotalFuelLiters = fm.allTimeTotalFuelLiters,
                 fuelUsedSinceFullRefuelLiters = fm.fuelUsedSinceFullRefuelLiters,
                 estimatedRemainingFuelLiters = fm.estimatedRemainingFuelLiters,
-                recentDteKpl = fm.dteEconomyKpl ?: current.recentDteKpl
+                recentDteKpl = fm.rawRecentDteKpl ?: current.recentDteKpl
             )
         )
     }
@@ -768,7 +1045,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 _diagnosticError.value = "Diagnostic scan failed: ${t.message ?: "adapter disconnected"}"
             } finally {
                 _diagnosticScanning.value = false
-                if (!_onHudScreen.value && !_isRecording.value && _connectionState.value !is ConnectionState.Connected) {
+                if (!_backgroundServiceActive.value && !_isRecording.value && _connectionState.value !is ConnectionState.Connected) {
                     transportMutex.withLock {
                         engineCollectorsJob?.cancel()
                         engine?.stop()
@@ -824,7 +1101,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         locationTracker.clearTrail()
         _isRecordingPaused.value = false
         _isRecording.value = true
-        LoggingForegroundService.start(getApplication())
+        if (!_backgroundServiceActive.value) {
+            _backgroundServiceActive.value = true
+        }
+        val (title, text) = buildBackgroundNotificationText(
+            connectionState = _connectionState.value,
+            isRecording = true,
+            endpoint = settings.value.adapterDetailedEndpoint()
+        )
+        LoggingForegroundService.start(getApplication(), title, text)
 
         loggingJob = viewModelScope.launch(Dispatchers.IO) {
             val vehicleId = activeVehicle.value?.id ?: 1L
@@ -919,8 +1204,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     batch += TelemetrySampleEntity(
                         sessionId = sessionId,
                         timestampMs = nowMs,
-                        latitude = gps.latitude,
-                        longitude = gps.longitude,
+                        latitude = if (gps.hasRealFix) gps.latitude else null,
+                        longitude = if (gps.hasRealFix) gps.longitude else null,
                         gpsSpeedKmh = speed,
                         payloadJson = TripExporter.encodePayload(vals)
                     )
@@ -1004,7 +1289,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private fun stopRecording() {
         _isRecording.value = false
         _isRecordingPaused.value = false
-        LoggingForegroundService.stop(getApplication())
+        if (!_backgroundServiceActive.value) {
+            LoggingForegroundService.stop(getApplication())
+        }
         activeSessionId = null
     }
 
@@ -1039,16 +1326,22 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun exportSessionShareCard(session: TripSessionEntity) {
+        if (_shareCardPreparing.value) return
+        _shareCardPreparing.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val samples = tripDao.getSamplesForSession(session.id)
-            val vehicle = vehicleDao.getById(session.vehicleId) ?: activeVehicle.value
-            val stats = TripShareStatsCalculator.summarize(session, samples)
-            _shareCardDraft.value = ShareCardDraft(
-                session = session,
-                samples = samples,
-                vehicle = vehicle,
-                stats = stats
-            )
+            try {
+                val samples = tripDao.getSamplesForSession(session.id)
+                val vehicle = vehicleDao.getById(session.vehicleId) ?: activeVehicle.value
+                val stats = TripShareStatsCalculator.summarize(session, samples)
+                _shareCardDraft.value = ShareCardDraft(
+                    session = session,
+                    samples = samples,
+                    vehicle = vehicle,
+                    stats = stats
+                )
+            } finally {
+                _shareCardPreparing.value = false
+            }
         }
     }
 
@@ -1056,30 +1349,114 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         _shareCardDraft.value = null
     }
 
-    fun confirmShareCardExport(config: TripCardConfig) {
-        val draft = _shareCardDraft.value ?: return
-        _shareCardDraft.value = null
+    fun updateSavedTripCardConfig(config: TripCardConfig) {
         viewModelScope.launch(Dispatchers.IO) {
-            prefs.setShareCardMetrics(config.selectedMetrics)
-            val st = settings.value
-            val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
-            val outFile = TripCardRenderer.renderTripCardToPngFile(
-                context = getApplication(),
-                session = draft.session,
-                samples = draft.samples,
-                vehicle = draft.vehicle,
-                unitPrefs = st.toUnitPreferences(),
-                fuelType = fuelType,
-                selectedMetrics = config.selectedMetrics,
-                config = config,
-                precomputedStats = draft.stats
-            )
-            TripExporter.sharePreparedFile(
-                context = getApplication(),
-                file = outFile,
-                mimeType = "image/png",
-                title = "Share Route Card"
-            )
+            prefs.saveTripCardConfig(config)
+        }
+    }
+
+    fun copyPickedCardBackgroundPhoto(uri: Uri, onResult: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val savedPath = TripCardRenderer.copyCardBackgroundPhotoToInternal(getApplication(), uri)
+            withContext(Dispatchers.Main) {
+                onResult(savedPath)
+            }
+        }
+    }
+
+    suspend fun loadSurroundingRoadsForCard(
+        samples: List<TelemetrySampleEntity>,
+        boxWidth: Int,
+        boxHeight: Int,
+        mainRoadsOnly: Boolean = true
+    ): TripCardRenderer.RoadContextLayer? = TripCardRenderer.captureSurroundingRoadsLayer(
+        context = getApplication(),
+        samples = samples,
+        boxWidth = boxWidth,
+        boxHeight = boxHeight,
+        activePmtilesPath = settings.value.activePmtilesPath,
+        mainRoadsOnly = mainRoadsOnly
+    )
+
+    fun confirmShareCardExport(
+        config: TripCardConfig,
+        action: ShareCardExportAction = ShareCardExportAction.SHARE_TO_APPS,
+        roadContextLayer: TripCardRenderer.RoadContextLayer? = null
+    ) {
+        val draft = _shareCardDraft.value ?: return
+        if (_shareCardExporting.value) return
+        _shareCardExporting.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                prefs.saveTripCardConfig(config)
+                val st = settings.value
+                val fuelType = draft.vehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+                val resolvedRoadLayer = if (config.showSurroundingRoads) {
+                    val (reqW, reqH) = TripCardRenderer.routeCanvasSizeForConfig(config)
+                    val matchesExisting = roadContextLayer != null &&
+                        !roadContextLayer.roadsAlphaBitmap.isRecycled &&
+                        roadContextLayer.boxWidth == reqW &&
+                        roadContextLayer.boxHeight == reqH &&
+                        roadContextLayer.mainRoadsOnly == config.surroundingRoadsMainOnly
+                    if (matchesExisting) {
+                        roadContextLayer
+                    } else {
+                        TripCardRenderer.captureSurroundingRoadsLayer(
+                            context = getApplication(),
+                            samples = draft.samples,
+                            boxWidth = reqW,
+                            boxHeight = reqH,
+                            activePmtilesPath = st.activePmtilesPath,
+                            mainRoadsOnly = config.surroundingRoadsMainOnly
+                        )
+                    }
+                } else null
+
+                val outFile = TripCardRenderer.renderTripCardToPngFile(
+                    context = getApplication(),
+                    session = draft.session,
+                    samples = draft.samples,
+                    vehicle = draft.vehicle,
+                    unitPrefs = st.toUnitPreferences(),
+                    fuelType = fuelType,
+                    selectedMetrics = config.selectedMetrics,
+                    config = config,
+                    precomputedStats = draft.stats,
+                    roadContextLayer = resolvedRoadLayer
+                )
+
+                withContext(Dispatchers.Main) {
+                    _shareCardDraft.value = null
+                }
+
+                when (action) {
+                    ShareCardExportAction.SHARE_TO_APPS -> {
+                        TripExporter.sharePreparedFile(
+                            context = getApplication(),
+                            file = outFile,
+                            mimeType = "image/png",
+                            title = "Export Route Card"
+                        )
+                    }
+                    ShareCardExportAction.DOWNLOAD_PNG -> {
+                        val savedRes = TripExporter.savePngToPictures(
+                            context = getApplication(),
+                            sourceFile = outFile,
+                            displayName = "apex_route_${draft.session.id}_${System.currentTimeMillis()}.png"
+                        )
+                        withContext(Dispatchers.Main) {
+                            val msg = if (savedRes.isSuccess) {
+                                "Saved to ${savedRes.getOrNull()}"
+                            } else {
+                                "Save failed: ${savedRes.exceptionOrNull()?.message ?: "unknown"}"
+                            }
+                            Toast.makeText(getApplication(), msg, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            } finally {
+                _shareCardExporting.value = false
+            }
         }
     }
 
@@ -1317,23 +1694,54 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cycleWidgetDisplayType(widget: HudWidgetEntity) {
-        val cycle = listOf(
-            WidgetDisplayType.ANALOG_DIAL,
-            WidgetDisplayType.SEMI_DIGITAL,
-            WidgetDisplayType.DIGITAL,
-            WidgetDisplayType.BAR,
-            WidgetDisplayType.SEGMENTED_BAR,
-            WidgetDisplayType.CHART
-        )
+        val cycle = if (com.apexobd.app.ui.components.isRpmSensorKey(widget.sensorKey)) {
+            listOf(
+                WidgetDisplayType.RPM_TACH_GT,
+                WidgetDisplayType.RPM_TACH_F1_LEDS,
+                WidgetDisplayType.RPM_TACH_CHRONO,
+                WidgetDisplayType.RPM_TACH_HALO,
+                WidgetDisplayType.ANALOG_DIAL,
+                WidgetDisplayType.SEMI_DIGITAL,
+                WidgetDisplayType.DIGITAL,
+                WidgetDisplayType.BAR,
+                WidgetDisplayType.SEGMENTED_BAR,
+                WidgetDisplayType.CHART
+            )
+        } else {
+            listOf(
+                WidgetDisplayType.ANALOG_DIAL,
+                WidgetDisplayType.SEMI_DIGITAL,
+                WidgetDisplayType.DIGITAL,
+                WidgetDisplayType.BAR,
+                WidgetDisplayType.SEGMENTED_BAR,
+                WidgetDisplayType.CHART
+            )
+        }
         val cur = runCatching { WidgetDisplayType.valueOf(widget.displayType) }.getOrNull() ?: return
         val idx = cycle.indexOf(cur)
-        if (idx == -1) return
-        val next = cycle[(idx + 1) % cycle.size]
+        val next = if (idx == -1) cycle.first() else cycle[(idx + 1) % cycle.size]
         updateWidgetDisplayType(widget, next)
     }
 
     fun updateWidgetDisplayType(widget: HudWidgetEntity, displayType: WidgetDisplayType) {
         viewModelScope.launch { hudDao.updateWidget(widget.copy(displayType = displayType.name)) }
+    }
+
+    fun updateWidgetThresholds(
+        widget: HudWidgetEntity,
+        warnMetric: Double?,
+        critMetric: Double?,
+        alertBelow: Boolean
+    ) {
+        viewModelScope.launch {
+            hudDao.updateWidget(
+                widget.copy(
+                    warnThreshold = warnMetric?.takeIf { it.isFinite() },
+                    critThreshold = critMetric?.takeIf { it.isFinite() },
+                    alertBelow = alertBelow
+                )
+            )
+        }
     }
 
     fun updateWidgetSize(widget: HudWidgetEntity, cols: Int, rows: Int) {
@@ -1462,7 +1870,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val prev = settings.value
             prefs.setConnectionType(type)
             val next = prev.copy(connectionType = type)
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1477,7 +1887,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 btDeviceAddress = candidate.address,
                 btDeviceName = candidate.name
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1492,7 +1904,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 bleDeviceAddress = candidate.address,
                 bleDeviceName = candidate.name
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1507,7 +1921,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 usbDeviceId = deviceId,
                 usbBaudRate = baudRate
             )
-            if (_onHudScreen.value || _isRecording.value) {
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
                 reconnectTransport(next)
             }
         }
@@ -1524,15 +1940,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             prefs.updateWifiEndpoint(host, port)
             prefs.setConnectionType(ObdConnectionType.WIFI_TCP)
             prefs.setDualCellularKeepalive(dualCell)
-            if (_onHudScreen.value || _isRecording.value) {
-                reconnectTransport(
-                    settings.value.copy(
-                        connectionType = ObdConnectionType.WIFI_TCP,
-                        wifiHost = host,
-                        wifiPort = port,
-                        dualCellularKeepalive = dualCell
-                    )
-                )
+            val next = settings.value.copy(
+                connectionType = ObdConnectionType.WIFI_TCP,
+                wifiHost = host,
+                wifiPort = port,
+                dualCellularKeepalive = dualCell
+            )
+            if (!_backgroundServiceActive.value) {
+                resumeBackgroundService()
+            } else {
+                reconnectTransport(next)
             }
         }
     }
@@ -1584,6 +2001,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { prefs.setGaugeSmoothingMode(mode) }
     }
 
+    fun setLiveMicroMotion(enabled: Boolean) {
+        viewModelScope.launch { prefs.setLiveMicroMotion(enabled) }
+    }
+
     fun setFuelCoastingMode(mode: FuelCoastingMode) {
         viewModelScope.launch {
             prefs.setFuelCoastingMode(mode)
@@ -1626,14 +2047,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun addManualCustomPid(name: String, modePidHex: String, formula: String, unit: String) {
+    fun addManualCustomPid(name: String, modePidHex: String, formula: String, unit: String, headerHex: String? = null) {
         val clean = modePidHex.replace(" ", "").uppercase()
+        val cleanHeader = headerHex?.replace(" ", "")?.uppercase()?.takeIf { it.isNotBlank() }
         if (name.isBlank() || clean.length < 4 || formula.isBlank()) return
         val key = "custom_${clean.lowercase()}"
         viewModelScope.launch {
             customPidDao.upsertAll(
                 listOf(
-                    CustomPidEntity(key, name.trim(), name.trim().take(10), clean, formula.trim(), 0.0, 200.0, unit.trim())
+                    CustomPidEntity(key, name.trim(), name.trim().take(10), clean, formula.trim(), 0.0, 200.0, unit.trim(), cleanHeader)
                 )
             )
         }
@@ -1644,9 +2066,11 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val list = mutableListOf<PickerSensorOption>()
 
         ObdPidRegistry.standardPids.forEach { pid ->
-            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported
+            val fuelViaMeter = pid.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in effectiveSupported
+            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported || fuelViaMeter
+            val sourceTag = if (fuelViaMeter && pid.pidHex !in effectiveSupported) "7C0 2129" else "01${pid.pidHex}"
             list += PickerSensorOption(
-                item = SensorCatalogItem(pid.key, pid.name, pid.shortName, "01${pid.pidHex}", pid.unit, pid.quantity, pid.minValue, pid.maxValue),
+                item = SensorCatalogItem(pid.key, pid.name, pid.shortName, sourceTag, pid.unit, pid.quantity, pid.minValue, pid.maxValue),
                 available = avail
             )
         }
@@ -1662,7 +2086,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
 
         listOf(
-            SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
+            SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 220.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
             SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
@@ -1691,6 +2115,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 customPids.value.forEach { add(it.key) }
                 addAll(listOf("gps_speed", "accel_g"))
             }
+            engine?.setBackgroundIdleMode(false)
             engine?.setActiveSensors(allKeys)
         } else {
             restoreVisibleCanvasPolling()
@@ -1702,11 +2127,16 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val out = mutableListOf<GroupedSensorCatalogItem>()
 
         ObdPidRegistry.standardPids
-            .filter { supported.isEmpty() || it.pidHex in supported }
+            .filter {
+                supported.isEmpty() || it.pidHex in supported ||
+                    (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported)
+            }
             .forEach {
+                val fuelViaMeter = it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported && it.pidHex !in supported
+                val sourceTag = if (fuelViaMeter) "7C0 2129" else "01${it.pidHex}"
                 out += GroupedSensorCatalogItem(
                     SensorCatalogGroup.ECU_MODE01,
-                    SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
+                    SensorCatalogItem(it.key, it.name, it.shortName, sourceTag, it.unit, it.quantity, it.minValue, it.maxValue)
                 )
             }
 
@@ -1721,7 +2151,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
 
         listOf(
-            SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 240.0),
+            SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 220.0),
             SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5),
             SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
@@ -1743,16 +2173,51 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun com.apexobd.core.protocol.DerivedSensorSpec.shortLabelForCatalog() = this.shortName
 
+    private fun buildAllKnownCatalogLookup(customList: List<CustomPidEntity>): Map<String, SensorCatalogItem> {
+        val map = HashMap<String, SensorCatalogItem>(80)
+        ObdPidRegistry.standardPids.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
+        }
+        DerivedSensorCatalog.all.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortLabelForCatalog(), it.sourceLabel, it.defaultUnit, it.quantity, it.minValue, it.maxValue)
+        }
+        map["gps_speed"] = SensorCatalogItem("gps_speed", "GPS Speed", "GPS Spd", "GPS", "km/h", SensorQuantity.SPEED, 0.0, 220.0)
+        map["accel_g"] = SensorCatalogItem("accel_g", "Acceleration G-Force", "Accel", "IMU", "g", SensorQuantity.RAW, -1.5, 1.5)
+        map["minimap"] = SensorCatalogItem("minimap", "Map (Live GPS)", "Map", "MAP", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        map["fuel_ctrl"] = SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true)
+        map["dtc_checker"] = SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        map["timer_0100"] = SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true)
+        map["data_logger"] = SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        customList.forEach {
+            map[it.key] = SensorCatalogItem(it.key, it.name, it.shortName, it.modeAndPidHex, it.unit, SensorQuantity.RAW, it.minValue, it.maxValue)
+        }
+        return map
+    }
+
     fun catalogItemFor(key: String): SensorCatalogItem {
-        return availableGroupedCatalog().firstOrNull { it.item.key == key }?.item
-            ?: ObdPidRegistry.findByKey(key)?.let {
-                SensorCatalogItem(it.key, it.name, it.shortName, "01${it.pidHex}", it.unit, it.quantity, it.minValue, it.maxValue)
-            }
-            ?: DerivedSensorCatalog.all.firstOrNull { it.key == key }?.let {
-                SensorCatalogItem(it.key, it.name, it.shortName, it.sourceLabel, it.defaultUnit, it.quantity, it.minValue, it.maxValue)
-            }
+        return cachedCatalogLookup[key]
             ?: SensorCatalogItem(key, key.uppercase(), key.uppercase(), "PID", "", SensorQuantity.RAW, 0.0, 100.0)
     }
+
+    fun activeFuelType(): FuelType =
+        activeVehicle.value?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+
+    fun convertValueOnly(
+        valueMetric: Double?,
+        quantity: SensorQuantity,
+        prefs: UnitPreferences,
+        fuelType: FuelType
+    ): Double? {
+        if (valueMetric == null || quantity == SensorQuantity.RAW) return valueMetric
+        return UnitConverter.convert(valueMetric, quantity, prefs, fuelType).first
+    }
+
+    fun displayToInternalValue(
+        displayValue: Double,
+        quantity: SensorQuantity,
+        prefs: UnitPreferences,
+        fuelType: FuelType
+    ): Double = UnitConverter.toInternalMetric(displayValue, quantity, prefs, fuelType)
 
     fun convertForDisplay(valueMetric: Double?, quantity: SensorQuantity, rawFallbackUnit: String): Pair<Double?, String> {
         val prefs = settings.value.toUnitPreferences()
@@ -1792,12 +2257,34 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        LoggingForegroundService.setTerminateListener(null)
+        LoggingForegroundService.stop(getApplication())
         accelTracker.stop()
-        locationTracker.stopUpdates()
+        locationTracker.dispose()
         wifiBinder.unregister()
         viewModelScope.launch {
             flushActiveVehicleStats()
             engine?.stop()
         }
+    }
+
+    private data class BackgroundLifecycleState(
+        val serviceActive: Boolean,
+        val onHud: Boolean,
+        val recording: Boolean,
+        val inForeground: Boolean,
+        val settings: UserSettings
+    )
+
+    companion object {
+        private val BACKGROUND_KEEPALIVE_KEYS = setOf(
+            "rpm", "obd_speed", "rel_throttle", "engine_load", "coolant", "voltage", "kpl_road_avg"
+        )
+
+        private val RECORDING_EXTRA_KEYS = setOf(
+            "rpm", "obd_speed", "throttle", "rel_throttle", "maf", "map",
+            "iat", "baro", "engine_load", "stft_b1", "ltft_b1",
+            "coolant", "voltage", "timing_advance", "kpl_road_avg"
+        )
     }
 }

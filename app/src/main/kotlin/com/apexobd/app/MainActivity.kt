@@ -9,17 +9,23 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.activity.viewModels
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.ViewModelProvider
 import com.apexobd.app.ui.ApexAppRoot
 import com.apexobd.app.ui.HudViewModel
 import com.apexobd.app.ui.theme.TorqueEvoTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: HudViewModel by viewModels()
+    private val viewModel: HudViewModel by lazy {
+        val app = application as ApexObdApplication
+        ViewModelProvider(
+            app,
+            ViewModelProvider.AndroidViewModelFactory.getInstance(app)
+        )[HudViewModel::class.java]
+    }
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -29,6 +35,17 @@ class MainActivity : ComponentActivity() {
         ) {
             viewModel.locationTracker.startUpdates()
         }
+        viewModel.onPermissionsUpdated()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        viewModel.onAppForegrounded()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        viewModel.onAppBackgrounded()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -37,11 +37,14 @@ class Elm327Client(
         delay(300L)
 
         val initCommands = listOf(
-            "ATE0",  // Echo off
-            "ATL0",  // Linefeeds off
-            "ATS0",  // Spaces off (cuts Wi-Fi/UART payload bytes)
-            if (aggressiveTiming) "ATAT2" else "ATAT1",
-            "ATSP0"  // Auto-detect vehicle protocol
+            "ATE0",   // Echo off
+            "ATL0",   // Linefeeds off
+            "ATS0",   // Spaces off (cuts Wi-Fi/UART payload bytes)
+            "ATCAF1", // Guarantee ISO-TP CAN automatic formatting stays enabled
+            // Use reliable ATAT1 everywhere: CAN single-frame queries already terminate immediately
+            // via the trailing '1' response-count hint, whereas ATAT2 causes premature NO DATA drops on ELM327 v1.5 clones.
+            "ATAT1",
+            "ATSP0"   // Auto-detect vehicle protocol
         )
         for (at in initCommands) {
             transport.sendCommand(at, timeoutMs = 2000L)
@@ -106,6 +109,31 @@ class Elm327Client(
             joined == "?" -> ObdCommandResult.Error("Adapter rejected command '$command'")
             else -> ObdCommandResult.Success(raw = raw, lines = lines)
         }
+    }
+
+    /**
+     * Restores standard OBD-II CAN functional TX header (`7DF`) and Engine ECU reception (`7E8..7EF`)
+     * after querying an alternate module (e.g. `7C0` Combination Meter or `750` Body ECU).
+     *
+     * Parameterless `ATCRA` was added in ELM327 v1.4b and is rejected (`?`) or ignored by many ELM327 v1.5
+     * clones, leaving the CAN RX hardware filter stuck on `7C8` and silencing all Mode 01 `7E8` responses.
+     */
+    suspend fun restoreDefaultCanHeaderAndFilter(
+        explicitEcmRxFallback: Boolean = false,
+        timeoutMs: Long = 800L
+    ) {
+        if (explicitEcmRxFallback) {
+            execute("ATCRA7E8", timeoutMs = timeoutMs)
+            execute("ATSH7DF", timeoutMs = timeoutMs)
+            return
+        }
+        val craReset = execute("ATCRA", timeoutMs = timeoutMs)
+        if (craReset !is ObdCommandResult.Success) {
+            execute("ATCM000", timeoutMs = timeoutMs)
+            execute("ATCF000", timeoutMs = timeoutMs)
+        }
+        execute("ATAR", timeoutMs = timeoutMs)
+        execute("ATSH7DF", timeoutMs = timeoutMs)
     }
 
     companion object {

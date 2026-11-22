@@ -106,4 +106,18 @@ class ObdPidRegistryTest {
         val cmdThr = ObdPidRegistry.decodeMode01Response("4C", listOf("41 4C 2F"))
         assertEquals(18.43, cmdThr!!.value, 0.05)
     }
+
+    @Test
+    fun `speed max is 220 kmh and live throttle, load, and map PIDs use HIGH poll tier`() {
+        val speedPid = ObdPidRegistry.findByKey("obd_speed")!!
+        val gpsSpec = DerivedSensorCatalog.all.first { it.key == "gps_speed" }
+        assertEquals(220.0, speedPid.maxValue, 0.001)
+        assertEquals(220.0, gpsSpec.maxValue, 0.001)
+
+        assertEquals(PollTier.HIGH, ObdPidRegistry.findByKey("engine_load")!!.defaultTier)
+        assertEquals(PollTier.HIGH, ObdPidRegistry.findByKey("throttle")!!.defaultTier)
+        assertEquals(PollTier.HIGH, ObdPidRegistry.findByKey("rel_throttle")!!.defaultTier)
+        assertEquals(PollTier.HIGH, ObdPidRegistry.findByKey("commanded_throttle")!!.defaultTier)
+        assertEquals(PollTier.HIGH, ObdPidRegistry.findByKey("map")!!.defaultTier)
+    }
 }

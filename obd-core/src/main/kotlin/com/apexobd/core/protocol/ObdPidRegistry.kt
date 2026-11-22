@@ -60,13 +60,13 @@ object ObdPidRegistry {
 
     val standardPids: List<PidDefinition> = listOf(
         // Engine & Air
-        pid("04", "engine_load", "Calculated Engine Load", "Load", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
+        pid("04", "engine_load", "Calculated Engine Load", "Load", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
         pid("0C", "rpm", "Engine RPM", "RPM", "RPM", 0.0, 8000.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             if (b.size >= 2) ((b[0] * 256) + b[1]) / 4.0 else null
         },
-        pid("0D", "obd_speed", "Vehicle Speed (OBD)", "OBD Spd", "km/h", 0.0, 260.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
+        pid("0D", "obd_speed", "Vehicle Speed (OBD)", "OBD Spd", "km/h", 0.0, 220.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.toDouble()
         },
         pid("0E", "timing_advance", "Timing Advance", "Timing", "°", -64.0, 63.5, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
@@ -75,7 +75,7 @@ object ObdPidRegistry {
         pid("10", "maf", "Intake Air Flow (MAF)", "MAF", "g/s", 0.0, 655.35, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             if (b.size >= 2) ((b[0] * 256) + b[1]) / 100.0 else null
         },
-        pid("11", "throttle", "Throttle Position (Abs)", "Abs Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
+        pid("11", "throttle", "Throttle Position (Abs)", "Abs Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
         pid("1F", "run_time", "Run Time Since Start", "Run Time", "s", 0.0, 65535.0, PidCategory.ELECTRICAL_STATUS) { b ->
@@ -93,7 +93,7 @@ object ObdPidRegistry {
         pid("4A", "pedal_e", "Accelerator Pedal E", "Pedal E", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
-        pid("4C", "commanded_throttle", "Commanded Throttle Actuator", "Cmd Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.MEDIUM) { b ->
+        pid("4C", "commanded_throttle", "Commanded Throttle Actuator", "Cmd Thr", "%", 0.0, 100.0, PidCategory.ENGINE_AIR, PollTier.HIGH) { b ->
             b.getOrNull(0)?.let { it * 100.0 / 255.0 }
         },
 
@@ -121,7 +121,7 @@ object ObdPidRegistry {
         pid("0A", "fuel_pressure", "Fuel Pressure (Gauge)", "Fuel P", "kPa", 0.0, 765.0, PidCategory.PRESSURE_BOOST) { b ->
             b.getOrNull(0)?.let { it * 3.0 }
         },
-        pid("0B", "map", "Intake Manifold Pressure", "MAP", "kPa", 0.0, 255.0, PidCategory.PRESSURE_BOOST, PollTier.MEDIUM) { b ->
+        pid("0B", "map", "Intake Manifold Pressure", "MAP", "kPa", 0.0, 255.0, PidCategory.PRESSURE_BOOST, PollTier.HIGH) { b ->
             b.getOrNull(0)?.toDouble()
         },
         pid("22", "fuel_rail_rel", "Fuel Rail Pressure (Rel)", "Rail Rel", "kPa", 0.0, 5177.27, PidCategory.PRESSURE_BOOST) { b ->

@@ -1,9 +1,32 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) {
+        keystorePropsFile.inputStream().use { load(it) }
+    }
+}
+
+fun resolveSigningValue(propKey: String, envKey: String): String? =
+    keystoreProps.getProperty(propKey)?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv(envKey)?.trim()?.takeIf { it.isNotEmpty() }
+
+val releaseStorePath = resolveSigningValue("storeFile", "APEX_KEYSTORE_PATH")
+val releaseStorePassword = resolveSigningValue("storePassword", "APEX_KEYSTORE_PASSWORD")
+val releaseKeyAlias = resolveSigningValue("keyAlias", "APEX_KEY_ALIAS")
+val releaseKeyPassword = resolveSigningValue("keyPassword", "APEX_KEY_PASSWORD")
+val hasReleaseSigning = !releaseStorePath.isNullOrBlank() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank() &&
+    file(releaseStorePath).exists()
 
 android {
     namespace = "com.apexobd.app"
@@ -19,9 +42,26 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

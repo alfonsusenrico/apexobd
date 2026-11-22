@@ -51,6 +51,7 @@ data class HudVisualPalette(
     val cardBorder: Color,
     val accent: Color,
     val textPrimary: Color,
+    val labelColor: Color,
     val textSecondary: Color,
     val dialTrack: Color,
     val showBorders: Boolean
@@ -72,6 +73,7 @@ fun resolveHudVisualPalette(
         val cardBorder: Color,
         val accent: Color,
         val textPrimary: Color,
+        val labelColor: Color,
         val textSecondary: Color,
         val dialTrack: Color
     )
@@ -83,10 +85,11 @@ fun resolveHudVisualPalette(
             bgGlow = null,
             cardFill = Color(0x0BFFFFFF),
             cardSheen = null,
-            cardBorder = Color(0x22FFFFFF),
+            cardBorder = Color(0x26FFFFFF),
             accent = Color(0xFF00A8FF),
             textPrimary = Color(0xFFF3F5F8),
-            textSecondary = Color(0xFF7E8796),
+            labelColor = Color(0xFFEDF2F8),
+            textSecondary = Color(0xFFA0ABB8),
             dialTrack = Color(0x24FFFFFF)
         )
         HudThemePreset.GLASSY_DIMMED -> ThemeTokens(
@@ -98,7 +101,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x36FFFFFF),
             accent = Color(0xFF38BDF8),
             textPrimary = Color(0xFFF8FAFC),
-            textSecondary = Color(0xFF94A3B8),
+            labelColor = Color(0xFFF1F5F9),
+            textSecondary = Color(0xFFAAB8CC),
             dialTrack = Color(0x33FFFFFF)
         )
         HudThemePreset.MOTORSPORT_CRIMSON -> ThemeTokens(
@@ -110,7 +114,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x4DEF4444),
             accent = Color(0xFFEF4444),
             textPrimary = Color(0xFFF9FAFB),
-            textSecondary = Color(0xFFB49FA4),
+            labelColor = Color(0xFFFDE8EC),
+            textSecondary = Color(0xFFCBB2B7),
             dialTrack = Color(0x28FFFFFF)
         )
         HudThemePreset.PIT_EMERALD -> ThemeTokens(
@@ -122,7 +127,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x4822C55E),
             accent = Color(0xFF22C55E),
             textPrimary = Color(0xFFF0FDF4),
-            textSecondary = Color(0xFF88AE99),
+            labelColor = Color(0xFFDCFCE7),
+            textSecondary = Color(0xFFA3C7B3),
             dialTrack = Color(0x28FFFFFF)
         )
         HudThemePreset.CLUSTER_AMBER -> ThemeTokens(
@@ -134,7 +140,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x48F59E0B),
             accent = Color(0xFFF59E0B),
             textPrimary = Color(0xFFFEF3C7),
-            textSecondary = Color(0xFFBAA07E),
+            labelColor = Color(0xFFFEF3C7),
+            textSecondary = Color(0xFFCBB492),
             dialTrack = Color(0x28FFFFFF)
         )
         HudThemePreset.CARBON_TITANIUM -> ThemeTokens(
@@ -146,7 +153,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x3DCBD5E1),
             accent = Color(0xFFE2E8F0),
             textPrimary = Color(0xFFF8FAFC),
-            textSecondary = Color(0xFF94A3B8),
+            labelColor = Color(0xFFF1F5F9),
+            textSecondary = Color(0xFFA8B5C7),
             dialTrack = Color(0x2CFFFFFF)
         )
         HudThemePreset.NIGHT_VIOLET -> ThemeTokens(
@@ -158,7 +166,8 @@ fun resolveHudVisualPalette(
             cardBorder = Color(0x48A78BFA),
             accent = Color(0xFFA78BFA),
             textPrimary = Color(0xFFF5F3FF),
-            textSecondary = Color(0xFFA19AC4),
+            labelColor = Color(0xFFEDE9FE),
+            textSecondary = Color(0xFFB7B0D8),
             dialTrack = Color(0x2BFFFFFF)
         )
     }
@@ -187,6 +196,7 @@ fun resolveHudVisualPalette(
         cardBorder = resolvedBorder,
         accent = base.accent,
         textPrimary = base.textPrimary,
+        labelColor = base.labelColor,
         textSecondary = base.textSecondary,
         dialTrack = base.dialTrack,
         showBorders = showBorders

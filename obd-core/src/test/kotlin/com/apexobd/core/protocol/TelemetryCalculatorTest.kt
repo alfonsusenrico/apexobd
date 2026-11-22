@@ -273,7 +273,7 @@ class TelemetryCalculatorTest {
         // Confirm raw input map wasn't mutated
         assertEquals(3200.0, rawSpike["rpm"]!!, 0.001)
 
-        // AdaptiveSession modes: RAW_INSTANT returns target immediately; ADAPTIVE_GLIDE ramps continuously across period
+        // AdaptiveSession modes: RAW_INSTANT returns target immediately; ADAPTIVE_GLIDE glides smoothly without entry freeze
         val session = TelemetryDisplaySmoother.AdaptiveSession()
         val rawPass = session.step(rawSpike, dtMs = 16L, nowMs = 1000L, mode = GaugeSmoothingMode.RAW_INSTANT)
         assertEquals(3200.0, rawPass["rpm"]!!, 0.001)
@@ -283,9 +283,21 @@ class TelemetryCalculatorTest {
         val firstStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 16L, nowMs = 1200L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         val midStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 80L, nowMs = 1280L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
         val endStep = session.step(mapOf("obd_speed" to 30.0), dtMs = 300L, nowMs = 1580L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
-        assertEquals(40.0, firstStep["obd_speed"]!!, 0.01)
+        assertTrue("Expected smooth immediate entry without stalling at 40.0, got ${firstStep["obd_speed"]}", firstStep["obd_speed"]!! in 38.0..39.95)
         assertTrue(midStep["obd_speed"]!! in 32.0..38.0)
-        assertEquals(30.0, endStep["obd_speed"]!!, 0.01)
+        assertEquals(30.0, endStep["obd_speed"]!!, 0.3)
+
+        // Long steady hold on throttle/load/speed (2000ms without change) must not inflate subsequent glide duration
+        session.reset()
+        session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 1000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        session.step(mapOf("throttle" to 10.0, "engine_load" to 20.0), dtMs = 16L, nowMs = 3000L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        val snapStart = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 16L, nowMs = 3016L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertTrue("Expected smooth wake start near 10..20, got ${snapStart["throttle"]}", snapStart["throttle"]!! in 10.0..20.0)
+        val fastFollow = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 110L, nowMs = 3126L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertTrue("Expected rapid >65% climb by 110ms, got ${fastFollow["throttle"]}", fastFollow["throttle"]!! > 65.0)
+        val settled = session.step(mapOf("throttle" to 90.0, "engine_load" to 85.0), dtMs = 60L, nowMs = 3186L, mode = GaugeSmoothingMode.ADAPTIVE_GLIDE)
+        assertTrue("Expected continuous settle >=83 on throttle, got ${settled["throttle"]}", settled["throttle"]!! >= 83.0)
+        assertTrue("Expected continuous settle >=78 on engine_load, got ${settled["engine_load"]}", settled["engine_load"]!! >= 78.0)
     }
 
     @Test
@@ -448,7 +460,124 @@ class TelemetryCalculatorTest {
             engineLoadPct = 15.0,
             nowMs = 12_000L
         )
+        // Coast cut in 5th gear
         assertTrue(coastCut.dfcoActive)
         assertEquals(99.9, coastCut.instantKpl, 0.01)
+    }
+
+    @Test
+    fun `1 Hz gps_speed glides smoothly across full interval in LIGHT_DAMPER and snaps quickly to zero on stops`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        session.step(mapOf("gps_speed" to 20.0), dtMs = 16L, nowMs = 1_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        // At +400ms into a 1Hz update, value must still be mid-glide rather than frozen at 28
+        var cur = 20.0
+        for (i in 1..25) {
+            cur = session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L + i * 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["gps_speed"]!!
+        }
+        assertTrue("Expected smooth mid-interval glide (22..26.5), got $cur", cur in 22.0..26.5)
+
+        // Next 1Hz update settles smoothly near 28 and glides toward 36
+        for (i in 26..62) {
+            cur = session.step(mapOf("gps_speed" to 28.0), dtMs = 16L, nowMs = 2_000L + i * 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["gps_speed"]!!
+        }
+        assertEquals(28.0, cur, 0.25)
+
+        // Hard stop to 0 km/h clears promptly within ~220ms
+        session.step(mapOf("gps_speed" to 0.0), dtMs = 16L, nowMs = 3_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        val afterStop = session.step(mapOf("gps_speed" to 0.0), dtMs = 220L, nowMs = 3_220L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        assertEquals(0.0, afterStop["gps_speed"]!!, 0.01)
+    }
+
+    @Test
+    fun `Conservative DTE caps high-tank recent spikes to all-time avg and reserves 10 pct safety fuel`() {
+        // Real K3-VE scenario: 45 L tank, 41.48 L left, 11.645 km/L all-time avg, 13.8 km/L stale highway recent
+        val dteKpl = FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = 11.645,
+            recentDteKpl = 13.8,
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0
+        )!!
+        assertEquals(11.645, dteKpl, 0.001)
+
+        val reserve = FuelEconomyTracker.computeReserveLiters(45.0)
+        assertEquals(4.5, reserve, 0.001)
+
+        val estKm = FuelEconomyTracker.computeEstimatedRangeKm(
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0,
+            dteKpl = dteKpl
+        )!!
+        assertEquals((41.48 - 4.5) * 11.645, estKm, 0.1)
+        assertTrue(estKm < 440.0)
+
+        // When recent city traffic runs worse (9.5 km/L), blended DTE pulls range downward cleanly
+        val cityDteKpl = FuelEconomyTracker.computeConservativeDteKpl(
+            allTimeTotalAvgKpl = 11.645,
+            recentDteKpl = 9.5,
+            remainingFuelLiters = 41.48,
+            tankCapacityLiters = 45.0
+        )!!
+        assertTrue(cityDteKpl < 11.645)
+    }
+
+    @Test
+    fun `500ms engine_load and kpl_road_avg glide continuously through 400ms without early freeze and liveMicroMotion stays bounded`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        // Seed 500ms ECU cadence
+        session.step(mapOf("rpm" to 2000.0, "engine_load" to 30.0, "kpl_road_avg" to 11.0), dtMs = 16L, nowMs = 1_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("rpm" to 2100.0, "engine_load" to 35.0, "kpl_road_avg" to 11.2), dtMs = 16L, nowMs = 1_500L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+        session.step(mapOf("rpm" to 2200.0, "engine_load" to 42.0, "kpl_road_avg" to 11.5), dtMs = 16L, nowMs = 2_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        var snap400 = emptyMap<String, Double>()
+        for (i in 1..25) {
+            snap400 = session.step(
+                mapOf("rpm" to 2200.0, "engine_load" to 42.0, "kpl_road_avg" to 11.5),
+                dtMs = 16L,
+                nowMs = 2_000L + i * 16L,
+                mode = GaugeSmoothingMode.LIGHT_DAMPER
+            )
+        }
+        // At +400ms into a 500ms poll cycle, engine_load and kpl_road_avg must still be actively gliding toward targets
+        assertTrue("Expected engine_load < 41.8 while gliding at 400ms, got ${snap400["engine_load"]}", snap400["engine_load"]!! in 36.0..41.8)
+        assertTrue("Expected kpl_road_avg < 11.48 while gliding at 400ms, got ${snap400["kpl_road_avg"]}", snap400["kpl_road_avg"]!! in 11.21..11.49)
+
+        // Optional UI micro-motion pulses cleanly without exceeding bounds or mutating input
+        val steadyRaw = mapOf("rpm" to 2200.0, "engine_load" to 100.0, "rel_throttle" to 0.0, "kpl_road_avg" to 11.5)
+        val pulseA = session.step(steadyRaw, dtMs = 16L, nowMs = 5_000L, mode = GaugeSmoothingMode.LIGHT_DAMPER, liveMicroMotion = true)
+        val pulseB = session.step(steadyRaw, dtMs = 16L, nowMs = 5_064L, mode = GaugeSmoothingMode.LIGHT_DAMPER, liveMicroMotion = true)
+        assertTrue(pulseA["engine_load"]!! <= 100.0)
+        assertEquals(0.0, pulseA["rel_throttle"]!!, 0.001)
+        assertTrue(kotlin.math.abs(pulseA["kpl_road_avg"]!! - pulseB["kpl_road_avg"]!!) > 0.0)
+        assertEquals(11.5, steadyRaw["kpl_road_avg"]!!, 0.0001)
+    }
+
+    @Test
+    fun `C1 SmoothDamp carries nonzero handoff velocity across packet boundaries and calms kpl_instant swings`() {
+        val session = TelemetryDisplaySmoother.AdaptiveSession()
+        var curMs = 1_000L
+        session.step(mapOf("engine_load" to 20.0, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)
+
+        // Ramp load every 160ms across 10 frames each
+        for (targetLoad in listOf(24.0, 28.0, 32.0)) {
+            val beforeArrival = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs + 16L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+            val afterArrival = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs + 32L, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+            assertTrue("Expected nonzero handoff velocity into $targetLoad ($beforeArrival -> $afterArrival)", afterArrival - beforeArrival > 0.15)
+            curMs += 32L
+            repeat(8) {
+                curMs += 16L
+                val v = session.step(mapOf("engine_load" to targetLoad, "kpl_instant" to 10.5), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)["engine_load"]!!
+                assertTrue("Expected no overshoot above $targetLoad, got $v", v <= targetLoad + 1e-6)
+            }
+        }
+
+        // Sharp KPL swing damps smoothly over ~0.35s instead of hard-snapping inside 96ms
+        var kpl96 = 10.5
+        for (i in 1..6) {
+            curMs += 16L
+            kpl96 = session.step(mapOf("engine_load" to 32.0, "kpl_instant" to 4.6), dtMs = 16L, nowMs = curMs, mode = GaugeSmoothingMode.LIGHT_DAMPER)["kpl_instant"]!!
+        }
+        assertTrue("Expected kpl_instant calm glide (> 6.0) at 96ms, got $kpl96", kpl96 in 6.0..10.1)
     }
 }

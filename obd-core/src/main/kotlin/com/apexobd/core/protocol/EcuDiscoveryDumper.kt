@@ -141,24 +141,110 @@ object EcuDiscoveryDumper {
         }
         log("Parsed VIN -> ${DtcDecoder.readVin(client)}")
 
-        // Safe read-only UDS Mode 22 & OEM Mode 21 identification/telemetry probe
-        onProgress("Deep Scan (6/6): Probing extended Mode 21 / UDS PIDs...")
+        // Safe read-only UDS Mode 22 & OEM Mode 21 identification/telemetry probe (including 7C0 Combination Meter fuel level)
+        onProgress("Deep Scan (6/6): Probing 7E0 / 7C0 Meter / 750 Body Mode 21 & UDS...")
         log("\n--- READ-ONLY MODE 22 & MODE 21 PROBE ---")
-        for (did in listOf("22F190", "22F187", "22F40C")) {
-            log("$did -> ${formatResult(client.execute(did, timeoutMs = 1200L))}")
+        if (handshake.isCanProtocol) {
+            client.execute("ATST19", timeoutMs = 1000L)
         }
-        client.execute("ATSH7E0")
-        for (pid21 in listOf("2100", "2101", "2102", "2103", "2104", "2105", "2106", "2110", "2120", "2123", "2125", "2126", "212B", "212F", "2130", "2131", "2132", "2134")) {
-            log("7E0 $pid21 -> ${formatResult(client.execute(pid21, timeoutMs = 1200L))}")
+        try {
+            for (did in listOf("22F190", "22F187", "22F40C", "22F42F")) {
+                log("$did -> ${formatResult(client.execute(did, timeoutMs = 800L))}")
+            }
+
+            // 1. Engine ECM (7E0 -> 7E8): walk Mode 21 bitmasks (2100..21E0) and dump supported PIDs
+            log("\n--- ECM 7E0 MODE 21 BITMASK WALK ---")
+            client.execute("ATSH7E0", timeoutMs = 800L)
+            if (handshake.isCanProtocol) client.execute("ATCRA7E8", timeoutMs = 800L)
+            val ecm21Supported = discoverMode21BitmaskPids(client, "7E0", ::log)
+            val ecm21Targets = if (ecm21Supported.isNotEmpty()) {
+                ecm21Supported.filter { it !in skipBlocks }.take(48)
+            } else {
+                listOf("01", "03", "04", "05", "06", "23", "25", "26", "29", "2F", "30")
+            }
+            for (pidHex in ecm21Targets) {
+                log("7E0 21$pidHex -> ${formatResult(client.execute("21$pidHex", timeoutMs = 800L))}")
+            }
+
+            // 2. Combination Meter / Instrument Cluster (7C0 -> 7C8): Toyota/Daihatsu digital fuel level lives here
+            onProgress("Deep Scan (6/6): Probing 7C0 Combination Meter (Fuel Level)...")
+            log("\n--- COMBINATION METER 7C0 (CLUSTER / FUEL LEVEL) ---")
+            client.execute("ATSH7C0", timeoutMs = 800L)
+            if (handshake.isCanProtocol) client.execute("ATCRA7C8", timeoutMs = 800L)
+            val meter21Supported = discoverMode21BitmaskPids(client, "7C0", ::log)
+            val meterDirectProbes = linkedSetOf(
+                "29", "24", "2F", "01", "02", "03", "04", "05", "06", "07", "08", "09", "0A",
+                "10", "11", "21", "22", "23", "25", "26", "27", "28", "2A", "2B", "2C", "30", "31", "32"
+            )
+            meter21Supported.filter { it !in skipBlocks }.forEach { meterDirectProbes.add(it) }
+            var meterResponded = meter21Supported.isNotEmpty()
+            for (pidHex in meterDirectProbes) {
+                val res = client.execute("21$pidHex", timeoutMs = 700L)
+                if (res is ObdCommandResult.Success) {
+                    meterResponded = true
+                    log("7C0 21$pidHex -> ${formatResult(res)}")
+                } else if (pidHex in setOf("29", "24", "2F", "01") || meterResponded) {
+                    log("7C0 21$pidHex -> ${formatResult(res)}")
+                }
+            }
+            for (did in listOf("22F42F", "22F190", "22F187", "221001", "221002", "222000")) {
+                log("7C0 $did -> ${formatResult(client.execute(did, timeoutMs = 700L))}")
+            }
+
+            // 3. Main Body ECU (750 -> 758), TCM (7E1 -> 7E9), Secondary (7E2 -> 7EA)
+            log("\n--- BODY 750 / TCM 7E1 / SECONDARY 7E2 ---")
+            client.execute("ATSH750", timeoutMs = 800L)
+            if (handshake.isCanProtocol) client.execute("ATCRA758", timeoutMs = 800L)
+            for (cmd in listOf("2100", "2129", "212F", "22F42F")) {
+                log("750 $cmd -> ${formatResult(client.execute(cmd, timeoutMs = 700L))}")
+            }
+
+            client.execute("ATSH7E1", timeoutMs = 800L)
+            if (handshake.isCanProtocol) client.execute("ATCRA7E9", timeoutMs = 800L)
+            for (cmd in listOf("0100", "2100", "2101", "221E1C")) {
+                log("7E1 $cmd -> ${formatResult(client.execute(cmd, timeoutMs = 700L))}")
+            }
+
+            client.execute("ATSH7E2", timeoutMs = 800L)
+            if (handshake.isCanProtocol) client.execute("ATCRA7EA", timeoutMs = 800L)
+            for (cmd in listOf("0100", "2100", "2129")) {
+                log("7E2 $cmd -> ${formatResult(client.execute(cmd, timeoutMs = 700L))}")
+            }
+        } finally {
+            if (handshake.isCanProtocol) {
+                client.restoreDefaultCanHeaderAndFilter(timeoutMs = 800L)
+            } else {
+                client.execute("ATSH7DF", timeoutMs = 800L)
+            }
         }
-        client.execute("ATSH7E1")
-        for (cmd in listOf("0100", "2101", "221E1C")) {
-            log("7E1 $cmd -> ${formatResult(client.execute(cmd, timeoutMs = 1200L))}")
-        }
-        client.execute("ATSH7DF")
 
         log("\n=== SCAN COMPLETE in ${System.currentTimeMillis() - tStart}ms ===")
         return sb.toString()
+    }
+
+    private suspend fun discoverMode21BitmaskPids(
+        client: Elm327Client,
+        ecuLabel: String,
+        log: (String) -> Unit
+    ): Set<String> {
+        val supported = linkedSetOf<String>()
+        val blocks = listOf("00", "20", "40", "60", "80", "A0", "C0", "E0")
+        for (blockHex in blocks) {
+            val res = client.execute("21$blockHex", timeoutMs = 800L)
+            log("$ecuLabel 21$blockHex -> ${formatResult(res)}")
+            if (res !is ObdCommandResult.Success) break
+            val blockInt = blockHex.toInt(16)
+            val payload = Elm327Client.extractPidPayload(res.lines, 0x61, blockInt) ?: break
+            if (payload.size < 4) break
+            val blockSupported = ObdPidRegistry.decodeBitmask(blockInt, payload.take(4))
+            supported.addAll(blockSupported)
+            val nextBlockCode = "%02X".format((blockInt + 0x20) and 0xFF)
+            if (blockInt >= 0xE0 || !blockSupported.contains(nextBlockCode)) break
+        }
+        if (supported.isNotEmpty()) {
+            log("$ecuLabel Supported Mode 21 PIDs (${supported.size}): ${supported.joinToString(", ")}")
+        }
+        return supported
     }
 
     private fun formatResult(res: ObdCommandResult): String = when (res) {

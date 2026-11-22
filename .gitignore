@@ -22,5 +22,8 @@ PROJECT_STATE.md
 JOURNAL.md
 research/prototypes/ui-layout-options/
 .env
+keystore.properties
+release-artifacts/
 *.keystore
 *.jks
+*.p12

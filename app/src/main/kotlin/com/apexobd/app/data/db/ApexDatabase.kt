@@ -31,6 +31,10 @@ enum class WidgetDisplayType {
     BAR,
     SEGMENTED_BAR,
     CHART,
+    RPM_TACH_GT,
+    RPM_TACH_F1_LEDS,
+    RPM_TACH_CHRONO,
+    RPM_TACH_HALO,
     MINI_MAP,
     DTC_CHECKER,
     PERF_TIMER,
@@ -173,7 +177,8 @@ data class HudWidgetEntity(
     val freeformXFraction: Float = 0.04f,
     val freeformYFraction: Float = 0.06f,
     val warnThreshold: Double? = null,
-    val critThreshold: Double? = null
+    val critThreshold: Double? = null,
+    val alertBelow: Boolean = false
 )
 
 @Entity(tableName = "custom_pids")
@@ -371,7 +376,7 @@ interface TripDao {
         TripSessionEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -501,6 +506,12 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE hud_widgets ADD COLUMN alertBelow INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -510,7 +521,15 @@ abstract class ApexDatabase : RoomDatabase() {
         private fun buildDatabase(context: Context): ApexDatabase {
             lateinit var db: ApexDatabase
             db = Room.databaseBuilder(context, ApexDatabase::class.java, "apex_obd.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6,
+                    MIGRATION_6_7,
+                    MIGRATION_7_8
+                )
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
                         super.onCreate(sqliteDb)

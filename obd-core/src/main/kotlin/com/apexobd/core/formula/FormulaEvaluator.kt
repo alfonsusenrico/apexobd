@@ -38,6 +38,18 @@ object FormulaEvaluator {
         val expectedResp = modeReq + 0x40
         val pidBytes = (2 until cmd.length step 2).map { cmd.substring(it, it + 2).toInt(16) }
 
+        // Try flattened ISO-TP payload first when multi-frame lines ('0:', '1:') are present
+        if (result.lines.any { it.contains(":") }) {
+            val flat = Elm327Client.flattenIsoTpBytes(result.lines)
+            if (flat.size > pidBytes.size + 1 && flat[0] == expectedResp) {
+                val matchesPid = pidBytes.indices.all { idx -> flat[idx + 1] == pidBytes[idx] }
+                if (matchesPid) {
+                    val dataBytes = flat.drop(1 + pidBytes.size)
+                    return runCatching { evaluate(def.formula, dataBytes) }.getOrNull()
+                }
+            }
+        }
+
         for (line in result.lines) {
             val bytes = Elm327Client.parseHexBytes(line)
             if (bytes.size > pidBytes.size + 1 && bytes[0] == expectedResp) {

@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Run unit tests and lint
+        run: gradle :obd-core:test :app:testDebugUnitTest :app:lintDebug
+
+      - name: Decode release keystore
+        id: keystore
+        env:
+          APEX_KEYSTORE_BASE64: ${{ secrets.APEX_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$APEX_KEYSTORE_BASE64" ]; then
+            echo "::error::Missing APEX_KEYSTORE_BASE64 secret. Configure signing secrets in GitHub Settings -> Secrets."
+            exit 1
+          fi
+          KS_PATH="$RUNNER_TEMP/apexobd-release.jks"
+          printf '%s' "$APEX_KEYSTORE_BASE64" | base64 --decode > "$KS_PATH"
+          chmod 600 "$KS_PATH"
+          echo "path=$KS_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed release APK and Play Store AAB
+        env:
+          APEX_KEYSTORE_PATH: ${{ steps.keystore.outputs.path }}
+          APEX_KEYSTORE_PASSWORD: ${{ secrets.APEX_KEYSTORE_PASSWORD }}
+          APEX_KEY_ALIAS: ${{ secrets.APEX_KEY_ALIAS }}
+          APEX_KEY_PASSWORD: ${{ secrets.APEX_KEY_PASSWORD }}
+        run: gradle :app:lintVitalRelease :app:assembleRelease :app:bundleRelease
+
+      - name: Verify APK signature and package release artifacts
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          APK_OUT="dist/ApexOBD-${TAG}-release.apk"
+          AAB_OUT="dist/ApexOBD-${TAG}-release.aab"
+          cp app/build/outputs/apk/release/app-release.apk "$APK_OUT"
+          cp app/build/outputs/bundle/release/app-release.aab "$AAB_OUT"
+
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -n 1)"
+          "$APKSIGNER" verify --verbose --print-certs "$APK_OUT"
+
+          (cd dist && sha256sum "ApexOBD-${TAG}-release.apk" "ApexOBD-${TAG}-release.aab" > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Clean up temporary keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/apexobd-release.jks"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/ApexOBD-${{ github.ref_name }}-release.apk
+            dist/ApexOBD-${{ github.ref_name }}-release.aab
+            dist/SHA256SUMS.txt
+
+      - name: Publish AAB to Google Play (when configured)
+        if: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.apexobd.app
+          releaseFiles: dist/ApexOBD-${{ github.ref_name }}-release.aab
+          track: internal
+          status: completed

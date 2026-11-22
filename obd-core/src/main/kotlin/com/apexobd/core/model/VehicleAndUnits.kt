@@ -199,4 +199,51 @@ object UnitConverter {
             SensorQuantity.RAW -> valueMetric to ""
         }
     }
+
+    fun toInternalMetric(
+        displayValue: Double,
+        quantity: SensorQuantity,
+        prefs: UnitPreferences,
+        fuelType: FuelType = FuelType.GASOLINE
+    ): Double {
+        return when (quantity) {
+            SensorQuantity.SPEED, SensorQuantity.DISTANCE_KM -> when (prefs.speed) {
+                SpeedUnit.KMH -> displayValue
+                SpeedUnit.MPH -> displayValue / 0.621371
+            }
+            SensorQuantity.TEMPERATURE -> when (prefs.temperature) {
+                TempUnit.CELSIUS -> displayValue
+                TempUnit.FAHRENHEIT -> (displayValue - 32.0) * 5.0 / 9.0
+            }
+            SensorQuantity.PRESSURE_KPA, SensorQuantity.BOOST_KPA -> when (prefs.pressure) {
+                PressureUnit.KPA -> displayValue
+                PressureUnit.BAR -> displayValue * 100.0
+                PressureUnit.PSI -> displayValue / 0.145038
+            }
+            SensorQuantity.FUEL_ECONOMY_KPL -> when {
+                fuelType == FuelType.ELECTRIC -> if (prefs.speed == SpeedUnit.MPH) displayValue / 0.621371 else displayValue
+                prefs.fuelEconomy == FuelEconomyUnit.KPL -> displayValue
+                prefs.fuelEconomy == FuelEconomyUnit.L_PER_100KM -> if (displayValue > 0.05) 100.0 / displayValue else 0.0
+                else -> displayValue / 2.35215
+            }
+            SensorQuantity.VOLUME_L, SensorQuantity.FUEL_FLOW_LPH -> when {
+                fuelType == FuelType.ELECTRIC -> displayValue
+                prefs.volume == VolumeUnit.GALLONS_US -> displayValue / 0.264172
+                else -> displayValue
+            }
+            SensorQuantity.AIRFLOW_GS -> when (prefs.airflow) {
+                AirflowUnit.G_PER_S -> displayValue
+                AirflowUnit.KG_PER_H -> displayValue / 3.6
+            }
+            SensorQuantity.POWER_HP -> when (prefs.power) {
+                PowerUnit.HP -> displayValue
+                PowerUnit.KW -> displayValue / 0.7457
+            }
+            SensorQuantity.TORQUE_NM -> when (prefs.torque) {
+                TorqueUnit.NM -> displayValue
+                TorqueUnit.LB_FT -> displayValue / 0.737562
+            }
+            SensorQuantity.DURATION_SEC, SensorQuantity.RAW -> displayValue
+        }
+    }
 }

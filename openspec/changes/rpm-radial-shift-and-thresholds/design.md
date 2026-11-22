@@ -1,0 +1,8 @@
+# Design: RPM Radial Tachometers and Optional Metric Threshold Alerts
+
+## Architecture
+- **Persistence (`ApexDatabase` v8):** Add `RPM_TACH_GT`, `RPM_TACH_F1_LEDS`, `RPM_TACH_CHRONO`, and `RPM_TACH_HALO` to `WidgetDisplayType`. Add `alertBelow: Boolean = false` to `HudWidgetEntity` via additive `MIGRATION_7_8` (`ALTER TABLE hud_widgets ADD COLUMN alertBelow INTEGER NOT NULL DEFAULT 0`).
+- **RPM Radial Components (`RpmRadialWidgets.kt`):** Four custom Canvas composables scaled dynamically to `activeVehicle.redlineRpm` (`rpmDialMaxForRedline`). Sweep stays `palette.accent` (Electric Blue default) below redline and turns `CriticalRed` past redline; redline zone is permanently marked Red.
+- **Shift Lamp Progression (`computeShiftLampStage`):** Strictly applies to the shift dot/LEDs (no text label). Remains `OFF` when `shiftRpm == null`. Trigger is `min(shiftRpm, redlineRpm)`: `<60%` Off, `60-80%` steady Green, `80-100%` steady Yellow, `>=100%` ~9 Hz flashing Red strobe plus card border flash. Option C places the shift dot inside the open-center chrono ring at top-right of the RPM digits.
+- **Per-Widget Alert Overlay (`MetricAlertFrameOverlay` + `evaluateMetricAlert`):** Replaces the `< 12.5` threshold direction heuristic in `TorqueEvoWidgets.kt`. Evaluates explicit `alertBelow` direction in display units and renders steady Amber border + top-right dot on `WARN`, or flashing Red border + flashing dot on `CRITICAL`. Zero overhead when both thresholds are `null`.
+- **Unit-Aware Threshold Editing (`UnitConverter.toInternalMetric` + `ComponentEditDialog`):** Persists thresholds in internal metric units while accepting/displaying values in active `UnitPreferences`.

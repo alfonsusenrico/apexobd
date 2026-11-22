@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ApexOBD — RPM Radial v3 (Electric Blue Sweep + Green→Yellow→Red Shift Lamp)</title>
+<style>
+  :root {
+    --bg: #05070b;
+    --panel: #0c1018;
+    --border: rgba(255,255,255,0.12);
+    --blue: #00A8FF;
+    --green: #22C55E;
+    --yellow: #EAB308;
+    --red: #EF4444;
+    --text: #F3F5F8;
+    --muted: #8B96A8;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+    padding: 20px;
+    max-width: 1240px;
+    margin: 0 auto;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  h1 { font-size: 20px; letter-spacing: 0.3px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-top: 3px; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin-bottom: 18px;
+  }
+  .ctrl { display: flex; flex-direction: column; gap: 4px; min-width: 170px; }
+  .ctrl label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.7px; font-weight: 700; }
+  .ctrl .val { color: var(--blue); font-variant-numeric: tabular-nums; margin-left: 6px; }
+  input[type=range] { accent-color: var(--blue); cursor: pointer; }
+  button {
+    background: #121a27;
+    color: var(--text);
+    border: 1px solid rgba(0,168,255,0.45);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-weight: 700;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  button.active { background: var(--blue); color: #020810; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: #000000;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card.rec { border-color: rgba(0,168,255,0.55); box-shadow: 0 0 24px rgba(0,168,255,0.08); }
+  .card-head { display: flex; justify-content: space-between; align-items: center; }
+  .card-title { font-size: 14px; font-weight: 800; }
+  .badge {
+    font-size: 10px; font-weight: 800; padding: 3px 7px; border-radius: 99px;
+    background: rgba(0,168,255,0.16); color: var(--blue); border: 1px solid rgba(0,168,255,0.45);
+  }
+  .card-desc { font-size: 12px; color: var(--muted); line-height: 1.45; min-height: 50px; }
+  canvas { width: 100%; aspect-ratio: 1 / 1; background: #000; border-radius: 12px; display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ApexOBD — RPM Radial v3 (Electric Blue Sweep · Green → Yellow → Red Shift Lamp)</h1>
+    <div class="subtitle">Dial sweep stays Electric Blue (#00A8FF) + always-red Redline · Shift lamp transitions Off → Green → Yellow → Flashing Red (no text label)</div>
+  </div>
+</header>
+
+<div class="controls">
+  <div class="ctrl">
+    <label>Live RPM <span class="val" id="rpmLbl">3900</span></label>
+    <input type="range" id="rpmSlider" min="0" max="8000" step="25" value="3900" />
+  </div>
+  <div class="ctrl">
+    <label>Shift Threshold <span class="val" id="shiftLbl">5800</span></label>
+    <input type="range" id="shiftSlider" min="3000" max="7500" step="100" value="5800" />
+  </div>
+  <div class="ctrl">
+    <label>Vehicle Redline <span class="val" id="redLbl">6500</span></label>
+    <input type="range" id="redSlider" min="5000" max="8000" step="100" value="6500" />
+  </div>
+  <button id="sweepBtn">▶ Auto Rev Sweep</button>
+  <button id="jumpGreenBtn">🟢 Green Stage</button>
+  <button id="jumpYellowBtn">🟡 Yellow Stage</button>
+  <button id="jumpRedBtn">🔴 Red Flash</button>
+</div>
+
+<div class="grid">
+  <div class="card rec">
+    <div class="card-head">
+      <div class="card-title">A · GT Motorsport Tach</div>
+      <span class="badge">SELECTABLE</span>
+    </div>
+    <canvas id="cA" width="520" height="520"></canvas>
+    <div class="card-desc">270° numbered 0–8 Electric Blue sweep + permanent Red redline + razor needle + integrated 12-o'clock Green → Yellow → Flashing Red dot.</div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">B · Sequential F1 Shift LEDs</div>
+      <span class="badge">SELECTABLE</span>
+    </div>
+    <canvas id="cB" width="520" height="520"></canvas>
+    <div class="card-desc">Needle-free Electric Blue segmented arc (red in redline) with 5 crown shift LEDs building Green → Yellow → Red, then strobe-flashing Red at shift.</div>
+  </div>
+
+  <div class="card rec">
+    <div class="card-head">
+      <div class="card-title">C · Track Chrono</div>
+      <span class="badge">SELECTABLE</span>
+    </div>
+    <canvas id="cC" width="520" height="520"></canvas>
+    <div class="card-desc">GT3 twin-track dial: Electric Blue inner glow wedge + outer-ring needle (never overlaps center RPM) + clean lower-center Green → Yellow → Flashing Red dot.</div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">D · Compact OLED Halo</div>
+      <span class="badge">SELECTABLE</span>
+    </div>
+    <canvas id="cD" width="520" height="520"></canvas>
+    <div class="card-desc">Minimalist twin-ring Electric Blue halo + huge center RPM digits + single integrated Green → Yellow → Flashing Red shift dot beside RPM.</div>
+  </div>
+</div>
+
+<script>
+const maxRpm = 8000;
+const rpmSlider = document.getElementById('rpmSlider');
+const shiftSlider = document.getElementById('shiftSlider');
+const redSlider = document.getElementById('redSlider');
+const rpmLbl = document.getElementById('rpmLbl');
+const shiftLbl = document.getElementById('shiftLbl');
+const redLbl = document.getElementById('redLbl');
+const sweepBtn = document.getElementById('sweepBtn');
+
+let autoSweep = false;
+let sweepT = 0;
+
+function stopSweep() {
+  autoSweep = false;
+  sweepBtn.classList.remove('active');
+  sweepBtn.textContent = '▶ Auto Rev Sweep';
+}
+sweepBtn.onclick = () => {
+  autoSweep = !autoSweep;
+  sweepBtn.classList.toggle('active', autoSweep);
+  sweepBtn.textContent = autoSweep ? '⏸ Stop Sweep' : '▶ Auto Rev Sweep';
+};
+document.getElementById('jumpGreenBtn').onclick = () => {
+  stopSweep();
+  rpmSlider.value = Math.round(Number(shiftSlider.value) * 0.68 / 25) * 25;
+};
+document.getElementById('jumpYellowBtn').onclick = () => {
+  stopSweep();
+  rpmSlider.value = Math.round(Number(shiftSlider.value) * 0.88 / 25) * 25;
+};
+document.getElementById('jumpRedBtn').onclick = () => {
+  stopSweep();
+  rpmSlider.value = Math.min(maxRpm, Number(shiftSlider.value) + 350);
+};
+
+function deg2rad(d) { return d * Math.PI / 180; }
+
+// Shift lamp stage: 'OFF' | 'GREEN' | 'YELLOW' | 'RED_FLASH'
+function shiftLampStage(rpm, shiftRpm, redlineRpm) {
+  const trigger = Math.min(shiftRpm, redlineRpm);
+  if (rpm >= trigger || rpm >= redlineRpm) return 'RED_FLASH';
+  if (rpm >= trigger * 0.80) return 'YELLOW';
+  if (rpm >= trigger * 0.60) return 'GREEN';
+  return 'OFF';
+}
+
+function drawShiftDot(ctx, x, y, radius, stage, flashOn) {
+  let fill = '#181F2A';
+  let stroke = 'rgba(255,255,255,0.20)';
+  let glow = null;
+  let glowR = radius * 2.4;
+
+  if (stage === 'GREEN') {
+    fill = '#22C55E';
+    stroke = '#86EFAC';
+    glow = 'rgba(34,197,94,0.68)';
+  } else if (stage === 'YELLOW') {
+    fill = '#EAB308';
+    stroke = '#FEF08A';
+    glow = 'rgba(234,179,8,0.78)';
+  } else if (stage === 'RED_FLASH') {
+    if (flashOn) {
+      fill = '#FF4242';
+      stroke = '#FECACA';
+      glow = 'rgba(239,68,68,0.95)';
+      glowR = radius * 2.9;
+    } else {
+      fill = '#421014';
+      stroke = 'rgba(239,68,68,0.55)';
+    }
+  }
+
+  if (glow) {
+    const g = ctx.createRadialGradient(x, y, radius * 0.2, x, y, glowR);
+    if (stage === 'RED_FLASH' && flashOn) g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.38, glow);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, glowR, 0, Math.PI*2); ctx.fill();
+  }
+
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+}
+
+function drawBlueWithRedlineArc(ctx, cx, cy, R, startDeg, sweepDeg, pct, redPct, width, capRound) {
+  if (pct <= 0.002) return;
+  const blueEnd = Math.min(pct, redPct);
+  ctx.lineWidth = width;
+  if (blueEnd > 0.002) {
+    ctx.lineCap = capRound ? 'round' : 'butt';
+    ctx.strokeStyle = '#00A8FF';
+    ctx.shadowColor = '#00A8FF';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, deg2rad(startDeg), deg2rad(startDeg + sweepDeg * blueEnd));
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  if (pct > redPct) {
+    ctx.lineCap = capRound ? 'round' : 'butt';
+    ctx.strokeStyle = '#EF4444';
+    ctx.shadowColor = '#EF4444';
+    ctx.shadowBlur = 16;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, deg2rad(startDeg + sweepDeg * redPct), deg2rad(startDeg + sweepDeg * pct));
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+}
+
+function drawOptionA(ctx, rpm, shiftRpm, redlineRpm, flashOn) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, cx = W/2, cy = H*0.54, R = W*0.40;
+  ctx.clearRect(0,0,W,H);
+  const startDeg = 135, sweepDeg = 270;
+  const pct = Math.min(1, Math.max(0, rpm / maxRpm));
+  const redPct = redlineRpm / maxRpm;
+  const shiftPct = shiftRpm / maxRpm;
+  const stage = shiftLampStage(rpm, shiftRpm, redlineRpm);
+  const inRedline = rpm >= redlineRpm;
+  const atShift = stage === 'RED_FLASH';
+
+  ctx.strokeStyle = atShift && flashOn ? 'rgba(239,68,68,0.85)' : 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = atShift && flashOn ? 4 : 2;
+  ctx.beginPath(); ctx.roundRect(6,6,W-12,H-12,24); ctx.stroke();
+
+  // Base track + permanent Red redline zone
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 18;
+  ctx.beginPath(); ctx.arc(cx, cy, R, deg2rad(startDeg), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(239,68,68,0.52)';
+  ctx.lineWidth = 18;
+  ctx.beginPath(); ctx.arc(cx, cy, R, deg2rad(startDeg + sweepDeg*redPct), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  drawBlueWithRedlineArc(ctx, cx, cy, R, startDeg, sweepDeg, pct, redPct, 18, true);
+
+  // Subtle shift marker tick on outer track
+  const smRad = deg2rad(startDeg + sweepDeg*shiftPct);
+  ctx.strokeStyle = '#EAB308'; ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + (R-12)*Math.cos(smRad), cy + (R-12)*Math.sin(smRad));
+  ctx.lineTo(cx + (R+12)*Math.cos(smRad), cy + (R+12)*Math.sin(smRad));
+  ctx.stroke();
+
+  // Ticks + 0..8
+  for (let i = 0; i <= 32; i++) {
+    const f = i / 32;
+    const rad = deg2rad(startDeg + sweepDeg*f);
+    const major = i % 4 === 0;
+    const isRed = (f * maxRpm) >= redlineRpm;
+    ctx.strokeStyle = isRed ? '#EF4444' : (major ? 'rgba(255,255,255,0.88)' : 'rgba(255,255,255,0.28)');
+    ctx.lineWidth = major ? 3.5 : 1.8;
+    ctx.beginPath();
+    ctx.moveTo(cx + (major ? R-26 : R-17)*Math.cos(rad), cy + (major ? R-26 : R-17)*Math.sin(rad));
+    ctx.lineTo(cx + (R-9)*Math.cos(rad), cy + (R-9)*Math.sin(rad));
+    ctx.stroke();
+    if (major) {
+      ctx.fillStyle = isRed ? '#EF4444' : '#DCE4F0';
+      ctx.font = '800 26px -apple-system, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i/4), cx + (R-48)*Math.cos(rad), cy + (R-48)*Math.sin(rad));
+    }
+  }
+
+  // Integrated 12-o'clock Shift Dot (no text label)
+  drawShiftDot(ctx, cx, cy - R * 0.44, 15, stage, flashOn);
+
+  // Tapered needle
+  const nRad = deg2rad(startDeg + sweepDeg*pct);
+  const tipX = cx + (R-20)*Math.cos(nRad), tipY = cy + (R-20)*Math.sin(nRad);
+  const perpX = -Math.sin(nRad), perpY = Math.cos(nRad);
+  ctx.fillStyle = inRedline ? '#FF4D4D' : '#FFFFFF';
+  ctx.beginPath();
+  ctx.moveTo(tipX, tipY);
+  ctx.lineTo(cx + perpX*7 - Math.cos(nRad)*24, cy + perpY*7 - Math.sin(nRad)*24);
+  ctx.lineTo(cx - perpX*7 - Math.cos(nRad)*24, cy - perpY*7 - Math.sin(nRad)*24);
+  ctx.closePath(); ctx.fill();
+
+  ctx.fillStyle = '#0B0F17';
+  ctx.strokeStyle = inRedline ? '#EF4444' : '#00A8FF';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(cx, cy, 22, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = inRedline ? '#EF4444' : '#F3F5F8';
+  ctx.font = '800 48px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(String(Math.round(rpm)), cx, cy + R*0.64);
+  ctx.fillStyle = '#8B96A8'; ctx.font = '700 14px -apple-system, sans-serif';
+  ctx.fillText('RPM', cx, cy + R*0.80);
+}
+
+function drawOptionB(ctx, rpm, shiftRpm, redlineRpm, flashOn) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, cx = W/2, cy = H*0.56, R = W*0.38;
+  ctx.clearRect(0,0,W,H);
+  const startDeg = 145, sweepDeg = 250;
+  const pct = Math.min(1, Math.max(0, rpm / maxRpm));
+  const stage = shiftLampStage(rpm, shiftRpm, redlineRpm);
+  const atShift = stage === 'RED_FLASH';
+  const inRedline = rpm >= redlineRpm;
+
+  ctx.strokeStyle = atShift && flashOn ? 'rgba(239,68,68,0.85)' : 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = atShift && flashOn ? 4 : 2;
+  ctx.beginPath(); ctx.roundRect(6,6,W-12,H-12,24); ctx.stroke();
+
+  // 5 Curved F1 crown LEDs: Green -> Green -> Yellow -> Yellow -> Red -> ALL strobe Red
+  const ledAngles = [-44, -22, 0, 22, 44];
+  const ledCols = ['#22C55E', '#22C55E', '#EAB308', '#EAB308', '#EF4444'];
+  const trigger = Math.min(shiftRpm, redlineRpm);
+  const seqStart = trigger * 0.56;
+  const seqProg = (rpm - seqStart) / Math.max(200, trigger - seqStart);
+  ledAngles.forEach((a, idx) => {
+    const rad = deg2rad(-90 + a);
+    const lx = cx + (R + 30)*Math.cos(rad), ly = cy + (R + 30)*Math.sin(rad) + 12;
+    const lit = atShift ? flashOn : (seqProg >= (idx + 0.25) / 5);
+    const col = atShift ? '#EF4444' : ledCols[idx];
+    if (lit) {
+      ctx.shadowColor = col; ctx.shadowBlur = 16;
+      ctx.fillStyle = col;
+    } else {
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#181F2A';
+    }
+    ctx.beginPath(); ctx.arc(lx, ly, 11, 0, Math.PI*2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = lit ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.20)';
+    ctx.lineWidth = 1.6; ctx.stroke();
+  });
+
+  // Electric Blue segmented blocks (Red only in redline zone)
+  ctx.lineCap = 'butt';
+  const segs = 32;
+  for (let i = 0; i < segs; i++) {
+    const f0 = i / segs, f1 = (i + 0.72) / segs;
+    const segRpm = ((f0 + f1) * 0.5) * maxRpm;
+    const active = f0 < pct;
+    const isRed = segRpm >= redlineRpm;
+    ctx.strokeStyle = active
+      ? (isRed ? '#EF4444' : '#00A8FF')
+      : (isRed ? 'rgba(239,68,68,0.36)' : 'rgba(255,255,255,0.10)');
+    ctx.lineWidth = 24;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R - 10, deg2rad(startDeg + sweepDeg*f0), deg2rad(startDeg + sweepDeg*f1));
+    ctx.stroke();
+  }
+
+  for (let n = 0; n <= 8; n++) {
+    const rad = deg2rad(startDeg + sweepDeg*(n/8));
+    ctx.fillStyle = (n*1000 >= redlineRpm) ? '#EF4444' : '#B8C4D4';
+    ctx.font = '800 22px -apple-system, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(n), cx + (R-44)*Math.cos(rad), cy + (R-44)*Math.sin(rad));
+  }
+
+  ctx.fillStyle = inRedline ? '#EF4444' : '#F3F5F8';
+  ctx.font = '800 62px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(String(Math.round(rpm)), cx, cy + 14);
+  ctx.fillStyle = '#8B96A8'; ctx.font = '800 15px -apple-system, sans-serif';
+  ctx.fillText('RPM', cx, cy + 46);
+}
+
+// Option C: Track Chrono (Electric Blue twin-track + lower-center Shift Dot, no label)
+function drawOptionC(ctx, rpm, shiftRpm, redlineRpm, flashOn) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, cx = W/2, cy = H*0.50, R = W*0.39;
+  ctx.clearRect(0,0,W,H);
+  const startDeg = 135, sweepDeg = 270;
+  const pct = Math.min(1, Math.max(0, rpm / maxRpm));
+  const redPct = redlineRpm / maxRpm;
+  const shiftPct = shiftRpm / maxRpm;
+  const stage = shiftLampStage(rpm, shiftRpm, redlineRpm);
+  const atShift = stage === 'RED_FLASH';
+  const inRedline = rpm >= redlineRpm;
+  const activeBlue = inRedline ? '#EF4444' : '#00A8FF';
+
+  ctx.strokeStyle = atShift && flashOn ? 'rgba(239,68,68,0.85)' : 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = atShift && flashOn ? 4 : 2;
+  ctx.beginPath(); ctx.roundRect(6,6,W-12,H-12,24); ctx.stroke();
+
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(cx, cy, R + 6, deg2rad(startDeg), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  // Translucent Electric Blue wedge (red past redline)
+  const innerR = R * 0.56;
+  const midBandR = (R + innerR) * 0.5;
+  const bandW = R - innerR - 4;
+  const blueEnd = Math.min(pct, redPct);
+  if (blueEnd > 0.002) {
+    ctx.strokeStyle = 'rgba(0,168,255,0.22)';
+    ctx.lineWidth = bandW;
+    ctx.beginPath(); ctx.arc(cx, cy, midBandR, deg2rad(startDeg), deg2rad(startDeg + sweepDeg*blueEnd)); ctx.stroke();
+  }
+  if (pct > redPct) {
+    ctx.strokeStyle = 'rgba(239,68,68,0.28)';
+    ctx.lineWidth = bandW;
+    ctx.beginPath(); ctx.arc(cx, cy, midBandR, deg2rad(startDeg + sweepDeg*redPct), deg2rad(startDeg + sweepDeg*pct)); ctx.stroke();
+  }
+
+  // Permanent redline rim + Electric Blue active rim
+  ctx.strokeStyle = 'rgba(239,68,68,0.68)';
+  ctx.lineWidth = 9;
+  ctx.beginPath(); ctx.arc(cx, cy, R - 2, deg2rad(startDeg + sweepDeg*redPct), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  drawBlueWithRedlineArc(ctx, cx, cy, R - 2, startDeg, sweepDeg, pct, redPct, 8, false);
+
+  const smRad = deg2rad(startDeg + sweepDeg*shiftPct);
+  ctx.strokeStyle = '#EAB308'; ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(cx + (R-13)*Math.cos(smRad), cy + (R-13)*Math.sin(smRad));
+  ctx.lineTo(cx + (R+10)*Math.cos(smRad), cy + (R+10)*Math.sin(smRad));
+  ctx.stroke();
+
+  for (let i = 0; i <= 40; i++) {
+    const f = i / 40;
+    const rad = deg2rad(startDeg + sweepDeg*f);
+    const major = i % 5 === 0;
+    const isRed = (f * maxRpm) >= redlineRpm;
+    ctx.strokeStyle = isRed ? '#EF4444' : (major ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.28)');
+    ctx.lineWidth = major ? 3 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(cx + (major ? R-22 : R-13)*Math.cos(rad), cy + (major ? R-22 : R-13)*Math.sin(rad));
+    ctx.lineTo(cx + (R-5)*Math.cos(rad), cy + (R-5)*Math.sin(rad));
+    ctx.stroke();
+    if (major) {
+      ctx.fillStyle = isRed ? '#EF4444' : '#E2E8F0';
+      ctx.font = '800 22px -apple-system, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(i / 5), cx + (R-41)*Math.cos(rad), cy + (R-41)*Math.sin(rad));
+    }
+  }
+
+  // Outer-ring floating needle
+  const nRad = deg2rad(startDeg + sweepDeg*pct);
+  ctx.strokeStyle = '#FFFFFF';
+  ctx.shadowColor = activeBlue; ctx.shadowBlur = 12;
+  ctx.lineWidth = 6; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx + (innerR + 4)*Math.cos(nRad), cy + (innerR + 4)*Math.sin(nRad));
+  ctx.lineTo(cx + (R - 3)*Math.cos(nRad), cy + (R - 3)*Math.sin(nRad));
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#05080E';
+  ctx.strokeStyle = activeBlue;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, innerR, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = '#8B96A8';
+  ctx.font = '800 13px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('RPM', cx, cy - 30);
+
+  ctx.fillStyle = inRedline ? '#EF4444' : '#F3F5F8';
+  ctx.font = '800 52px -apple-system, sans-serif';
+  ctx.fillText(String(Math.round(rpm)), cx, cy + 18);
+
+  // Clean integrated lower-center Shift Dot (no text label)
+  drawShiftDot(ctx, cx, cy + R * 0.84, 16, stage, flashOn);
+}
+
+function drawOptionD(ctx, rpm, shiftRpm, redlineRpm, flashOn) {
+  const W = ctx.canvas.width, H = ctx.canvas.height, cx = W/2, cy = H*0.52, R = W*0.40;
+  ctx.clearRect(0,0,W,H);
+  const startDeg = 135, sweepDeg = 270;
+  const pct = Math.min(1, Math.max(0, rpm / maxRpm));
+  const redPct = redlineRpm / maxRpm;
+  const stage = shiftLampStage(rpm, shiftRpm, redlineRpm);
+  const atShift = stage === 'RED_FLASH';
+  const inRedline = rpm >= redlineRpm;
+
+  ctx.strokeStyle = atShift && flashOn ? 'rgba(239,68,68,0.85)' : 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = atShift && flashOn ? 4 : 2;
+  ctx.beginPath(); ctx.roundRect(6,6,W-12,H-12,24); ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cx, cy, R + 6, deg2rad(startDeg), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.lineWidth = 22;
+  ctx.beginPath(); ctx.arc(cx, cy, R - 14, deg2rad(startDeg), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(239,68,68,0.48)';
+  ctx.lineWidth = 22;
+  ctx.beginPath(); ctx.arc(cx, cy, R - 14, deg2rad(startDeg+sweepDeg*redPct), deg2rad(startDeg+sweepDeg)); ctx.stroke();
+
+  drawBlueWithRedlineArc(ctx, cx, cy, R - 14, startDeg, sweepDeg, pct, redPct, 22, true);
+
+  for (let n = 0; n <= 8; n++) {
+    const rad = deg2rad(startDeg + sweepDeg*(n/8));
+    ctx.fillStyle = (n*1000 >= redlineRpm) ? '#EF4444' : '#8B96A8';
+    ctx.font = '700 20px -apple-system, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(n), cx + (R-46)*Math.cos(rad), cy + (R-46)*Math.sin(rad));
+  }
+
+  // Integrated dot right beside RPM label (no shift text label)
+  ctx.fillStyle = '#C5CFDF';
+  ctx.font = '800 18px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('RPM', cx - 14, cy - 50);
+  drawShiftDot(ctx, cx + 36, cy - 56, 12, stage, flashOn);
+
+  ctx.fillStyle = inRedline ? '#EF4444' : '#F3F5F8';
+  ctx.font = '800 72px -apple-system, sans-serif';
+  ctx.fillText(String(Math.round(rpm)), cx, cy + 20);
+}
+
+const ctxA = document.getElementById('cA').getContext('2d');
+const ctxB = document.getElementById('cB').getContext('2d');
+const ctxC = document.getElementById('cC').getContext('2d');
+const ctxD = document.getElementById('cD').getContext('2d');
+
+function tick(ts) {
+  if (autoSweep) {
+    sweepT += 0.025;
+    const r = 900 + (Math.sin(sweepT) * 0.5 + 0.5) * 6200;
+    rpmSlider.value = Math.round(r / 25) * 25;
+  }
+  const rpm = Number(rpmSlider.value);
+  const shiftRpm = Number(shiftSlider.value);
+  const redlineRpm = Number(redSlider.value);
+  rpmLbl.textContent = rpm;
+  shiftLbl.textContent = shiftRpm;
+  redLbl.textContent = redlineRpm;
+
+  const flashOn = Math.floor(ts / 110) % 2 === 0;
+  drawOptionA(ctxA, rpm, shiftRpm, redlineRpm, flashOn);
+  drawOptionB(ctxB, rpm, shiftRpm, redlineRpm, flashOn);
+  drawOptionC(ctxC, rpm, shiftRpm, redlineRpm, flashOn);
+  drawOptionD(ctxD, rpm, shiftRpm, redlineRpm, flashOn);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

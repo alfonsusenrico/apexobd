@@ -63,12 +63,28 @@ enum class MapCursorStyle(val label: String) {
 
 enum class ShareCardBackgroundMode(val label: String) {
     CAR_PHOTO("Car Photo"),
+    CUSTOM_PHOTO("Custom Photo"),
     PLAIN_DARK("Plain Dark"),
     TRANSPARENT("Transparent")
 }
 
+enum class ShareCardAspectRatio(
+    val label: String,
+    val widthPx: Int,
+    val heightPx: Int
+) {
+    SQUARE_1_1("1:1", 1080, 1080),
+    LANDSCAPE_4_3("4:3", 1440, 1080),
+    STORY_9_16("9:16", 1080, 1920)
+}
+
 data class TripCardConfig(
     val backgroundMode: ShareCardBackgroundMode = ShareCardBackgroundMode.CAR_PHOTO,
+    val customPhotoPath: String? = null,
+    val aspectRatio: ShareCardAspectRatio = ShareCardAspectRatio.SQUARE_1_1,
+    val showSurroundingRoads: Boolean = false,
+    val surroundingRoadsOpacityPct: Int = 25,
+    val surroundingRoadsMainOnly: Boolean = true,
     val showAppMark: Boolean = true,
     val showVehicleName: Boolean = true,
     val showVehicleSpecs: Boolean = true,
@@ -167,17 +183,19 @@ data class UserSettings(
     val hudCardStyle: HudCardStyle = HudCardStyle.THEMED,
     val hudGridScale: HudGridScale = HudGridScale.STANDARD_8X4,
     val pauseFuelCalculation: Boolean = false,
-    val dualCellularKeepalive: Boolean = true,
+    val dualCellularKeepalive: Boolean = false,
     val mapProvider: MapProvider = MapProvider.OFFLINE_MAPLIBRE,
     val mapStylePreset: MapStylePreset = MapStylePreset.DARK_CONTRAST,
     val mapCameraMode: MapCameraMode = MapCameraMode.NAV_3D_45,
     val mapCursorStyle: MapCursorStyle = MapCursorStyle.SPORT_ARROW,
     val highContrastMapRoads: Boolean = true,
     val shareCardMetrics: List<ShareCardMetric> = ShareCardMetric.DEFAULT_SELECTION,
+    val tripCardConfig: TripCardConfig = TripCardConfig(),
     val activePmtilesPath: String? = null,
     val currencyCode: String = "IDR",
     val pollingProfile: PollingProfile = PollingProfile.BALANCED,
     val gaugeSmoothingMode: GaugeSmoothingMode = GaugeSmoothingMode.LIGHT_DAMPER,
+    val liveMicroMotion: Boolean = false,
     val fuelCoastingMode: FuelCoastingMode = FuelCoastingMode.REALISTIC_DFCO,
     val speedUnit: SpeedUnit = SpeedUnit.KMH,
     val tempUnit: TempUnit = TempUnit.CELSIUS,
@@ -242,10 +260,26 @@ class AppPreferences(private val context: Context) {
         val MAP_CURSOR_STYLE = stringPreferencesKey("map_cursor_style")
         val HIGH_CONTRAST_MAP_ROADS = booleanPreferencesKey("high_contrast_map_roads")
         val SHARE_CARD_METRICS = stringPreferencesKey("share_card_metrics")
+        val SHARE_CARD_BG_MODE = stringPreferencesKey("share_card_bg_mode")
+        val SHARE_CARD_CUSTOM_PHOTO = stringPreferencesKey("share_card_custom_photo")
+        val SHARE_CARD_ASPECT_RATIO = stringPreferencesKey("share_card_aspect_ratio")
+        val SHARE_CARD_SURROUNDING_ROADS = booleanPreferencesKey("share_card_surrounding_roads")
+        val SHARE_CARD_ROADS_OPACITY_PCT = intPreferencesKey("share_card_roads_opacity_pct")
+        val SHARE_CARD_ROADS_MAIN_ONLY = booleanPreferencesKey("share_card_roads_main_only")
+        val SHARE_CARD_SHOW_APP_MARK = booleanPreferencesKey("share_card_show_app_mark")
+        val SHARE_CARD_SHOW_VEHICLE_NAME = booleanPreferencesKey("share_card_show_vehicle_name")
+        val SHARE_CARD_SHOW_VEHICLE_SPECS = booleanPreferencesKey("share_card_show_vehicle_specs")
+        val SHARE_CARD_SHOW_DATE = booleanPreferencesKey("share_card_show_date")
+        val SHARE_CARD_SHOW_TIME = booleanPreferencesKey("share_card_show_time")
+        val SHARE_CARD_SHOW_ROUTE_LINE = booleanPreferencesKey("share_card_show_route_line")
+        val SHARE_CARD_SHOW_MARKERS = booleanPreferencesKey("share_card_show_markers")
+        val SHARE_CARD_SHOW_METRICS_BG = booleanPreferencesKey("share_card_show_metrics_bg")
+        val SHARE_CARD_SHOW_METRICS = booleanPreferencesKey("share_card_show_metrics")
         val ACTIVE_PMTILES_PATH = stringPreferencesKey("active_pmtiles_path")
         val CURRENCY_CODE = stringPreferencesKey("currency_code")
         val POLLING_PROFILE = stringPreferencesKey("polling_profile")
         val GAUGE_SMOOTHING_MODE = stringPreferencesKey("gauge_smoothing_mode")
+        val LIVE_MICRO_MOTION = booleanPreferencesKey("live_micro_motion")
         val FUEL_COASTING_MODE = stringPreferencesKey("fuel_coasting_mode")
         val SPEED_UNIT = stringPreferencesKey("speed_unit")
         val TEMP_UNIT = stringPreferencesKey("temp_unit")
@@ -281,17 +315,36 @@ class AppPreferences(private val context: Context) {
             hudCardStyle = enumOrDefault(prefs[Keys.HUD_CARD_STYLE], HudCardStyle.THEMED),
             hudGridScale = enumOrDefault(prefs[Keys.HUD_GRID_SCALE], HudGridScale.STANDARD_8X4),
             pauseFuelCalculation = prefs[Keys.PAUSE_FUEL] ?: false,
-            dualCellularKeepalive = prefs[Keys.DUAL_CELLULAR] ?: true,
+            dualCellularKeepalive = false,
             mapProvider = enumOrDefault(prefs[Keys.MAP_PROVIDER], MapProvider.OFFLINE_MAPLIBRE),
             mapStylePreset = enumOrDefault(prefs[Keys.MAP_STYLE_PRESET], MapStylePreset.DARK_CONTRAST),
             mapCameraMode = enumOrDefault(prefs[Keys.MAP_CAMERA_MODE], MapCameraMode.NAV_3D_45),
             mapCursorStyle = enumOrDefault(prefs[Keys.MAP_CURSOR_STYLE], MapCursorStyle.SPORT_ARROW),
             highContrastMapRoads = prefs[Keys.HIGH_CONTRAST_MAP_ROADS] ?: true,
             shareCardMetrics = ShareCardMetric.parseStored(prefs[Keys.SHARE_CARD_METRICS]),
+            tripCardConfig = TripCardConfig(
+                backgroundMode = enumOrDefault(prefs[Keys.SHARE_CARD_BG_MODE], ShareCardBackgroundMode.CAR_PHOTO),
+                customPhotoPath = prefs[Keys.SHARE_CARD_CUSTOM_PHOTO]?.takeIf { it.isNotBlank() },
+                aspectRatio = enumOrDefault(prefs[Keys.SHARE_CARD_ASPECT_RATIO], ShareCardAspectRatio.SQUARE_1_1),
+                showSurroundingRoads = prefs[Keys.SHARE_CARD_SURROUNDING_ROADS] ?: false,
+                surroundingRoadsOpacityPct = (prefs[Keys.SHARE_CARD_ROADS_OPACITY_PCT] ?: 25).coerceIn(10, 60),
+                surroundingRoadsMainOnly = prefs[Keys.SHARE_CARD_ROADS_MAIN_ONLY] ?: true,
+                showAppMark = prefs[Keys.SHARE_CARD_SHOW_APP_MARK] ?: true,
+                showVehicleName = prefs[Keys.SHARE_CARD_SHOW_VEHICLE_NAME] ?: true,
+                showVehicleSpecs = prefs[Keys.SHARE_CARD_SHOW_VEHICLE_SPECS] ?: true,
+                showDate = prefs[Keys.SHARE_CARD_SHOW_DATE] ?: true,
+                showTime = prefs[Keys.SHARE_CARD_SHOW_TIME] ?: true,
+                showRouteLine = prefs[Keys.SHARE_CARD_SHOW_ROUTE_LINE] ?: true,
+                showStartEndMarkers = prefs[Keys.SHARE_CARD_SHOW_MARKERS] ?: true,
+                showMetricsPanelBg = prefs[Keys.SHARE_CARD_SHOW_METRICS_BG] ?: true,
+                showMetrics = prefs[Keys.SHARE_CARD_SHOW_METRICS] ?: true,
+                selectedMetrics = ShareCardMetric.parseStored(prefs[Keys.SHARE_CARD_METRICS])
+            ),
             activePmtilesPath = prefs[Keys.ACTIVE_PMTILES_PATH]?.takeIf { it.isNotBlank() },
             currencyCode = prefs[Keys.CURRENCY_CODE] ?: "IDR",
             pollingProfile = enumOrDefault(prefs[Keys.POLLING_PROFILE], PollingProfile.BALANCED),
             gaugeSmoothingMode = enumOrDefault(prefs[Keys.GAUGE_SMOOTHING_MODE], GaugeSmoothingMode.LIGHT_DAMPER),
+            liveMicroMotion = prefs[Keys.LIVE_MICRO_MOTION] ?: false,
             fuelCoastingMode = enumOrDefault(prefs[Keys.FUEL_COASTING_MODE], FuelCoastingMode.REALISTIC_DFCO),
             speedUnit = enumOrDefault(prefs[Keys.SPEED_UNIT], SpeedUnit.KMH),
             tempUnit = enumOrDefault(prefs[Keys.TEMP_UNIT], TempUnit.CELSIUS),
@@ -410,12 +463,43 @@ class AppPreferences(private val context: Context) {
         context.dataStore.edit { it[Keys.SHARE_CARD_METRICS] = ShareCardMetric.serialize(clean) }
     }
 
+    suspend fun saveTripCardConfig(config: TripCardConfig) {
+        val cleanMetrics = config.selectedMetrics.distinct().take(ShareCardMetric.MAX_SELECTED)
+            .ifEmpty { ShareCardMetric.DEFAULT_SELECTION }
+        context.dataStore.edit {
+            it[Keys.SHARE_CARD_BG_MODE] = config.backgroundMode.name
+            if (config.customPhotoPath.isNullOrBlank()) {
+                it.remove(Keys.SHARE_CARD_CUSTOM_PHOTO)
+            } else {
+                it[Keys.SHARE_CARD_CUSTOM_PHOTO] = config.customPhotoPath
+            }
+            it[Keys.SHARE_CARD_ASPECT_RATIO] = config.aspectRatio.name
+            it[Keys.SHARE_CARD_SURROUNDING_ROADS] = config.showSurroundingRoads
+            it[Keys.SHARE_CARD_ROADS_OPACITY_PCT] = config.surroundingRoadsOpacityPct.coerceIn(10, 60)
+            it[Keys.SHARE_CARD_ROADS_MAIN_ONLY] = config.surroundingRoadsMainOnly
+            it[Keys.SHARE_CARD_SHOW_APP_MARK] = config.showAppMark
+            it[Keys.SHARE_CARD_SHOW_VEHICLE_NAME] = config.showVehicleName
+            it[Keys.SHARE_CARD_SHOW_VEHICLE_SPECS] = config.showVehicleSpecs
+            it[Keys.SHARE_CARD_SHOW_DATE] = config.showDate
+            it[Keys.SHARE_CARD_SHOW_TIME] = config.showTime
+            it[Keys.SHARE_CARD_SHOW_ROUTE_LINE] = config.showRouteLine
+            it[Keys.SHARE_CARD_SHOW_MARKERS] = config.showStartEndMarkers
+            it[Keys.SHARE_CARD_SHOW_METRICS_BG] = config.showMetricsPanelBg
+            it[Keys.SHARE_CARD_SHOW_METRICS] = config.showMetrics
+            it[Keys.SHARE_CARD_METRICS] = ShareCardMetric.serialize(cleanMetrics)
+        }
+    }
+
     suspend fun setHighContrastMapRoads(enabled: Boolean) {
         context.dataStore.edit { it[Keys.HIGH_CONTRAST_MAP_ROADS] = enabled }
     }
 
     suspend fun setGaugeSmoothingMode(mode: GaugeSmoothingMode) {
         context.dataStore.edit { it[Keys.GAUGE_SMOOTHING_MODE] = mode.name }
+    }
+
+    suspend fun setLiveMicroMotion(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.LIVE_MICRO_MOTION] = enabled }
     }
 
     suspend fun setFuelCoastingMode(mode: FuelCoastingMode) {
