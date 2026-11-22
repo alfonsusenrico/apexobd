@@ -299,12 +299,13 @@ class FuelEconomyTracker {
         } else null
         val fastWindow = recentDteKpl ?: tripAvg.takeIf { totalFuelLiters > 0.002 && it > 1.0 }
 
-        val dteKpl = computeConservativeDteKpl(
-            allTimeTotalAvgKpl = slowBaseline,
-            recentDteKpl = fastWindow,
-            remainingFuelLiters = estimatedFuelLiters,
-            tankCapacityLiters = profile.tankCapacityLiters
-        )
+        val dteKpl = profile.fullRefuelCycleKpl?.takeIf { it in 1.5..40.0 }
+            ?: computeConservativeDteKpl(
+                allTimeTotalAvgKpl = slowBaseline,
+                recentDteKpl = fastWindow,
+                remainingFuelLiters = estimatedFuelLiters,
+                tankCapacityLiters = profile.tankCapacityLiters
+            )
 
         val estRangeRaw = computeEstimatedRangeKm(
             remainingFuelLiters = estimatedFuelLiters,
@@ -538,15 +539,18 @@ class FuelEconomyTracker {
         }
 
         /**
-         * Cumulative-anchored DTE fuel economy: weights lifetime all-time economy `80%` on a high tank
-         * (rising to `55%` below quarter tank) and prevents highway spikes from inflating high-tank estimates.
+         * Cumulative-anchored DTE fuel economy: prefers recorded Full-to-Full Refuel Cycle KPL when present,
+         * otherwise weights lifetime all-time economy `80%` on a high tank (rising to `55%` below quarter tank).
          */
         fun computeConservativeDteKpl(
             allTimeTotalAvgKpl: Double?,
             recentDteKpl: Double?,
             remainingFuelLiters: Double,
-            tankCapacityLiters: Double
+            tankCapacityLiters: Double,
+            fullRefuelCycleKpl: Double? = null
         ): Double? {
+            val cycle = fullRefuelCycleKpl?.takeIf { it in 1.5..40.0 }
+            if (cycle != null) return cycle
             val slow = allTimeTotalAvgKpl?.takeIf { it > 1.0 }?.coerceIn(1.5, 40.0)
             val fast = recentDteKpl?.takeIf { it > 1.0 }?.coerceIn(1.5, 24.0)
             return when {

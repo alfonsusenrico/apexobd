@@ -67,6 +67,10 @@ data class VehicleProfileEntity(
     val allTimeTotalFuelLiters: Double = 0.0,
     val fuelUsedSinceFullRefuelLiters: Double = 0.0,
     val recentDteKpl: Double? = null,
+    val fullRefuelCycleKpl: Double? = null,
+    val ecuDistanceBaselineKm: Double? = null,
+    val odometerAtBaselineKm: Double? = null,
+    val lastSeenEcuDistanceKm: Double? = null,
     val supportedPidsCsv: String = "",
     val best0100Sec: Double? = null,
     val isActive: Boolean = false
@@ -96,8 +100,22 @@ data class VehicleProfileEntity(
         allTimeTotalFuelLiters = if (allTimeTotalFuelLiters > 0.005) allTimeTotalFuelLiters else allTimeRoadFuelLiters,
         fuelUsedSinceFullRefuelLiters = fuelUsedSinceFullRefuelLiters,
         recentDteKpl = recentDteKpl,
+        fullRefuelCycleKpl = fullRefuelCycleKpl,
         best0To100Sec = best0100Sec
     )
+
+    fun hasNativeFuelSensor(): Boolean {
+        val pids = savedSupportedPids()
+        return "2F" in pids || com.apexobd.core.protocol.ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in pids
+    }
+
+    fun hasNativeClusterOdometer(): Boolean {
+        val pids = savedSupportedPids()
+        return com.apexobd.core.protocol.ToyotaMeterCapabilities.TOKEN_ODOMETER in pids
+    }
+
+    fun isEcuDistanceCalibrated(): Boolean =
+        ecuDistanceBaselineKm != null && odometerAtBaselineKm != null
 
     fun specSummaryLine(): String {
         val ccVal = if (engineCc > 0) engineCc else (displacementLiters * 1000.0).toInt()
@@ -141,6 +159,7 @@ data class RefuelLogEntity(
     val ronValue: Int? = null,
     val fuelName: String? = null,
     val cycleDistanceKm: Double? = null,
+    val cycleFuelLiters: Double? = null,
     val cycleAvgKpl: Double? = null,
     val isFullTank: Boolean = true
 )
@@ -269,6 +288,9 @@ interface VehicleDao {
     @Query("SELECT * FROM refuel_logs WHERE vehicleId = :vehicleId ORDER BY timestampMs DESC")
     fun observeRefuelsForVehicle(vehicleId: Long): Flow<List<RefuelLogEntity>>
 
+    @Query("SELECT * FROM refuel_logs WHERE vehicleId = :vehicleId ORDER BY odometerKm DESC, timestampMs DESC")
+    suspend fun getRefuelsForVehicleOnce(vehicleId: Long): List<RefuelLogEntity>
+
     @Query("SELECT * FROM refuel_logs WHERE vehicleId = :vehicleId ORDER BY odometerKm DESC, timestampMs DESC LIMIT 1")
     suspend fun getLatestRefuelForVehicle(vehicleId: Long): RefuelLogEntity?
 
@@ -376,7 +398,7 @@ interface TripDao {
         TripSessionEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -512,6 +534,16 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN fullRefuelCycleKpl REAL")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN ecuDistanceBaselineKm REAL")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN odometerAtBaselineKm REAL")
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN lastSeenEcuDistanceKm REAL")
+                db.execSQL("ALTER TABLE refuel_logs ADD COLUMN cycleFuelLiters REAL")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -528,7 +560,8 @@ abstract class ApexDatabase : RoomDatabase() {
                     MIGRATION_4_5,
                     MIGRATION_5_6,
                     MIGRATION_6_7,
-                    MIGRATION_7_8
+                    MIGRATION_7_8,
+                    MIGRATION_8_9
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {

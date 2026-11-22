@@ -115,6 +115,7 @@ fun HomeMenuScreen(
     val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val backgroundServiceActive by viewModel.backgroundServiceActive.collectAsStateWithLifecycle()
+    val ecuDistanceSinceClearKm by viewModel.ecuDistanceSinceClearKm.collectAsStateWithLifecycle()
 
     var activeSheet by remember { mutableStateOf(ActiveHomeSheet.NONE) }
     var startAddingNewVehicle by remember { mutableStateOf(false) }
@@ -140,7 +141,8 @@ fun HomeMenuScreen(
             allTimeTotalAvgKpl = allTimeAvgKpl.takeIf { it > 0.1 },
             recentDteKpl = v.recentDteKpl?.takeIf { it > 0.1 },
             remainingFuelLiters = v.estimatedRemainingFuelLiters,
-            tankCapacityLiters = v.tankCapacityLiters
+            tankCapacityLiters = v.tankCapacityLiters,
+            fullRefuelCycleKpl = v.fullRefuelCycleKpl?.takeIf { it > 0.1 }
         )
     }
     val (dispAvg, avgSym) = UnitConverter.convertFuelEconomy(allTimeAvgKpl, unitPrefs, fuelType)
@@ -619,8 +621,13 @@ fun HomeMenuScreen(
             activeVehicle = activeVehicle,
             unitPrefs = unitPrefs,
             startAddingNew = startAddingNewVehicle,
+            connectionState = connectionState,
+            liveEcuDistanceSinceClearKm = ecuDistanceSinceClearKm,
             onSelectVehicle = { viewModel.selectVehicle(it) },
             onPickPhoto = { uri, cb -> viewModel.copyPickedVehiclePhoto(uri, cb) },
+            onCalibrateBaseline = { vehicleId, odoDisp, fuelDisp ->
+                viewModel.calibrateVehicleBaseline(vehicleId, odoDisp, fuelDisp)
+            },
             onSaveVehicle = { existing, n, cc, bt, tr, yr, photo, w, ft, cap, rem, odo, red, trim ->
                 viewModel.saveVehicleProfile(existing, n, cc, bt, tr, yr, photo, w, ft, cap, rem, odo, red, trim)
             },

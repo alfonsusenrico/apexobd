@@ -37,7 +37,8 @@ data class DiagnosticReport(
     val pending: List<DtcItem>,
     val permanent: List<DtcItem>,
     val readiness: ReadinessStatus?,
-    val freezeFrame: FreezeFrameSnapshot?
+    val freezeFrame: FreezeFrameSnapshot?,
+    val ecuResponded: Boolean = true
 )
 
 object DtcDecoder {
@@ -89,16 +90,25 @@ object DtcDecoder {
 
     /**
      * Parses responses from Mode 03 (0x43), Mode 07 (0x47), or Mode 0A (0x4A).
-     * Handles both CAN format (includes DTC count byte after mode byte) and legacy 2-byte pairs.
+     * Handles single-frame CAN (`43 01 01 71`), legacy 2-byte pairs (`43 01 71`),
+     * and ISO-TP multi-frame (`014` / `0: 43 06 01 71 01 74` / `1: 03 00 ...`) responses.
      */
     fun parseDtcResponse(lines: List<String>, expectedModeResp: Int, category: DtcCategory): List<DtcItem> {
         val codes = linkedSetOf<String>()
-        for (line in lines) {
-            val bytes = Elm327Client.parseHexBytes(line)
-            if (bytes.size < 2 || bytes[0] != expectedModeResp) continue
-            val afterMode = bytes.drop(1)
-            // In CAN (ISO 15765-4), byte 1 is DTC count when remaining length is odd (count + 2*N bytes)
-            val dtcBytes = if (afterMode.size % 2 == 1) afterMode.drop(1) else afterMode
+        val hasMultiFramePrefix = lines.any { it.contains(":") }
+        val byteStreams: List<List<Int>> = if (hasMultiFramePrefix) {
+            listOf(Elm327Client.flattenIsoTpBytes(lines))
+        } else {
+            lines.map { Elm327Client.parseHexBytes(it) }.filter { it.isNotEmpty() }
+        }
+        for (bytes in byteStreams) {
+            val modeIdx = bytes.indexOf(expectedModeResp)
+            if (modeIdx == -1 || modeIdx >= bytes.lastIndex) continue
+            val afterMode = bytes.drop(modeIdx + 1)
+            if (afterMode.isEmpty()) continue
+            // In CAN (ISO 15765-4), byte 0 after mode is DTC count when remaining length is odd
+            // or when multi-frame ISO-TP framing is used (`43 <count> <H1> <L1> ...`).
+            val dtcBytes = if (afterMode.size % 2 == 1 || hasMultiFramePrefix) afterMode.drop(1) else afterMode
             for (i in 0 until dtcBytes.size - 1 step 2) {
                 val code = decodeTwoByteDtc(dtcBytes[i], dtcBytes[i + 1]) ?: continue
                 codes.add(code)
@@ -108,7 +118,21 @@ object DtcDecoder {
     }
 
     fun parseReadiness(lines: List<String>): ReadinessStatus? {
-        val payload = Elm327Client.extractPidPayload(lines, 0x41, 0x01) ?: return null
+        val payload = Elm327Client.extractPidPayload(lines, 0x41, 0x01)
+            ?: extractToyotaMode2106ReadinessPayload(lines)
+            ?: return null
+        return parseReadinessPayload(payload)
+    }
+
+    private fun extractToyotaMode2106ReadinessPayload(lines: List<String>): List<Int>? {
+        val flat = Elm327Client.flattenIsoTpBytes(lines)
+        if (flat.size >= 6 && flat[0] == 0x61 && flat[1] == 0x06) {
+            return flat.subList(2, 6)
+        }
+        return Elm327Client.extractPidPayload(lines, 0x61, 0x06)?.takeIf { it.size >= 4 }?.take(4)
+    }
+
+    fun parseReadinessPayload(payload: List<Int>): ReadinessStatus? {
         if (payload.size < 4) return null
         val a = payload[0]
         val b = payload[1]
@@ -179,25 +203,67 @@ object DtcDecoder {
     }
 
     suspend fun scanAll(client: Elm327Client): DiagnosticReport {
+        var anyResponded = false
         val confirmed = when (val r = client.execute("03")) {
-            is ObdCommandResult.Success -> parseDtcResponse(r.lines, 0x43, DtcCategory.CONFIRMED)
+            is ObdCommandResult.Success -> {
+                anyResponded = true
+                parseDtcResponse(r.lines, 0x43, DtcCategory.CONFIRMED)
+            }
             else -> emptyList()
         }
         val pending = when (val r = client.execute("07")) {
-            is ObdCommandResult.Success -> parseDtcResponse(r.lines, 0x47, DtcCategory.PENDING)
+            is ObdCommandResult.Success -> {
+                anyResponded = true
+                parseDtcResponse(r.lines, 0x47, DtcCategory.PENDING)
+            }
             else -> emptyList()
         }
         val permanent = when (val r = client.execute("0A")) {
-            is ObdCommandResult.Success -> parseDtcResponse(r.lines, 0x4A, DtcCategory.PERMANENT)
+            is ObdCommandResult.Success -> {
+                anyResponded = true
+                parseDtcResponse(r.lines, 0x4A, DtcCategory.PERMANENT)
+            }
             else -> emptyList()
         }
-        val readiness = when (val r = client.execute("0101")) {
-            is ObdCommandResult.Success -> parseReadiness(r.lines)
+        var readiness = when (val r = client.execute("0101")) {
+            is ObdCommandResult.Success -> {
+                val parsed = parseReadiness(r.lines)
+                if (parsed != null) anyResponded = true
+                parsed
+            }
             else -> null
+        }
+        // Fallback for Toyota/Daihatsu K3-VE ECUs that omit 0101 in Mode 01 but expose SAE 0101 bytes under Mode 2106
+        if (readiness == null) {
+            when (val r2106 = client.execute("2106", timeoutMs = 900L)) {
+                is ObdCommandResult.Success -> {
+                    val parsed = parseReadiness(r2106.lines)
+                    if (parsed != null) {
+                        anyResponded = true
+                        readiness = parsed
+                    }
+                }
+                else -> Unit
+            }
+        }
+        if (!anyResponded) {
+            val liveness = client.execute("0100", timeoutMs = 1000L)
+            if (liveness is ObdCommandResult.Success &&
+                Elm327Client.extractPidPayload(liveness.lines, 0x41, 0x00) != null
+            ) {
+                anyResponded = true
+            }
         }
 
         val freezeFrame = readFreezeFrame(client)
-        return DiagnosticReport(confirmed, pending, permanent, readiness, freezeFrame)
+        return DiagnosticReport(
+            confirmed = confirmed,
+            pending = pending,
+            permanent = permanent,
+            readiness = readiness,
+            freezeFrame = freezeFrame,
+            ecuResponded = anyResponded
+        )
     }
 
     private suspend fun readFreezeFrame(client: Elm327Client): FreezeFrameSnapshot? {
@@ -223,10 +289,27 @@ object DtcDecoder {
     }
 
     suspend fun clearDtcs(client: Elm327Client): Boolean {
-        return when (client.execute("04", timeoutMs = 3500L)) {
-            is ObdCommandResult.Success -> true
-            else -> false
+        val primary = client.execute("04", timeoutMs = 3500L)
+        if (primary is ObdCommandResult.Success && isPositiveClearResponse(primary.lines)) {
+            return true
         }
+        // Some CAN ECUs require physical ECM addressing (7E0 -> 7E8) for Mode 04 clear
+        return try {
+            client.execute("ATSH7E0", timeoutMs = 800L)
+            val fallback = client.execute("04", timeoutMs = 3500L)
+            fallback is ObdCommandResult.Success && isPositiveClearResponse(fallback.lines)
+        } finally {
+            client.execute("ATSH7DF", timeoutMs = 800L)
+        }
+    }
+
+    private fun isPositiveClearResponse(lines: List<String>): Boolean {
+        for (line in lines) {
+            val bytes = Elm327Client.parseHexBytes(line)
+            if (bytes.isNotEmpty() && bytes[0] == 0x44) return true
+            if (line.trim().equals("OK", ignoreCase = true)) return true
+        }
+        return false
     }
 
     suspend fun readVin(client: Elm327Client): String? {

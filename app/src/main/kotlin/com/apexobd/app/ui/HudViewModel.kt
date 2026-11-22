@@ -187,7 +187,10 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     val offlineMapManager = OfflineMapManager(application)
 
     private var engine: ObdPollingEngine? = null
+    @Volatile
     private var activeEngineVehicleId: Long? = null
+    @Volatile
+    private var connectedDiscoveryVehicleId: Long? = null
     private var engineCollectorsJob: Job? = null
     private var loggingJob: Job? = null
     private val timer0100Tracker = Timer0100Tracker()
@@ -296,6 +299,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     private val _fuelMetrics = MutableStateFlow<FuelMetricsSnapshot?>(null)
     val fuelMetrics: StateFlow<FuelMetricsSnapshot?> = _fuelMetrics.asStateFlow()
 
+    private val _ecuDistanceSinceClearKm = MutableStateFlow<Double?>(null)
+    val ecuDistanceSinceClearKm: StateFlow<Double?> = _ecuDistanceSinceClearKm.asStateFlow()
+
     private val _historyBuffers = MutableStateFlow<Map<String, List<Double>>>(emptyMap())
     val historyBuffers: StateFlow<Map<String, List<Double>>> = _historyBuffers.asStateFlow()
 
@@ -385,6 +391,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     _diagnosticError.value = null
                     _vin.value = null
                     _fuelMetrics.value = null
+                    _ecuDistanceSinceClearKm.value = null
                 }
                 val currentEngine = engine ?: return@collect
                 if (v != null) {
@@ -422,17 +429,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         // Keep OBD adapter connected whenever the background listener service is active (Home, HUD, or background)
         viewModelScope.launch {
             combine(
-                _backgroundServiceActive,
-                _onHudScreen,
-                _isRecording,
+                combine(_backgroundServiceActive, _onHudScreen, _isRecording) { s, h, r -> Triple(s, h, r) },
                 _isAppInForeground,
+                _connectionState,
                 settings
-            ) { serviceActive, onHud, recording, inForeground, st ->
+            ) { (serviceActive, onHud, recording), inForeground, connState, st ->
                 BackgroundLifecycleState(
                     serviceActive = serviceActive,
                     onHud = onHud,
                     recording = recording,
                     inForeground = inForeground,
+                    isObdConnected = connState is ConnectionState.Connected,
                     settings = st
                 )
             }.collect { state ->
@@ -440,20 +447,24 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 val isWifiAdapter = st.connectionType == ObdConnectionType.WIFI_TCP
                 engine?.setFuelCalculationPaused(st.pauseFuelCalculation)
                 engine?.setPollingProfile(st.pollingProfile)
+                // Only hold PARTIAL_WAKE_LOCK and low-latency WifiLock when actively connected to the vehicle
+                // or recording a trip, so Android SystemSuspend can enter Deep Sleep while disconnected.
+                val holdActiveLocks = state.serviceActive && (state.isObdConnected || state.recording)
                 wifiBinder.setLowLatencyLocks(
-                    wifiLockEnabled = state.serviceActive && isWifiAdapter,
-                    wakeLockEnabled = state.serviceActive
+                    wifiLockEnabled = holdActiveLocks && isWifiAdapter,
+                    wakeLockEnabled = holdActiveLocks
                 )
-                locationTracker.setPreferPureGnss(state.serviceActive && isWifiAdapter)
+                locationTracker.setPreferPureGnss(state.serviceActive && isWifiAdapter && state.isObdConnected)
 
                 if (state.serviceActive) {
+                    val needsLocationFgs = state.recording || (state.onHud && state.inForeground)
                     if (!LoggingForegroundService.isRunning && (state.inForeground || state.recording)) {
                         val (title, text) = buildBackgroundNotificationText(
                             connectionState = _connectionState.value,
                             isRecording = state.recording,
                             endpoint = st.adapterDetailedEndpoint()
                         )
-                        LoggingForegroundService.start(getApplication(), title, text)
+                        LoggingForegroundService.start(getApplication(), title, text, needsLocation = needsLocationFgs)
                     }
                     val needsImu = (state.onHud && state.inForeground) || state.recording
                     if (needsImu) accelTracker.start() else accelTracker.stop()
@@ -485,13 +496,25 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
         // Keep foreground notification text synchronized with live connection & recording status
         viewModelScope.launch {
-            combine(_backgroundServiceActive, _connectionState, _isRecording, settings) { active, conn, rec, st ->
-                Triple(active, rec, conn to st.adapterDetailedEndpoint())
-            }.collect { (active, rec, pair) ->
+            combine(
+                combine(_backgroundServiceActive, _onHudScreen, _isAppInForeground) { a, h, fg -> Triple(a, h, fg) },
+                _connectionState,
+                _isRecording,
+                settings
+            ) { (active, onHud, inFg), conn, rec, st ->
+                val needsLocationFgs = rec || (onHud && inFg)
+                Triple(active to needsLocationFgs, rec, conn to st.adapterDetailedEndpoint())
+            }.collect { (activeAndLoc, rec, pair) ->
+                val (active, needsLocationFgs) = activeAndLoc
                 if (!active) return@collect
                 val (conn, endpoint) = pair
                 val (title, text) = buildBackgroundNotificationText(conn, rec, endpoint)
-                LoggingForegroundService.updateIfRunning(getApplication(), title, text)
+                LoggingForegroundService.updateIfRunning(
+                    context = getApplication(),
+                    title = title,
+                    text = text,
+                    needsLocation = needsLocationFgs
+                )
             }
         }
 
@@ -608,6 +631,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onAppForegrounded() {
         _isAppInForeground.value = true
+        engine?.triggerImmediateReconnect()
         if (!_backgroundServiceActive.value) {
             resumeBackgroundService()
         } else if (!LoggingForegroundService.isRunning) {
@@ -616,7 +640,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 isRecording = _isRecording.value,
                 endpoint = settings.value.adapterDetailedEndpoint()
             )
-            LoggingForegroundService.start(getApplication(), title, text)
+            LoggingForegroundService.start(
+                getApplication(),
+                title,
+                text,
+                needsLocation = _isRecording.value || _onHudScreen.value
+            )
         }
     }
 
@@ -631,18 +660,29 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 isRecording = _isRecording.value,
                 endpoint = settings.value.adapterDetailedEndpoint()
             )
-            LoggingForegroundService.start(getApplication(), title, text)
+            LoggingForegroundService.start(
+                getApplication(),
+                title,
+                text,
+                needsLocation = _isRecording.value || (_onHudScreen.value && _isAppInForeground.value)
+            )
         }
     }
 
     fun resumeBackgroundService() {
         _backgroundServiceActive.value = true
+        engine?.triggerImmediateReconnect()
         val (title, text) = buildBackgroundNotificationText(
             connectionState = _connectionState.value,
             isRecording = _isRecording.value,
             endpoint = settings.value.adapterDetailedEndpoint()
         )
-        LoggingForegroundService.start(getApplication(), title, text)
+        LoggingForegroundService.start(
+            getApplication(),
+            title,
+            text,
+            needsLocation = _isRecording.value || (_onHudScreen.value && _isAppInForeground.value)
+        )
     }
 
     fun terminateBackgroundService() {
@@ -663,10 +703,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             "ApexOBD Background Listener"
         }
+        // Use a stable status string without per-attempt retry counters (#1, #2, ...) so
+        // NotificationManagerService is only invoked on actual state transitions.
         val stateText = when (connectionState) {
             is ConnectionState.Connected -> "Connected ($endpoint)"
-            is ConnectionState.Connecting -> "Connecting to $endpoint"
-            is ConnectionState.Reconnecting -> "Reconnecting #${connectionState.attempt} ($endpoint)"
+            is ConnectionState.Connecting,
+            is ConnectionState.Reconnecting -> "Waiting for adapter ($endpoint)"
             is ConnectionState.Disconnected -> "Listener active ($endpoint)"
         }
         val body = "$stateText · Active in background · Tap to stop"
@@ -749,6 +791,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             var scanFailed = false
             val st = settings.value
+            val activeDuringScanId = activeVehicle.value?.id
             val dumpText = transportMutex.withLock {
                 engineCollectorsJob?.cancel()
                 engineCollectorsJob = null
@@ -772,6 +815,25 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     "DEEP ECU SCAN ERROR: ${t.message}\n${t.stackTraceToString()}"
                 } finally {
                     runCatching { transport.disconnect() }
+                }
+            }
+            if (!scanFailed) {
+                val r2131Match = Regex("""7E0 2131 -> 6131([0-9A-Fa-f]{4})""").find(dumpText)
+                val distKmFromDump = r2131Match?.groupValues?.getOrNull(1)?.toIntOrNull(16)?.toDouble()
+                val activeId = activeDuringScanId ?: activeVehicle.value?.id
+                if (distKmFromDump != null && activeId != null) {
+                    _ecuDistanceSinceClearKm.value = distKmFromDump
+                    val cur = vehicleDao.getById(activeId)
+                    if (cur != null) {
+                        val nextPids = (cur.savedSupportedPids() + ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131).sorted().joinToString(",")
+                        vehicleDao.updateVehicle(
+                            cur.copy(
+                                supportedPidsCsv = nextPids,
+                                lastSeenEcuDistanceKm = distKmFromDump
+                            )
+                        )
+                        applyCalibratedEcuDistanceUpdate(distKmFromDump)
+                    }
                 }
             }
             java.io.File(getApplication<Application>().filesDir, "ecu_dump.txt").writeText(dumpText)
@@ -848,6 +910,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val transport = buildTransport(s)
         val currentVehicle = activeVehicle.value
         activeEngineVehicleId = currentVehicle?.id
+        connectedDiscoveryVehicleId = currentVehicle?.id
         val newEngine = ObdPollingEngine(transport, viewModelScope)
         newEngine.setPollingProfile(s.pollingProfile)
         newEngine.setFuelCoastingMode(s.fuelCoastingMode)
@@ -872,24 +935,34 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         newEngine.setBackgroundRecordKeys(if (_isRecording.value) RECORDING_EXTRA_KEYS else emptySet())
 
         engineCollectorsJob = viewModelScope.launch {
-            launch { newEngine.connectionState.collect { _connectionState.value = it } }
+            launch {
+                newEngine.connectionState.collect { st ->
+                    if (st is ConnectionState.Connected) {
+                        connectedDiscoveryVehicleId = activeVehicle.value?.id ?: activeEngineVehicleId
+                    }
+                    _connectionState.value = st
+                }
+            }
             launch {
                 newEngine.supportedPids.collect { pids ->
-                    val targetId = activeEngineVehicleId
+                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
                     val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
                     val prevSaved = cur?.savedSupportedPids().orEmpty()
-                    val prevMode01 = prevSaved.filterNot { it.startsWith("7C0_") }.toSet()
-                    val curMode01 = pids.filterNot { it.startsWith("7C0_") }.toSet()
+                    val isOemToken: (String) -> Boolean = { it.startsWith("7C0_") || it.startsWith("7E0_") }
+                    val prevMode01 = prevSaved.filterNot(isOemToken).toSet()
+                    val curMode01 = pids.filterNot(isOemToken).toSet()
                     val mergedPids = if (curMode01.isNotEmpty() && curMode01 == prevMode01) {
-                        // Keep previously confirmed 7C0 meter capabilities if a brief reconnect happened while cluster slept.
-                        pids + prevSaved.filter { it.startsWith("7C0_") }
+                        // Keep previously confirmed 7C0/7E0 OEM capabilities if a brief reconnect happened while cluster slept.
+                        pids + prevSaved.filter(isOemToken)
                     } else {
                         pids
                     }
-                    _supportedPids.value = mergedPids
-                    if (mergedPids.isNotEmpty()) {
+                    if (activeVehicle.value?.id == targetId || _connectionState.value is ConnectionState.Connected) {
+                        _supportedPids.value = mergedPids
+                    }
+                    if (mergedPids.isNotEmpty() && cur != null) {
                         val csv = mergedPids.sorted().joinToString(",")
-                        if (cur != null && cur.supportedPidsCsv != csv) {
+                        if (cur.supportedPidsCsv != csv) {
                             vehicleDao.updateVehicle(cur.copy(supportedPidsCsv = csv))
                         }
                     }
@@ -900,8 +973,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             launch { newEngine.avgLatencyMs.collect { _avgLatencyMs.value = it } }
             launch {
                 newEngine.ecuOdometerKm.collect { ecuOdo ->
-                    if (ecuOdo != null && ecuOdo in 1.0..999_999.0) {
-                        val targetId = activeEngineVehicleId
+                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (ecuOdo != null && ecuOdo in 1.0..999_999.0 && targetId == activeEngineVehicleId) {
                         val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
                         if (cur != null && kotlin.math.abs(cur.allTimeOdometerKm - ecuOdo) >= 1.0) {
                             vehicleDao.updateVehicle(cur.copy(allTimeOdometerKm = ecuOdo))
@@ -911,14 +984,25 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             }
             launch {
                 newEngine.ecuFuelLiters.collect { ecuLiters ->
-                    if (ecuLiters != null && ecuLiters >= 0.0) {
-                        val targetId = activeEngineVehicleId
+                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (ecuLiters != null && ecuLiters >= 0.0 && targetId == activeEngineVehicleId) {
                         val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
                         if (cur != null) {
                             val clamped = ecuLiters.coerceIn(0.0, cur.tankCapacityLiters)
                             if (kotlin.math.abs(cur.estimatedRemainingFuelLiters - clamped) >= 0.25) {
                                 vehicleDao.updateVehicle(cur.copy(estimatedRemainingFuelLiters = clamped))
                             }
+                        }
+                    }
+                }
+            }
+            launch {
+                newEngine.ecuDistanceSinceClearKm.collect { ecuDistKm ->
+                    val targetId = connectedDiscoveryVehicleId ?: activeEngineVehicleId
+                    if (targetId == activeEngineVehicleId) {
+                        _ecuDistanceSinceClearKm.value = ecuDistKm
+                        if (ecuDistKm != null && ecuDistKm >= 0.0) {
+                            applyCalibratedEcuDistanceUpdate(ecuDistKm)
                         }
                     }
                 }
@@ -962,12 +1046,96 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         newEngine.start()
     }
 
+    private suspend fun applyCalibratedEcuDistanceUpdate(ecuDistKm: Double) {
+        val targetId = activeEngineVehicleId
+        val cur = if (targetId != null) vehicleDao.getById(targetId) else activeVehicle.value
+        if (cur == null || cur.hasNativeClusterOdometer()) return
+
+        val baseEcu = cur.ecuDistanceBaselineKm
+        val baseOdo = cur.odometerAtBaselineKm
+        if (baseEcu == null || baseOdo == null) {
+            if (cur.lastSeenEcuDistanceKm != ecuDistKm) {
+                vehicleDao.updateVehicle(cur.copy(lastSeenEcuDistanceKm = ecuDistKm))
+            }
+            return
+        }
+
+        val lastSeen = cur.lastSeenEcuDistanceKm
+        // Rollover / reset protection: if 0131/2131 dropped after Mode 04 clear or 12V battery reset,
+        // re-anchor the baseline to the current odometer so no accumulated mileage is lost.
+        if (lastSeen != null && ecuDistKm < lastSeen - 0.5) {
+            val reanchored = cur.copy(
+                odometerAtBaselineKm = cur.allTimeOdometerKm,
+                ecuDistanceBaselineKm = ecuDistKm,
+                lastSeenEcuDistanceKm = ecuDistKm
+            )
+            vehicleDao.updateVehicle(reanchored)
+            return
+        }
+
+        val targetOdoKm = baseOdo + (ecuDistKm - baseEcu).coerceAtLeast(0.0)
+        val unloggedKm = targetOdoKm - cur.allTimeOdometerKm
+        var nextOdoKm = maxOf(cur.allTimeOdometerKm, targetOdoKm)
+        var nextRemFuelL = cur.estimatedRemainingFuelLiters
+
+        if (!cur.hasNativeFuelSensor() && unloggedKm >= 0.8) {
+            val catchUpKpl = cur.fullRefuelCycleKpl?.takeIf { it in 1.5..40.0 }
+                ?: cur.allTimeAvgKpl().takeIf { it in 1.5..40.0 }
+                ?: cur.recentDteKpl?.takeIf { it in 1.5..40.0 }
+                ?: 11.5
+            val unloggedFuelBurnedL = (unloggedKm / catchUpKpl).coerceAtLeast(0.0)
+            nextRemFuelL = (cur.estimatedRemainingFuelLiters - unloggedFuelBurnedL).coerceIn(0.0, cur.tankCapacityLiters)
+        }
+
+        if (kotlin.math.abs(nextOdoKm - cur.allTimeOdometerKm) >= 0.1 ||
+            kotlin.math.abs(nextRemFuelL - cur.estimatedRemainingFuelLiters) >= 0.05 ||
+            cur.lastSeenEcuDistanceKm != ecuDistKm
+        ) {
+            val updated = cur.copy(
+                allTimeOdometerKm = nextOdoKm,
+                estimatedRemainingFuelLiters = nextRemFuelL,
+                lastSeenEcuDistanceKm = ecuDistKm
+            )
+            vehicleDao.updateVehicle(updated)
+            engine?.fuelTracker?.syncManualProfileCounters(updated.toCoreModel())
+            engine?.setVehicleProfile(updated.toCoreModel())
+        }
+    }
+
+    fun calibrateVehicleBaseline(
+        vehicleId: Long,
+        confirmedOdometerDisplay: Double,
+        confirmedFuelDisplay: Double
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val cur = vehicleDao.getById(vehicleId) ?: activeVehicle.value ?: return@launch
+            val st = settings.value
+            val unitPrefs = st.toUnitPreferences()
+            val fuelType = runCatching { FuelType.valueOf(cur.fuelType) }.getOrDefault(FuelType.GASOLINE)
+            val confirmedOdoKm = toInternalDistanceKm(confirmedOdometerDisplay, unitPrefs).coerceAtLeast(0.0)
+            val confirmedFuelL = toInternalVolume(confirmedFuelDisplay, fuelType, unitPrefs)
+                .coerceIn(0.0, cur.tankCapacityLiters)
+            val ecuDistNow = _ecuDistanceSinceClearKm.value ?: cur.lastSeenEcuDistanceKm ?: 0.0
+
+            val updated = cur.copy(
+                allTimeOdometerKm = confirmedOdoKm,
+                estimatedRemainingFuelLiters = confirmedFuelL,
+                ecuDistanceBaselineKm = ecuDistNow,
+                odometerAtBaselineKm = confirmedOdoKm,
+                lastSeenEcuDistanceKm = ecuDistNow
+            )
+            vehicleDao.updateVehicle(updated)
+            engine?.fuelTracker?.syncManualProfileCounters(updated.toCoreModel())
+            engine?.setVehicleProfile(updated.toCoreModel())
+        }
+    }
+
     private suspend fun persistFuelMetricsToProfile(fm: FuelMetricsSnapshot) {
         val targetId = activeEngineVehicleId ?: return
         val current = vehicleDao.getById(targetId) ?: return
         vehicleDao.updateVehicle(
             current.copy(
-                allTimeOdometerKm = fm.allTimeOdometerKm,
+                allTimeOdometerKm = maxOf(current.allTimeOdometerKm, fm.allTimeOdometerKm),
                 allTimeRoadDistanceKm = fm.allTimeRoadDistanceKm,
                 allTimeRoadFuelLiters = fm.allTimeRoadFuelLiters,
                 allTimeTotalDistanceKm = fm.allTimeTotalDistanceKm,
@@ -1036,7 +1204,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 val result = DtcDecoder.scanAll(client)
                 _diagnosticReport.value = result
                 if (_vin.value == null) _vin.value = DtcDecoder.readVin(client)
-                if (result.confirmed.isEmpty() && result.pending.isEmpty() && result.permanent.isEmpty() && result.readiness == null) {
+                if (!result.ecuResponded && result.confirmed.isEmpty() && result.pending.isEmpty() && result.permanent.isEmpty() && result.readiness == null) {
                     _diagnosticError.value = "ECU did not respond to diagnostic query. Ensure ignition is ON."
                 }
             } catch (e: CancellationException) {
@@ -1070,6 +1238,20 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 _diagnosticError.value = null
                 if (DtcDecoder.clearDtcs(client)) {
+                    // Mode 04 resets 0131 / 7E0 2131 Distance Since Codes Cleared to 0 km;
+                    // re-anchor any calibrated vehicle baseline to its current odometer so no mileage is lost.
+                    val targetId = activeEngineVehicleId ?: activeVehicle.value?.id
+                    val cur = targetId?.let { vehicleDao.getById(it) }
+                    if (cur != null && cur.isEcuDistanceCalibrated()) {
+                        vehicleDao.updateVehicle(
+                            cur.copy(
+                                odometerAtBaselineKm = cur.allTimeOdometerKm,
+                                ecuDistanceBaselineKm = 0.0,
+                                lastSeenEcuDistanceKm = 0.0
+                            )
+                        )
+                    }
+                    _ecuDistanceSinceClearKm.value = 0.0
                     _diagnosticReport.value = DtcDecoder.scanAll(client)
                 } else {
                     _diagnosticError.value = "Mode 04 clear command was rejected or timed out."
@@ -1109,7 +1291,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             isRecording = true,
             endpoint = settings.value.adapterDetailedEndpoint()
         )
-        LoggingForegroundService.start(getApplication(), title, text)
+        LoggingForegroundService.start(getApplication(), title, text, needsLocation = true)
 
         loggingJob = viewModelScope.launch(Dispatchers.IO) {
             val vehicleId = activeVehicle.value?.id ?: 1L
@@ -1593,9 +1775,24 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val volumeL = toInternalVolume(volumeDisplayUnit, fuelType, unitPrefs)
             val odoKm = toInternalDistanceKm(odometerDisplayUnit, unitPrefs)
 
-            val prev = vehicleDao.getLatestRefuelForVehicle(vehicle.id)
-            val cycleDist = prev?.let { (odoKm - it.odometerKm).takeIf { d -> d > 0.0 } }
-            val cycleAvgKpl = if (cycleDist != null && volumeL > 0.0) (cycleDist / volumeL).coerceIn(0.0, 99.9) else null
+            val history = vehicleDao.getRefuelsForVehicleOnce(vehicle.id)
+            val prevFull = history.firstOrNull { it.isFullTank }
+            val partialsSincePrevFullL = if (prevFull != null) {
+                history.filter { !it.isFullTank && it.timestampMs > prevFull.timestampMs }
+                    .sumOf { it.volumeLiters }
+            } else {
+                0.0
+            }
+
+            val cycleDist = if (isFullTank && prevFull != null) {
+                (odoKm - prevFull.odometerKm).takeIf { d -> d > 0.5 }
+            } else null
+            val totalCycleFuelL = if (isFullTank && cycleDist != null) {
+                (partialsSincePrevFullL + volumeL).takeIf { it > 0.1 }
+            } else null
+            val cycleAvgKpl = if (cycleDist != null && totalCycleFuelL != null) {
+                (cycleDist / totalCycleFuelL).coerceIn(0.5, 99.9)
+            } else null
 
             vehicleDao.insertRefuel(
                 RefuelLogEntity(
@@ -1608,12 +1805,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     ronValue = ronValue?.takeIf { fuelType == FuelType.GASOLINE && it > 0 },
                     fuelName = fuelName?.trim()?.takeIf { it.isNotBlank() },
                     cycleDistanceKm = cycleDist,
+                    cycleFuelLiters = totalCycleFuelL,
                     cycleAvgKpl = cycleAvgKpl,
                     isFullTank = isFullTank
                 )
             )
 
-            val calibratedTrim = if (isFullTank && autoCalibrateTrim && prev?.isFullTank == true) {
+            val calibratedTrim = if (isFullTank && autoCalibrateTrim && prevFull != null && partialsSincePrevFullL == 0.0) {
                 com.apexobd.core.protocol.FuelEconomyTracker.computeCalibratedTrimPct(
                     currentTrimPct = vehicle.mafTrimPct,
                     actualPumpLiters = volumeL,
@@ -1623,16 +1821,33 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 vehicle.mafTrimPct
             }
 
+            val nextFullCycleKpl = if (cycleAvgKpl != null) {
+                val prevCycle = vehicle.fullRefuelCycleKpl
+                if (prevCycle != null && prevCycle in 1.5..40.0) {
+                    ((0.70 * cycleAvgKpl) + (0.30 * prevCycle)).coerceIn(1.5, 40.0)
+                } else {
+                    cycleAvgKpl.coerceIn(1.5, 40.0)
+                }
+            } else {
+                vehicle.fullRefuelCycleKpl
+            }
+
             val newRemaining = if (isFullTank) {
                 vehicle.tankCapacityLiters
             } else {
                 (vehicle.estimatedRemainingFuelLiters + volumeL).coerceIn(0.0, vehicle.tankCapacityLiters)
             }
             val newOdo = maxOf(vehicle.allTimeOdometerKm, odoKm)
+            val ecuDistNow = _ecuDistanceSinceClearKm.value ?: vehicle.lastSeenEcuDistanceKm
+            val shouldReanchorBaseline = vehicle.isEcuDistanceCalibrated() && ecuDistNow != null && odoKm > 0.0
             val updated = vehicle.copy(
                 allTimeOdometerKm = newOdo,
                 estimatedRemainingFuelLiters = newRemaining,
                 mafTrimPct = calibratedTrim,
+                fullRefuelCycleKpl = nextFullCycleKpl,
+                ecuDistanceBaselineKm = if (shouldReanchorBaseline) ecuDistNow else vehicle.ecuDistanceBaselineKm,
+                odometerAtBaselineKm = if (shouldReanchorBaseline) newOdo else vehicle.odometerAtBaselineKm,
+                lastSeenEcuDistanceKm = ecuDistNow ?: vehicle.lastSeenEcuDistanceKm,
                 fuelUsedSinceFullRefuelLiters = if (isFullTank) 0.0 else vehicle.fuelUsedSinceFullRefuelLiters
             )
             vehicleDao.updateVehicle(updated)
@@ -2067,8 +2282,13 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
         ObdPidRegistry.standardPids.forEach { pid ->
             val fuelViaMeter = pid.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in effectiveSupported
-            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported || fuelViaMeter
-            val sourceTag = if (fuelViaMeter && pid.pidHex !in effectiveSupported) "7C0 2129" else "01${pid.pidHex}"
+            val distViaEcm2131 = pid.key == "dist_since_clear" && ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131 in effectiveSupported
+            val avail = effectiveSupported.isEmpty() || pid.pidHex in effectiveSupported || fuelViaMeter || distViaEcm2131
+            val sourceTag = when {
+                fuelViaMeter && pid.pidHex !in effectiveSupported -> "7C0 2129"
+                distViaEcm2131 && pid.pidHex !in effectiveSupported -> "7E0 2131"
+                else -> "01${pid.pidHex}"
+            }
             list += PickerSensorOption(
                 item = SensorCatalogItem(pid.key, pid.name, pid.shortName, sourceTag, pid.unit, pid.quantity, pid.minValue, pid.maxValue),
                 available = avail
@@ -2129,11 +2349,17 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         ObdPidRegistry.standardPids
             .filter {
                 supported.isEmpty() || it.pidHex in supported ||
-                    (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported)
+                    (it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported) ||
+                    (it.key == "dist_since_clear" && ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131 in supported)
             }
             .forEach {
                 val fuelViaMeter = it.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in supported && it.pidHex !in supported
-                val sourceTag = if (fuelViaMeter) "7C0 2129" else "01${it.pidHex}"
+                val distViaEcm2131 = it.key == "dist_since_clear" && ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131 in supported && it.pidHex !in supported
+                val sourceTag = when {
+                    fuelViaMeter -> "7C0 2129"
+                    distViaEcm2131 -> "7E0 2131"
+                    else -> "01${it.pidHex}"
+                }
                 out += GroupedSensorCatalogItem(
                     SensorCatalogGroup.ECU_MODE01,
                     SensorCatalogItem(it.key, it.name, it.shortName, sourceTag, it.unit, it.quantity, it.minValue, it.maxValue)
@@ -2273,6 +2499,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val onHud: Boolean,
         val recording: Boolean,
         val inForeground: Boolean,
+        val isObdConnected: Boolean,
         val settings: UserSettings
     )
 

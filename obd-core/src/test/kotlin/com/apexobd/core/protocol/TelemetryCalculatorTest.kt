@@ -580,4 +580,36 @@ class TelemetryCalculatorTest {
         }
         assertTrue("Expected kpl_instant calm glide (> 6.0) at 96ms, got $kpl96", kpl96 in 6.0..10.1)
     }
+
+    @Test
+    fun `fullRefuelCycleKpl drives DTE range without altering realtime OBD allTimeTotalAvgKpl or tripAvgKpl`() {
+        val tracker = FuelEconomyTracker()
+        val k3ve = VehicleProfile(
+            id = 5L,
+            name = "Avanza K3VE",
+            tankCapacityLiters = 45.0,
+            estimatedRemainingFuelLiters = 30.0,
+            allTimeRoadDistanceKm = 120.0,
+            allTimeRoadFuelLiters = 10.0,
+            allTimeTotalDistanceKm = 120.0,
+            allTimeTotalFuelLiters = 10.0,
+            fullRefuelCycleKpl = 10.2
+        )
+        val snap = tracker.update(
+            profile = k3ve,
+            speedKmh = 50.0,
+            rpm = 2000.0,
+            mafGramsPerSec = 8.0,
+            mapKpa = 50.0,
+            iatCelsius = 35.0,
+            lambda = 1.0,
+            throttlePct = 18.0,
+            nowMs = 10_000L
+        )
+        // Live OBD All-Time Total Avg stays at 120 / 10 = 12.0 km/L, while DTE economy uses fullRefuelCycleKpl = 10.2 km/L
+        assertEquals(12.0, snap.allTimeTotalAvgKpl, 0.05)
+        assertEquals(10.2, snap.dteEconomyKpl ?: -1.0, 0.01)
+        // Usable fuel = 30.0 - 4.5 (10% reserve) = 25.5 L -> 25.5 * 10.2 = 260.1 km
+        assertEquals(25.5 * 10.2, snap.estimatedRangeKm ?: -1.0, 0.5)
+    }
 }

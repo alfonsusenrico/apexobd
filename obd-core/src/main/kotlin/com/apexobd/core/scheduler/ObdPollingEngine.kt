@@ -251,6 +251,9 @@ class ObdPollingEngine(
     private val _ecuFuelLiters = MutableStateFlow<Double?>(null)
     val ecuFuelLiters: StateFlow<Double?> = _ecuFuelLiters.asStateFlow()
 
+    private val _ecuDistanceSinceClearKm = MutableStateFlow<Double?>(null)
+    val ecuDistanceSinceClearKm: StateFlow<Double?> = _ecuDistanceSinceClearKm.asStateFlow()
+
     @Volatile
     private var latestMeterFuelLiters: Double? = null
 
@@ -286,6 +289,9 @@ class ObdPollingEngine(
     @Volatile
     private var backgroundIdleMode: Boolean = false
 
+    @Volatile
+    private var reconnectWakeToken: Long = 0L
+
     private var pollJob: Job? = null
 
     fun setActiveSensors(keys: Set<String>) {
@@ -293,7 +299,15 @@ class ObdPollingEngine(
     }
 
     fun setBackgroundIdleMode(idle: Boolean) {
+        val wasIdle = backgroundIdleMode
         backgroundIdleMode = idle
+        if (wasIdle && !idle) {
+            reconnectWakeToken++
+        }
+    }
+
+    fun triggerImmediateReconnect() {
+        reconnectWakeToken++
     }
 
     fun setBackgroundRecordKeys(keys: Set<String>) {
@@ -346,7 +360,10 @@ class ObdPollingEngine(
                     val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
                     val discovered = ObdPidRegistry.discoverSupportedPids(client)
                     val meterDiscovery = if (handshake.isCanProtocol) {
-                        ToyotaMeterProtocol.discover(client)
+                        ToyotaMeterProtocol.discover(
+                            client = client,
+                            mode01Supports0131 = "31" in discovered
+                        )
                     } else {
                         ToyotaMeterDiscoveryResult(ToyotaMeterCapabilities())
                     }
@@ -366,6 +383,19 @@ class ObdPollingEngine(
                         _ecuOdometerKm.value = odo.toDouble()
                         fuelTracker.syncOdometerFromEcu(odo.toDouble())
                     }
+                    if ("31" in discovered) {
+                        val cmd0131 = if (handshake.isCanProtocol) "01311" else "0131"
+                        val r0131 = client.execute(cmd0131, timeoutMs = 800L)
+                        if (r0131 is ObdCommandResult.Success) {
+                            ObdPidRegistry.decodeMode01Response("31", r0131.lines)?.let { decoded ->
+                                _ecuDistanceSinceClearKm.value = decoded.value
+                            }
+                        }
+                    } else {
+                        meterDiscovery.initialEcmDistanceSinceClearKm?.let { distKm ->
+                            _ecuDistanceSinceClearKm.value = distKm
+                        }
+                    }
 
                     _connectionState.value = ConnectionState.Connected(handshake, allCapabilities.size)
                     attempt = 0
@@ -378,12 +408,8 @@ class ObdPollingEngine(
                     attempt++
                     _connectionState.value = ConnectionState.Reconnecting(attempt, t.message ?: "Connection lost")
                     runCatching { transport.disconnect() }
-                    val backoffMs = when {
-                        attempt == 1 -> 1000L
-                        attempt == 2 -> 2500L
-                        else -> 5000L
-                    }
-                    delay(backoffMs)
+                    val backoffMs = computeReconnectBackoffMs(attempt, backgroundIdleMode)
+                    delayWithEarlyWake(backoffMs)
                 }
             }
         }
@@ -406,7 +432,8 @@ class ObdPollingEngine(
         val out = linkedSetOf<String>()
         for (pid in ObdPidRegistry.standardPids) {
             val fuelViaMeter = pid.key == "fuel_level" && ToyotaMeterCapabilities.TOKEN_FUEL_LEVEL in discovered
-            if (discovered.isEmpty() || pid.pidHex in discovered || fuelViaMeter) {
+            val distViaEcm2131 = pid.key == "dist_since_clear" && ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131 in discovered
+            if (discovered.isEmpty() || pid.pidHex in discovered || fuelViaMeter || distViaEcm2131) {
                 out.add(pid.key)
             }
         }
@@ -475,6 +502,7 @@ class ObdPollingEngine(
         val meterCaps = meterDiscovery.capabilities
         var lastMeterFuelMs = if (meterDiscovery.initialFuelLiters != null) windowStart else 0L
         var lastMeterOdoMs = if (meterDiscovery.initialOdometerKm != null) windowStart else 0L
+        var lastEcmDist2131Ms = if (meterDiscovery.initialEcmDistanceSinceClearKm != null) windowStart else 0L
         var lastMeterFastMs = windowStart
         var lastMeterCoolantMs = windowStart
         val values = _liveValues.value.toMutableMap()
@@ -484,6 +512,7 @@ class ObdPollingEngine(
             values["fuel_remaining"] = liters.coerceIn(0.0, cap)
         }
         meterDiscovery.initialOdometerKm?.let { values["ecu_odometer"] = it.toDouble() }
+        _ecuDistanceSinceClearKm.value?.let { values["dist_since_clear"] = it }
         // Only expose cluster comparison channels when actively requested on the HUD so trip logs never carry frozen connect snapshots.
         if ("cluster_speed" in activeSensorKeys) {
             meterDiscovery.initialClusterSpeedKmh?.let { values["cluster_speed"] = it }
@@ -500,7 +529,7 @@ class ObdPollingEngine(
         } else {
             values.remove("cluster_coolant")
         }
-        if (meterCaps.hasAny) {
+        if (meterCaps.hasAny || meterCaps.ecmDistanceSinceClear) {
             emitDerivedAndSnapshot(values)
         }
         val fastPriorityOrder = listOf("rpm", "rel_throttle", "pedal_d", "pedal_e", "engine_load", "obd_speed", "map", "maf", "throttle")
@@ -711,6 +740,30 @@ class ObdPollingEngine(
                 }
             }
 
+            if (meterCaps.ecmDistanceSinceClear && "31" !in discovered && currentCoroutineContext().isActive && transport.isConnected.value) {
+                val nowDistMs = System.currentTimeMillis()
+                if (nowDistMs - lastEcmDist2131Ms >= 45_000L) {
+                    lastEcmDist2131Ms = nowDistMs
+                    val t0 = System.currentTimeMillis()
+                    val r2131 = client.execute("2131", timeoutMs = maxOf(liveTimeoutMs, 750L))
+                    latencyAccumMs += (System.currentTimeMillis() - t0)
+                    rttCount++
+                    if (r2131 is ObdCommandResult.Success) {
+                        ToyotaMeterProtocol.decodeEcmDistanceSinceClearKm(r2131.lines)?.let { distKm ->
+                            values["dist_since_clear"] = distKm
+                            _ecuDistanceSinceClearKm.value = distKm
+                            samplesInSec++
+                        }
+                    }
+                }
+            }
+
+            values["dist_since_clear"]?.let { latestDist ->
+                if (_ecuDistanceSinceClearKm.value != latestDist) {
+                    _ecuDistanceSinceClearKm.value = latestDist
+                }
+            }
+
             emitDerivedAndSnapshot(values)
 
             val now = System.currentTimeMillis()
@@ -914,7 +967,40 @@ class ObdPollingEngine(
         return false to rtt
     }
 
+    private suspend fun delayWithEarlyWake(totalMs: Long) {
+        if (totalMs <= 250L) {
+            delay(totalMs)
+            return
+        }
+        val startToken = reconnectWakeToken
+        var remaining = totalMs
+        while (remaining > 0L && currentCoroutineContext().isActive) {
+            if (reconnectWakeToken != startToken) break
+            val slice = minOf(remaining, 250L)
+            delay(slice)
+            remaining -= slice
+        }
+    }
+
     companion object {
+        internal fun computeReconnectBackoffMs(attempt: Int, backgroundIdle: Boolean): Long {
+            return if (!backgroundIdle) {
+                when {
+                    attempt <= 1 -> 1000L
+                    attempt == 2 -> 2500L
+                    else -> 5000L
+                }
+            } else {
+                when {
+                    attempt <= 1 -> 2500L
+                    attempt == 2 -> 5000L
+                    attempt == 3 -> 10_000L
+                    attempt == 4 -> 20_000L
+                    else -> 30_000L
+                }
+            }
+        }
+
         internal fun computeStandardCanReplyHeader(txHeaderHex: String): String? {
             if (txHeaderHex.length != 3) return null
             val tx = txHeaderHex.toIntOrNull(16) ?: return null
@@ -1062,7 +1148,8 @@ class ObdPollingEngine(
                 allTimeTotalAvgKpl = allTimeTotalAvg,
                 recentDteKpl = vp.recentDteKpl,
                 remainingFuelLiters = effectiveRemL,
-                tankCapacityLiters = vp.tankCapacityLiters
+                tankCapacityLiters = vp.tankCapacityLiters,
+                fullRefuelCycleKpl = vp.fullRefuelCycleKpl
             )
             val dteKm = FuelEconomyTracker.computeEstimatedRangeKm(
                 remainingFuelLiters = effectiveRemL,

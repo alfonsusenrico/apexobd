@@ -12,7 +12,8 @@ data class ToyotaMeterCapabilities(
     val odometer: Boolean = false,
     val clusterSpeed: Boolean = false,
     val clusterRpm: Boolean = false,
-    val clusterCoolant: Boolean = false
+    val clusterCoolant: Boolean = false,
+    val ecmDistanceSinceClear: Boolean = false
 ) {
     val hasAny: Boolean
         get() = fuelLevel || odometer || clusterSpeed || clusterRpm || clusterCoolant
@@ -23,17 +24,21 @@ data class ToyotaMeterCapabilities(
         if (clusterSpeed) add(TOKEN_CLUSTER_SPEED)
         if (clusterRpm) add(TOKEN_CLUSTER_RPM)
         if (clusterCoolant) add(TOKEN_CLUSTER_COOLANT)
+        if (ecmDistanceSinceClear) add(TOKEN_ECM_DIST_2131)
     }
 
     companion object {
         const val HEADER_TX = "7C0"
         const val HEADER_RX = "7C8"
+        const val ECM_HEADER_TX = "7E0"
+        const val ECM_HEADER_RX = "7E8"
 
         const val TOKEN_FUEL_LEVEL = "7C0_2129"
         const val TOKEN_ODOMETER = "7C0_21E1"
         const val TOKEN_CLUSTER_SPEED = "7C0_2121"
         const val TOKEN_CLUSTER_RPM = "7C0_2122"
         const val TOKEN_CLUSTER_COOLANT = "7C0_2123"
+        const val TOKEN_ECM_DIST_2131 = "7E0_2131"
     }
 }
 
@@ -44,6 +49,7 @@ data class ToyotaMeterDiscoveryResult(
     val initialClusterSpeedKmh: Double? = null,
     val initialClusterRpm: Double? = null,
     val initialClusterCoolantC: Double? = null,
+    val initialEcmDistanceSinceClearKm: Double? = null,
     val requiresExplicitEcmRxFilter: Boolean = false
 )
 
@@ -57,12 +63,16 @@ data class ToyotaMeterDiscoveryResult(
  */
 object ToyotaMeterProtocol {
 
-    suspend fun discover(client: Elm327Client): ToyotaMeterDiscoveryResult {
+    suspend fun discover(
+        client: Elm327Client,
+        mode01Supports0131: Boolean = false
+    ): ToyotaMeterDiscoveryResult {
         var fuelLiters: Double? = null
         var odometerKm: Long? = null
         var clusterSpeed: Double? = null
         var clusterRpm: Double? = null
         var clusterCoolant: Double? = null
+        var ecmDistSinceClearKm: Double? = null
 
         var requiresExplicitEcmRx = false
         try {
@@ -110,12 +120,22 @@ object ToyotaMeterProtocol {
             }
         }
 
+        // If 7C0 cluster odometer/fuel are absent and Mode 01 0131 is not advertised (e.g. 2014 Avanza K3-VE),
+        // probe Toyota/Daihatsu Engine ECM Mode 2131 (Distance Traveled Since DTCs Cleared, 16-bit km).
+        if (odometerKm == null && !mode01Supports0131) {
+            val ecm2131 = client.execute("2131", timeoutMs = 700L)
+            if (ecm2131 is ObdCommandResult.Success) {
+                ecmDistSinceClearKm = decodeEcmDistanceSinceClearKm(ecm2131.lines)
+            }
+        }
+
         val caps = ToyotaMeterCapabilities(
             fuelLevel = fuelLiters != null,
             odometer = odometerKm != null,
             clusterSpeed = clusterSpeed != null,
             clusterRpm = clusterRpm != null,
-            clusterCoolant = clusterCoolant != null
+            clusterCoolant = clusterCoolant != null,
+            ecmDistanceSinceClear = ecmDistSinceClearKm != null
         )
         return ToyotaMeterDiscoveryResult(
             capabilities = caps,
@@ -124,8 +144,16 @@ object ToyotaMeterProtocol {
             initialClusterSpeedKmh = clusterSpeed,
             initialClusterRpm = clusterRpm,
             initialClusterCoolantC = clusterCoolant,
+            initialEcmDistanceSinceClearKm = ecmDistSinceClearKm,
             requiresExplicitEcmRxFilter = requiresExplicitEcmRx
         )
+    }
+
+    fun decodeEcmDistanceSinceClearKm(lines: List<String>): Double? {
+        val payload = Elm327Client.extractPidPayload(lines, 0x61, 0x31) ?: return null
+        if (payload.size < 2) return null
+        val km = ((payload[0] and 0xFF) shl 8) or (payload[1] and 0xFF)
+        return km.toDouble()
     }
 
     fun decodeFuelLiters(lines: List<String>): Double? {
