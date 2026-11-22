@@ -394,6 +394,9 @@ class ObdPollingEngine(
         pollJob = null
         job?.cancel()
         runCatching { transport.disconnect() }
+        if (job != null) {
+            kotlinx.coroutines.withTimeoutOrNull(500L) { job.join() }
+        }
         _connectionState.value = ConnectionState.Disconnected
         _pollingHz.value = 0
         _avgLatencyMs.value = 0

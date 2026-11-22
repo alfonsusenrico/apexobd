@@ -183,7 +183,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `single-PID CAN scheduler polls visible throttle, engine_load, and speed in high-priority cycle`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             val mockTransport = object : ObdTransport {
                 private val _connected = MutableStateFlow(false)
                 override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -238,7 +238,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `background recording keys do not steal HIGH-tier frequency from visible gauges`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             val mockTransport = object : ObdTransport {
                 private val _connected = MutableStateFlow(false)
                 override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -296,7 +296,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `CAN multi-PID recovers from single transient failure, sends trailing 1, and isolates slow 0142 voltage`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             var droppedOnce = false
             val canTransport = object : ObdTransport {
                 private val _connected = MutableStateFlow(false)
@@ -367,7 +367,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `custom PID with headerHex switches CAN header to 7C0, decodes Mode 21 fuel level, and restores 7DF`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             val meterTransport = object : ObdTransport {
                 private val _connected = MutableStateFlow(false)
                 override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -478,7 +478,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `ObdPollingEngine auto-discovers 7C0 fuel level and odometer on Avanza without Mode 01 2F`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             var activeHeader = "7DF"
             val avanzaTransport = object : ObdTransport {
                 private val _connected = MutableStateFlow(false)
@@ -562,7 +562,7 @@ class EngineAndPerformanceTest {
     @Test
     fun `sticky ATCRA ELM327 v1_5 clone recovers Mode 01 streaming via ATCRA7E8 fallback after 7C0 discovery`() {
         kotlinx.coroutines.runBlocking {
-            val cmds = java.util.Collections.synchronizedList(mutableListOf<String>())
+            val cmds = java.util.concurrent.CopyOnWriteArrayList<String>()
             var activeHeader = "7DF"
             var activeRxFilter: String? = null // null = auto (7E8)
             val stickyCloneTransport = object : ObdTransport {
