@@ -29,12 +29,7 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { granted ->
-        if (granted[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) {
-            viewModel.locationTracker.startUpdates()
-        }
+    ) { _ ->
         viewModel.onPermissionsUpdated()
     }
 

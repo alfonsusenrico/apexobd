@@ -12,6 +12,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
@@ -32,6 +33,9 @@ class LoggingForegroundService : Service() {
         when (intent?.action) {
             ACTION_TERMINATE -> {
                 isRunning = false
+                lastNotifiedTitle = null
+                lastNotifiedText = null
+                lastNotifiedNeedsLocation = null
                 onTerminateRequested?.invoke()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -39,6 +43,9 @@ class LoggingForegroundService : Service() {
             }
             ACTION_STOP -> {
                 isRunning = false
+                lastNotifiedTitle = null
+                lastNotifiedText = null
+                lastNotifiedNeedsLocation = null
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
@@ -47,8 +54,13 @@ class LoggingForegroundService : Service() {
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: lastTitle
         val text = intent?.getStringExtra(EXTRA_TEXT) ?: lastText
+        val needsLocation = intent?.getBooleanExtra(EXTRA_NEEDS_LOCATION, lastNeedsLocation) ?: lastNeedsLocation
         lastTitle = title
         lastText = text
+        lastNeedsLocation = needsLocation
+        lastNotifiedTitle = title
+        lastNotifiedText = text
+        lastNotifiedNeedsLocation = needsLocation
 
         val notification = buildNotification(title, text)
         val started = runCatching {
@@ -56,7 +68,7 @@ class LoggingForegroundService : Service() {
                 this,
                 NOTIFICATION_ID,
                 notification,
-                resolveForegroundServiceType()
+                resolveForegroundServiceType(needsLocation)
             )
             true
         }.getOrDefault(false)
@@ -71,19 +83,24 @@ class LoggingForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        lastNotifiedTitle = null
+        lastNotifiedText = null
+        lastNotifiedNeedsLocation = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun resolveForegroundServiceType(): Int {
+    private fun resolveForegroundServiceType(needsLocation: Boolean): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0
         var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        val hasLocationPerm =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (hasLocationPerm) {
-            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        if (needsLocation) {
+            val hasLocationPerm =
+                ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            if (hasLocationPerm) {
+                type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
         }
         return type
     }
@@ -135,6 +152,7 @@ class LoggingForegroundService : Service() {
         private const val ACTION_TERMINATE = "com.apexobd.app.TERMINATE_OBD_LISTENER"
         private const val EXTRA_TITLE = "extra_title"
         private const val EXTRA_TEXT = "extra_text"
+        private const val EXTRA_NEEDS_LOCATION = "extra_needs_location"
 
         @Volatile
         var isRunning: Boolean = false
@@ -147,6 +165,18 @@ class LoggingForegroundService : Service() {
         private var lastText: String = "OBD listener active in background · Tap to terminate"
 
         @Volatile
+        private var lastNeedsLocation: Boolean = false
+
+        @Volatile
+        private var lastNotifiedTitle: String? = null
+
+        @Volatile
+        private var lastNotifiedText: String? = null
+
+        @Volatile
+        private var lastNotifiedNeedsLocation: Boolean? = null
+
+        @Volatile
         private var onTerminateRequested: (() -> Unit)? = null
 
         fun setTerminateListener(listener: (() -> Unit)?) {
@@ -156,27 +186,58 @@ class LoggingForegroundService : Service() {
         fun start(
             context: Context,
             title: String = lastTitle,
-            text: String = lastText
+            text: String = lastText,
+            needsLocation: Boolean = lastNeedsLocation
         ) {
             val appCtx = context.applicationContext
+            if (isRunning &&
+                title == lastNotifiedTitle &&
+                text == lastNotifiedText &&
+                needsLocation == lastNotifiedNeedsLocation
+            ) {
+                return
+            }
             lastTitle = title
             lastText = text
+            lastNeedsLocation = needsLocation
             val intent = Intent(appCtx, LoggingForegroundService::class.java).apply {
                 action = ACTION_START_OR_UPDATE
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_TEXT, text)
+                putExtra(EXTRA_NEEDS_LOCATION, needsLocation)
             }
             runCatching {
                 ContextCompat.startForegroundService(appCtx, intent)
             }
         }
 
-        fun updateIfRunning(context: Context, title: String, text: String) {
+        fun updateIfRunning(
+            context: Context,
+            title: String,
+            text: String,
+            needsLocation: Boolean = lastNeedsLocation
+        ) {
             lastTitle = title
             lastText = text
+            lastNeedsLocation = needsLocation
             if (!isRunning) return
             val appCtx = context.applicationContext
+            // If foreground service location requirement changed (e.g. Run Recording started or stopped),
+            // re-dispatch startForeground so Android's FGS type attribution stays accurate.
+            if (needsLocation != lastNotifiedNeedsLocation) {
+                start(appCtx, title, text, needsLocation)
+                return
+            }
+            // Never re-enqueue identical notification text (prevents NotificationManagerService wakelock churn).
+            if (title == lastNotifiedTitle && text == lastNotifiedText) return
+            // Skip non-essential notification text refreshes when the display is off unless title (recording mode) changed.
+            val pm = appCtx.getSystemService(PowerManager::class.java)
+            if (pm != null && !pm.isInteractive && title == lastNotifiedTitle) {
+                return
+            }
             val nm = appCtx.getSystemService(NotificationManager::class.java) ?: return
+            lastNotifiedTitle = title
+            lastNotifiedText = text
             val terminateIntent = Intent(appCtx, LoggingForegroundService::class.java).apply {
                 action = ACTION_TERMINATE
             }
@@ -202,6 +263,9 @@ class LoggingForegroundService : Service() {
 
         fun stop(context: Context) {
             isRunning = false
+            lastNotifiedTitle = null
+            lastNotifiedText = null
+            lastNotifiedNeedsLocation = null
             val appCtx = context.applicationContext
             val intent = Intent(appCtx, LoggingForegroundService::class.java).apply {
                 action = ACTION_STOP

@@ -357,8 +357,11 @@ fun VehicleProfileSheet(
     activeVehicle: VehicleProfileEntity?,
     unitPrefs: UnitPreferences,
     startAddingNew: Boolean = false,
+    connectionState: ConnectionState = ConnectionState.Disconnected,
+    liveEcuDistanceSinceClearKm: Double? = null,
     onSelectVehicle: (Long) -> Unit,
     onPickPhoto: (Uri, (String?) -> Unit) -> Unit,
+    onCalibrateBaseline: (vehicleId: Long, confirmedOdometerDisplay: Double, confirmedFuelDisplay: Double) -> Unit = { _, _, _ -> },
     onSaveVehicle: (
         existing: VehicleProfileEntity?,
         name: String,
@@ -381,8 +384,23 @@ fun VehicleProfileSheet(
     var editingExisting by remember(activeVehicle?.id, startAddingNew) {
         mutableStateOf(if (startAddingNew) null else activeVehicle)
     }
+    LaunchedEffect(activeVehicle) {
+        if (!startAddingNew && activeVehicle != null && editingExisting?.id == activeVehicle.id) {
+            editingExisting = activeVehicle
+        }
+    }
     var confirmDelete by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
+    var showCalibrationHelpDialog by remember { mutableStateOf(false) }
+    var calibrationConfirmFeedback by remember { mutableStateOf<String?>(null) }
+    var calFuelUsePctMode by remember { mutableStateOf(true) }
+    var calFuelPctStr by remember(editingExisting?.id) {
+        val initPct = editingExisting?.let {
+            val cap = it.tankCapacityLiters.coerceAtLeast(1.0)
+            ((it.estimatedRemainingFuelLiters / cap) * 100.0).coerceIn(0.0, 100.0)
+        } ?: 100.0
+        mutableStateOf("%.0f".format(initPct))
+    }
     var name by remember(editingExisting?.id, startAddingNew) { mutableStateOf(editingExisting?.name ?: "New Car") }
     var engineCcStr by remember(editingExisting?.id, startAddingNew) {
         val initCc = editingExisting?.let { if (it.engineCc > 0) it.engineCc else (it.displacementLiters * 1000.0).toInt() } ?: 1500
@@ -475,6 +493,53 @@ fun VehicleProfileSheet(
             },
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showCalibrationHelpDialog) {
+        AlertDialog(
+            onDismissRequest = { showCalibrationHelpDialog = false },
+            containerColor = TorqueEvoColors.ElevatedDark,
+            title = {
+                Text(
+                    "ECU Distance & Fuel Baseline Calibration",
+                    color = TorqueEvoColors.TextPrimary,
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Why this exists: This car does not expose a native CAN instrument cluster fuel float (012F / 7C0 2129) or cluster odometer (7C0 21E1). However, its Engine ECU tracks every kilometer driven in an internal counter (PID 0131 / 7E0 2131), even when your phone is not in the car.",
+                        fontSize = 12.sp,
+                        color = TorqueEvoColors.TextPrimary
+                    )
+                    Text(
+                        "1. One-Time Baseline Setup: Connect to the car's OBD2 adapter with Ignition ON so the live ECU counter (2131/0131) is read. Enter your current dashboard Odometer and current Fuel Level (% or volume), then tap Calibrate Baseline.",
+                        fontSize = 12.sp,
+                        color = TorqueEvoColors.TextSecondary
+                    )
+                    Text(
+                        "2. Best Accuracy Tip: The most accurate moment to calibrate is right after a Full Tank Refuel (set Fuel to 100%). On every future OBD connect, the app automatically calculates the kilometers driven while disconnected and updates both your Odometer and Estimated Fuel Left.",
+                        fontSize = 12.sp,
+                        color = TorqueEvoColors.TextSecondary
+                    )
+                    Text(
+                        "3. Refuel Checkpoints & Recalibration: Log your future refuels (Full or Partial) in Refuel Log. Each Full-Tank refuel records your true Full-to-Full Cycle KPL and uses it for the next tank's Fuel Left & Range estimations without changing your live OBD All-Time KPL or Trip KPL. You can recalibrate here anytime (for example, after a battery reset).",
+                        fontSize = 12.sp,
+                        color = TorqueEvoColors.TextSecondary
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showCalibrationHelpDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.ElectricBlue, contentColor = Color.Black)
+                ) {
+                    Text("Got It", fontWeight = FontWeight.Bold)
+                }
             }
         )
     }
@@ -699,12 +764,236 @@ fun VehicleProfileSheet(
                 )
                 OutlinedTextField(
                     value = remFuel,
-                    onValueChange = { remFuel = it },
+                    onValueChange = {
+                        remFuel = it
+                        val capVal = (tankCap.toDoubleOrNull() ?: capDispInit).coerceAtLeast(1.0)
+                        it.toDoubleOrNull()?.let { rf ->
+                            calFuelPctStr = "%.0f".format(((rf / capVal) * 100.0).coerceIn(0.0, 100.0))
+                        }
+                    },
                     label = { Text(if (fuelType == FuelType.ELECTRIC) "Est Charge ($volUnit)" else "Est Fuel ($volUnit)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.weight(1f)
                 )
+            }
+
+            val targetVehicle = editingExisting
+            val hasNativeSensors = targetVehicle != null && (targetVehicle.hasNativeFuelSensor() || targetVehicle.hasNativeClusterOdometer())
+            if (targetVehicle != null && !hasNativeSensors && fuelType != FuelType.ELECTRIC) {
+                val isTargetActive = targetVehicle.id == activeVehicle?.id
+                val isObdConnected = isTargetActive && connectionState is ConnectionState.Connected
+                val ecuCounterKm = if (isTargetActive) {
+                    liveEcuDistanceSinceClearKm ?: targetVehicle.lastSeenEcuDistanceKm
+                } else {
+                    targetVehicle.lastSeenEcuDistanceKm
+                }
+                val isCalibrated = targetVehicle.isEcuDistanceCalibrated()
+                val capValDisp = (tankCap.toDoubleOrNull() ?: capDispInit).coerceAtLeast(1.0)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF0A1019))
+                        .border(
+                            1.dp,
+                            if (isCalibrated) TorqueEvoColors.NominalGreen.copy(alpha = 0.55f)
+                            else TorqueEvoColors.ElectricBlue.copy(alpha = 0.55f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "ECU Distance & Fuel Baseline Calibration",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                            Text(
+                                text = if (isCalibrated) {
+                                    val baseOdoDisp = UnitConverter.convertDistanceKm(targetVehicle.odometerAtBaselineKm ?: 0.0, unitPrefs).first
+                                    val baseEcuDisp = UnitConverter.convertDistanceKm(targetVehicle.ecuDistanceBaselineKm ?: 0.0, unitPrefs).first
+                                    "Calibrated (Auto-Sync Active) · Base %.1f %s @ ECU %.0f %s".format(
+                                        baseOdoDisp, distUnit, baseEcuDisp, distUnit
+                                    )
+                                } else {
+                                    "No native fuel/odometer sensor detected · One-time calibration recommended"
+                                },
+                                fontSize = 10.5.sp,
+                                color = if (isCalibrated) TorqueEvoColors.NominalGreen else TorqueEvoColors.WarnAmber
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(TorqueEvoColors.DimBlue)
+                                .border(1.dp, TorqueEvoColors.ElectricBlue, CircleShape)
+                                .clickable { showCalibrationHelpDialog = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("?", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = TorqueEvoColors.ElectricBlue)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .padding(horizontal = 10.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (isObdConnected) "OBD Connected · ECU Counter (2131/0131)" else "Connect OBD Adapter to Read ECU Counter",
+                            fontSize = 11.sp,
+                            color = if (isObdConnected) TorqueEvoColors.NominalGreen else TorqueEvoColors.TextSecondary
+                        )
+                        val counterText = ecuCounterKm?.let {
+                            val (cVal, cSym) = UnitConverter.convertDistanceKm(it, unitPrefs)
+                            "%.0f %s".format(cVal, cSym)
+                        } ?: "—"
+                        Text(
+                            text = counterText,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (ecuCounterKm != null) TorqueEvoColors.ElectricBlue else TorqueEvoColors.TextSecondary
+                        )
+                    }
+
+                    targetVehicle.fullRefuelCycleKpl?.let { cycKpl ->
+                        val (cKplVal, cKplSym) = UnitConverter.convertFuelEconomy(cycKpl, unitPrefs, fuelType)
+                        Text(
+                            text = "Active Full-to-Full Cycle Economy for Estimations: %.2f %s".format(cKplVal, cKplSym),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TorqueEvoColors.SkyBlue
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Baseline Fuel Input Mode:",
+                            fontSize = 11.sp,
+                            color = TorqueEvoColors.TextSecondary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            ApexFilterChip(
+                                selected = calFuelUsePctMode,
+                                onClick = { calFuelUsePctMode = true },
+                                label = "Percentage (%)",
+                                compact = true
+                            )
+                            ApexFilterChip(
+                                selected = !calFuelUsePctMode,
+                                onClick = { calFuelUsePctMode = false },
+                                label = "Fuel Amount ($volUnit)",
+                                compact = true
+                            )
+                        }
+                    }
+
+                    if (calFuelUsePctMode) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = calFuelPctStr,
+                                onValueChange = { next ->
+                                    calFuelPctStr = next
+                                    next.toDoubleOrNull()?.let { pct ->
+                                        val computedVol = (capValDisp * (pct.coerceIn(0.0, 100.0) / 100.0))
+                                        remFuel = "%.1f".format(computedVol)
+                                    }
+                                },
+                                label = { Text("Current Fuel Level (%) · 0–100%") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "= $remFuel $volUnit",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.ElectricBlue
+                            )
+                        }
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(25, 50, 75, 100).forEach { pctPreset ->
+                            val presetVol = capValDisp * (pctPreset / 100.0)
+                            val labelTxt = if (pctPreset == 100) {
+                                "100% Full (%.1f %s)".format(presetVol, volUnit)
+                            } else {
+                                "%d%% (%.1f %s)".format(pctPreset, presetVol, volUnit)
+                            }
+                            ApexFilterChip(
+                                selected = calFuelPctStr.toDoubleOrNull()?.roundToInt() == pctPreset,
+                                onClick = {
+                                    calFuelPctStr = "$pctPreset"
+                                    remFuel = "%.1f".format(presetVol)
+                                },
+                                label = labelTxt,
+                                compact = true
+                            )
+                        }
+                    }
+
+                    calibrationConfirmFeedback?.let { msg ->
+                        Text(msg, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TorqueEvoColors.NominalGreen)
+                    }
+
+                    val canCalibrateNow = isObdConnected && ecuCounterKm != null
+                    Button(
+                        onClick = {
+                            val odoVal = odometer.toDoubleOrNull() ?: odoDispInit
+                            val fuelVal = remFuel.toDoubleOrNull() ?: remDispInit
+                            onCalibrateBaseline(targetVehicle.id, odoVal, fuelVal)
+                            calibrationConfirmFeedback =
+                                "Baseline locked at %.1f %s & %.1f %s (ECU %.0f km). Auto-sync is now active.".format(
+                                    odoVal, distUnit, fuelVal, volUnit, ecuCounterKm ?: 0.0
+                                )
+                        },
+                        enabled = canCalibrateNow,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isCalibrated) TorqueEvoColors.NominalGreen else TorqueEvoColors.ElectricBlue,
+                            contentColor = Color.Black,
+                            disabledContainerColor = Color(0xFF1A222D),
+                            disabledContentColor = Color(0xFF6B7280)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = when {
+                                !isObdConnected -> "Connect to OBD Adapter to Calibrate Baseline"
+                                isCalibrated -> "Recalibrate Odometer & Fuel Baseline"
+                                else -> "Calibrate Odometer & Fuel Baseline"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
 
             if (fuelType != FuelType.ELECTRIC) {
@@ -776,17 +1065,100 @@ fun RefuelLogSheet(
     var currency by remember { mutableStateOf(defaultCurrency) }
     var ron by remember { mutableStateOf(if (fuelType == FuelType.GASOLINE) "92" else "") }
     var fuelName by remember { mutableStateOf("") }
-    var odometer by remember { mutableStateOf("%.1f".format(initOdo)) }
+    var odometer by remember(vehicle?.id, initOdo) { mutableStateOf("%.1f".format(initOdo)) }
     var isFullTank by remember { mutableStateOf(true) }
     var autoCalibrate by remember { mutableStateOf(true) }
+
+    val prevFullLog = remember(logs) { logs.firstOrNull { it.isFullTank } }
+    val partialsSincePrevFullL = remember(logs, prevFullLog) {
+        if (prevFullLog != null) {
+            logs.filter { !it.isFullTank && it.timestampMs > prevFullLog.timestampMs }
+                .sumOf { it.volumeLiters }
+        } else 0.0
+    }
 
     ApexLockedSheet(onBackRequest = onDismiss) {
         ApexSheetHeader(title = "Refuel Checkpoint Log", onClose = onDismiss)
             Text(
-                "Tracks full-to-full checkpoint KPL and optionally refines your vehicle's Fuel Calibration Trim (%) toward real pump totals.",
+                "Records Full-to-Full tank cycle economy (independent from live OBD All-Time & Trip KPL) to drive your next tank cycle's Estimated Fuel Left and Range (DTE).",
                 fontSize = 11.sp,
                 color = TorqueEvoColors.TextSecondary
             )
+
+            vehicle?.fullRefuelCycleKpl?.let { activeCycleKpl ->
+                val (cVal, cSym) = UnitConverter.convertFuelEconomy(activeCycleKpl, unitPrefs, fuelType)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF0A1420))
+                        .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Active Full-to-Full Cycle Avg",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.TextPrimary
+                        )
+                        Text(
+                            "Used for Est. Fuel Left & Range (DTE) · Does not alter OBD All-Time or Trip KPL",
+                            fontSize = 9.5.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                    }
+                    Text(
+                        "%.2f %s".format(cVal, cSym),
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = TorqueEvoColors.ElectricBlue
+                    )
+                }
+            }
+
+            if (isFullTank) {
+                val enteredVolDisp = volume.toDoubleOrNull() ?: 0.0
+                val enteredOdoDisp = odometer.toDoubleOrNull() ?: initOdo
+                val prevFullOdoDisp = prevFullLog?.let { UnitConverter.convertDistanceKm(it.odometerKm, unitPrefs).first }
+                val partialsDisp = UnitConverter.convertVolume(partialsSincePrevFullL, unitPrefs, fuelType).first
+                if (prevFullOdoDisp != null && enteredVolDisp > 0.0 && enteredOdoDisp > prevFullOdoDisp) {
+                    val previewDistDisp = enteredOdoDisp - prevFullOdoDisp
+                    val previewFuelDisp = partialsDisp + enteredVolDisp
+                    // Compute preview in internal metric then convert to user fuel economy unit
+                    val prevFullKm = prevFullLog.odometerKm
+                    val curKm = if (unitPrefs.speed == SpeedUnit.MPH) enteredOdoDisp / 0.621371 else enteredOdoDisp
+                    val curVolL = if (fuelType != FuelType.ELECTRIC && unitPrefs.volume == VolumeUnit.GALLONS_US) enteredVolDisp / 0.264172 else enteredVolDisp
+                    val totalL = partialsSincePrevFullL + curVolL
+                    val previewKpl = if (totalL > 0.1) (curKm - prevFullKm) / totalL else 0.0
+                    val (pEconVal, pEconSym) = UnitConverter.convertFuelEconomy(previewKpl, unitPrefs, fuelType)
+                    val partialNote = if (partialsSincePrevFullL > 0.05) {
+                        " (incl. +%.1f %s partial fills)".format(partialsDisp, volUnit)
+                    } else ""
+                    Text(
+                        text = "New Full-to-Full Cycle Preview: +%.1f %s ÷ %.1f %s%s = %.2f %s".format(
+                            previewDistDisp, distUnit, previewFuelDisp, volUnit, partialNote, pEconVal, pEconSym
+                        ),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = TorqueEvoColors.NominalGreen
+                    )
+                } else if (prevFullLog == null) {
+                    Text(
+                        text = "This First Full-Tank entry will set your starting Full-Tank Odometer checkpoint.",
+                        fontSize = 10.5.sp,
+                        color = TorqueEvoColors.SkyBlue
+                    )
+                }
+            } else {
+                Text(
+                    text = "Partial Refuel: Adds fuel volume to Estimated Fuel Left and accumulates toward the next Full-Tank cycle KPL.",
+                    fontSize = 10.5.sp,
+                    color = TorqueEvoColors.WarnAmber
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
@@ -902,14 +1274,31 @@ fun RefuelLogSheet(
                 logs.forEach { entry ->
                     val (dispVol, vSym) = UnitConverter.convertVolume(entry.volumeLiters, unitPrefs, fuelType)
                     val (dispOdo, dSym) = UnitConverter.convertDistanceKm(entry.odometerKm, unitPrefs)
-                    val cycleStr = entry.cycleAvgKpl?.let { kpl ->
-                        val (econVal, econSym) = UnitConverter.convertFuelEconomy(kpl, unitPrefs, fuelType)
-                        "%.1f %s".format(econVal, econSym)
-                    } ?: "Start Checkpoint"
-                    val distStr = entry.cycleDistanceKm?.let { dk ->
-                        val (dd, ds) = UnitConverter.convertDistanceKm(dk, unitPrefs)
-                        "+%.1f %s cycle".format(dd, ds)
-                    } ?: "Baseline"
+                    val cycleStr = when {
+                        entry.cycleAvgKpl != null -> {
+                            val (econVal, econSym) = UnitConverter.convertFuelEconomy(entry.cycleAvgKpl, unitPrefs, fuelType)
+                            "%.2f %s".format(econVal, econSym)
+                        }
+                        !entry.isFullTank -> "Partial (+%.1f %s)".format(dispVol, vSym)
+                        else -> "Full Baseline"
+                    }
+                    val distStr = when {
+                        entry.cycleDistanceKm != null -> {
+                            val (dd, ds) = UnitConverter.convertDistanceKm(entry.cycleDistanceKm, unitPrefs)
+                            val totFuelTxt = entry.cycleFuelLiters?.let { cf ->
+                                val (cfDisp, cfSym) = UnitConverter.convertVolume(cf, unitPrefs, fuelType)
+                                " / %.1f %s".format(cfDisp, cfSym)
+                            }.orEmpty()
+                            "+%.1f %s%s".format(dd, ds, totFuelTxt)
+                        }
+                        !entry.isFullTank -> "Counted at next Full Tank"
+                        else -> "Cycle Start Checkpoint"
+                    }
+                    val badgeColor = when {
+                        entry.cycleAvgKpl != null -> TorqueEvoColors.NominalGreen
+                        !entry.isFullTank -> TorqueEvoColors.WarnAmber
+                        else -> TorqueEvoColors.SkyBlue
+                    }
 
                     Row(
                         modifier = Modifier
@@ -925,6 +1314,7 @@ fun RefuelLogSheet(
                             val title = buildString {
                                 append(entry.fuelName ?: fuelType.label)
                                 entry.ronValue?.let { append(" · RON $it") }
+                                append(if (entry.isFullTank) " · Full Tank" else " · Partial")
                             }
                             Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = TorqueEvoColors.TextPrimary)
                             Text(
@@ -941,7 +1331,7 @@ fun RefuelLogSheet(
                             )
                         }
                         Column(horizontalAlignment = Alignment.End) {
-                            Text(cycleStr, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = TorqueEvoColors.NominalGreen)
+                            Text(cycleStr, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = badgeColor)
                             Text(distStr, fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
                             Text(
                                 "Delete",
@@ -956,7 +1346,7 @@ fun RefuelLogSheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FaultCodesSheet(
     report: DiagnosticReport?,
@@ -1049,6 +1439,35 @@ fun FaultCodesSheet(
                             Text("${dtc.code} (${dtc.category.name})", fontWeight = FontWeight.Bold, color = TorqueEvoColors.WarnAmber)
                             Text(dtc.description, fontSize = 12.sp, color = TorqueEvoColors.TextPrimary)
                         }
+                    }
+                }
+            }
+
+            report?.readiness?.takeIf { it.monitors.isNotEmpty() && diagnosticError == null }?.let { rdy ->
+                Text(
+                    "Readiness Monitors (${rdy.monitors.count { it.ready }}/${rdy.monitors.size} Ready)",
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = TorqueEvoColors.TextSecondary
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    rdy.monitors.forEach { mon ->
+                        val col = if (mon.ready) TorqueEvoColors.NominalGreen else TorqueEvoColors.WarnAmber
+                        val mark = if (mon.ready) "✓" else "…"
+                        Text(
+                            text = "$mark ${mon.name}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = col,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(TorqueEvoColors.CardSurface)
+                                .border(1.dp, col.copy(alpha = 0.45f), RoundedCornerShape(7.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
                     }
                 }
             }

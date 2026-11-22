@@ -106,6 +106,7 @@ data class VehicleProfile(
     val allTimeTotalFuelLiters: Double = allTimeRoadFuelLiters,
     val fuelUsedSinceFullRefuelLiters: Double = 0.0,
     val recentDteKpl: Double? = null,
+    val fullRefuelCycleKpl: Double? = null,
     val best0To100Sec: Double? = null
 )
 

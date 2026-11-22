@@ -662,4 +662,68 @@ class EngineAndPerformanceTest {
         val afterSecond = filter.onRawSample(34.0, speedKmh = 0.0, accelG = 0.0, tankCapacityLiters = 43.0)
         assertEquals(34.0, afterSecond, 0.001)
     }
+
+    @Test
+    fun `ObdPollingEngine discovers 7E0 2131 distance counter on 2014 Avanza K3-VE without fabricating fuel_level or ecu_odometer`() {
+        kotlinx.coroutines.runBlocking {
+            val k3veTransport = object : ObdTransport {
+                private val _connected = MutableStateFlow(false)
+                override val isConnected: StateFlow<Boolean> = _connected.asStateFlow()
+                override val endpointLabel: String = "k3ve-2131-test"
+                override suspend fun connect() { _connected.value = true }
+                override suspend fun disconnect() { _connected.value = false }
+                override suspend fun sendCommand(command: String, timeoutMs: Long): String {
+                    return when (val cmd = command.trim()) {
+                        "ATZ" -> "OBDII v1.5\r"
+                        "ATDP" -> "AUTO, ISO 15765-4 (CAN 11/500)\r"
+                        "ATDPN" -> "A6\r"
+                        "0100", "01001" -> "41001E3F9001\r"
+                        "0120" -> "412000042001\r"
+                        "0140" -> "414048000000\r"
+                        "2131" -> "61312A8A\r" // 0x2A8A = 10,890 km
+                        "010C1" -> "410C0C00\r"
+                        "010D1" -> "410D00\r"
+                        "01101" -> "41100100\r"
+                        "01451" -> "414500\r"
+                        else -> if (cmd.startsWith("AT")) "OK\r" else "NO DATA\r"
+                    }
+                }
+            }
+            val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+            val engine = ObdPollingEngine(k3veTransport, scope)
+            engine.start()
+            var waited = 0
+            while (engine.connectionState.value !is ConnectionState.Connected && waited < 60) {
+                kotlinx.coroutines.delay(50L)
+                waited++
+            }
+            assertTrue(engine.connectionState.value is ConnectionState.Connected)
+            kotlinx.coroutines.delay(150L)
+            val supported = engine.supportedPids.value
+            val distKm = engine.ecuDistanceSinceClearKm.value
+            val live = engine.liveValues.value
+            kotlinx.coroutines.withTimeout(1000L) { engine.stop() }
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+
+            assertTrue("7E0_2131" in supported)
+            assertEquals(10890.0, distKm ?: -1.0, 0.01)
+            assertEquals(10890.0, live["dist_since_clear"] ?: -1.0, 0.01)
+            assertFalse("fuel_level must stay strictly hardware sensor only", "fuel_level" in live)
+            assertFalse("ecu_odometer must stay strictly hardware sensor only", "ecu_odometer" in live)
+        }
+    }
+
+    @Test
+    fun `computeReconnectBackoffMs scales up to 30s in backgroundIdleMode while keeping fast 1 to 5s foreground retries`() {
+        assertEquals(1000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 1, backgroundIdle = false))
+        assertEquals(2500L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 2, backgroundIdle = false))
+        assertEquals(5000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 5, backgroundIdle = false))
+
+        assertEquals(2500L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 1, backgroundIdle = true))
+        assertEquals(5000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 2, backgroundIdle = true))
+        assertEquals(10_000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 3, backgroundIdle = true))
+        assertEquals(20_000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 4, backgroundIdle = true))
+        assertEquals(30_000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 5, backgroundIdle = true))
+        assertEquals(30_000L, ObdPollingEngine.computeReconnectBackoffMs(attempt = 99, backgroundIdle = true))
+    }
 }
