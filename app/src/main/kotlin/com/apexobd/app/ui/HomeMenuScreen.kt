@@ -502,6 +502,10 @@ fun HomeMenuScreen(
                             .clip(RoundedCornerShape(7.dp))
                             .background(Color(0xFF161A22))
                             .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(7.dp))
+                            .clickable {
+                                startAddingNewVehicle = false
+                                activeSheet = ActiveHomeSheet.VEHICLE
+                            }
                             .padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }

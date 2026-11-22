@@ -198,4 +198,12 @@ class HudWidgetStyleTest {
         assertEquals(12.5, kpl, 0.01)
         assertEquals(8.0, UnitConverter.convert(kpl, SensorQuantity.FUEL_ECONOMY_KPL, l100Prefs).first, 0.01)
     }
+
+    @Test
+    fun `formatCalibrationFuelPresetLabel escapes percent sign safely for 25 to 100 percent presets`() {
+        assertEquals("25% (11.3 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(25, 11.25, "L"))
+        assertEquals("50% (22.5 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(50, 22.5, "L"))
+        assertEquals("75% (33.8 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(75, 33.75, "L"))
+        assertEquals("100% Full (45.0 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(100, 45.0, "L"))
+    }
 }
