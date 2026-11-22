@@ -79,8 +79,19 @@ jobs:
             dist/ApexOBD-${{ github.ref_name }}-release.aab
             dist/SHA256SUMS.txt
 
+      - name: Check Google Play publish configuration
+        id: play_config
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish AAB to Google Play (when configured)
-        if: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+        if: steps.play_config.outputs.configured == 'true'
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
