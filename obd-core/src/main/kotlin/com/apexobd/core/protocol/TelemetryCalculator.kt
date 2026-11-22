@@ -853,7 +853,9 @@ data class TripRunMetrics(
     val fuelUsedLiters: Double = 0.0,
     val elapsedSec: Long = 0L,
     val avgKpl: Double? = null,
-    val avgSpeedKmh: Double? = null
+    val avgSpeedKmh: Double? = null,
+    val segmentCount: Int = 1,
+    val currentSegmentIndex: Int = 1
 )
 
 object TripRunCalculator {

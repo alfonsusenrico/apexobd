@@ -74,6 +74,7 @@ import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.UnitConverter
 import com.apexobd.core.model.VehicleBodyType
 import com.apexobd.core.protocol.FuelEconomyTracker
+import com.apexobd.core.protocol.TripRunCalculator
 import com.apexobd.core.scheduler.ConnectionState
 import com.apexobd.core.transport.ObdConnectionType
 import java.io.File
@@ -95,6 +96,11 @@ fun HomeMenuScreen(
     val refuels by viewModel.refuelLogs.collectAsStateWithLifecycle()
     val pages by viewModel.pagesWithWidgets.collectAsStateWithLifecycle()
     val sessions by viewModel.tripSessions.collectAsStateWithLifecycle()
+    val segmentsBySession by viewModel.tripSegmentsBySession.collectAsStateWithLifecycle()
+    val isRecording by viewModel.isRecording.collectAsStateWithLifecycle()
+    val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
+    val tripRunMetrics by viewModel.tripRunMetrics.collectAsStateWithLifecycle()
+    val activeRunSegments by viewModel.activeRunSegments.collectAsStateWithLifecycle()
     val gps by viewModel.locationTracker.gps.collectAsStateWithLifecycle()
     val report by viewModel.diagnosticReport.collectAsStateWithLifecycle()
     val diagnosticError by viewModel.diagnosticError.collectAsStateWithLifecycle()
@@ -309,74 +315,184 @@ fun HomeMenuScreen(
         }
 
         val lastRunMapCard: @Composable (Modifier) -> Unit = { mod ->
-            val tripMetricLine = if (latestTrip != null) {
-                val (td, ts) = UnitConverter.convertDistanceKm(latestTrip.distanceKm, unitPrefs)
-                val (tk, ks) = UnitConverter.convertFuelEconomy(latestTrip.avgKpl, unitPrefs, fuelType)
-                val mins = (latestTrip.effectiveDurationSec() / 60L).coerceAtLeast(1L)
-                "%.1f %s · %.1f %s · %d min".format(td, ts, tk, ks, mins)
-            } else {
-                "No recorded runs"
-            }
-            val mapCenterLat = lastTripTrail.lastOrNull()?.first ?: gps.latitude
-            val mapCenterLon = lastTripTrail.lastOrNull()?.second ?: gps.longitude
-
-            Row(
-                modifier = mod
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(TorqueEvoColors.ElevatedDark)
-                    .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(12.dp))
-                    .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
-                    .padding(9.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f).fillMaxHeight(),
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = latestTrip?.let { "LAST SAVED RUN · ${dateFmt.format(Date(it.startedAtMs)).uppercase()}" } ?: "LAST SAVED RUN",
-                        fontSize = 9.5.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp,
-                        color = TorqueEvoColors.TextSecondary,
-                        maxLines = 1
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = tripMetricLine,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = TorqueEvoColors.TextPrimary,
-                        style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            if (isRecording) {
+                val (td, ts) = UnitConverter.convertDistanceKm(tripRunMetrics.distanceKm, unitPrefs)
+                val (tk, ks) = UnitConverter.convertFuelEconomy(tripRunMetrics.avgKpl ?: 0.0, unitPrefs, fuelType)
+                val clockTxt = TripRunCalculator.formatDurationClock(tripRunMetrics.elapsedSec)
+                val legCount = maxOf(tripRunMetrics.segmentCount, activeRunSegments.size, 1)
+                val statusCol = if (isRecordingPaused) TorqueEvoColors.WarnAmber else TorqueEvoColors.NominalGreen
+                val statusText = if (isRecordingPaused) {
+                    "RUN PAUSED · LEG ${tripRunMetrics.currentSegmentIndex} ($legCount LEGS)"
+                } else {
+                    "RECORDING RUN · LEG ${tripRunMetrics.currentSegmentIndex}"
                 }
-                Box(
-                    modifier = Modifier
-                        .width(114.dp)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(8.dp))
-                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                val kplTxt = if ((tripRunMetrics.avgKpl ?: 0.0) > 0.05) " · %.1f %s".format(tk, ks) else ""
+                val activeMetricLine = "%.2f %s · %s%s".format(td, ts, clockTxt, kplTxt)
+                val activeTrail = gps.trail.ifEmpty { lastTripTrail }
+                val mapCenterLat = activeTrail.lastOrNull()?.first ?: gps.latitude
+                val mapCenterLon = activeTrail.lastOrNull()?.second ?: gps.longitude
+
+                Row(
+                    modifier = mod
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TorqueEvoColors.ElevatedDark)
+                        .border(1.2.dp, statusCol.copy(alpha = 0.65f), RoundedCornerShape(12.dp))
+                        .padding(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    DualMapCanvas(
-                        mapProvider = settings.mapProvider,
-                        latitude = mapCenterLat,
-                        longitude = mapCenterLon,
-                        trail = lastTripTrail,
-                        activePmtilesPath = settings.activePmtilesPath,
-                        mapStylePreset = settings.mapStylePreset,
-                        mapCameraMode = settings.mapCameraMode,
-                        mapCursorStyle = settings.mapCursorStyle,
-                        highContrastRoads = settings.highContrastMapRoads,
-                        modifier = Modifier.fillMaxSize()
-                    )
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = statusText,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.4.sp,
+                                color = statusCol,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = activeMetricLine,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.TextPrimary,
+                                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isRecordingPaused) "▶ Resume Leg ${tripRunMetrics.currentSegmentIndex + 1}" else "⏸ Pause",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color.Black,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (isRecordingPaused) TorqueEvoColors.ElectricBlue else TorqueEvoColors.WarnAmber)
+                                    .clickable { viewModel.togglePauseResumeRecording() }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                            Text(
+                                text = "■ Finish Run",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color(0xFFDC2626))
+                                    .clickable { viewModel.toggleRecording() }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
-                    )
+                            .width(106.dp)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                    ) {
+                        DualMapCanvas(
+                            mapProvider = settings.mapProvider,
+                            latitude = mapCenterLat,
+                            longitude = mapCenterLon,
+                            trail = activeTrail,
+                            activePmtilesPath = settings.activePmtilesPath,
+                            mapStylePreset = settings.mapStylePreset,
+                            mapCameraMode = settings.mapCameraMode,
+                            mapCursorStyle = settings.mapCursorStyle,
+                            highContrastRoads = settings.highContrastMapRoads,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable { onOpenHudCanvas() }
+                        )
+                    }
+                }
+            } else {
+                val tripMetricLine = if (latestTrip != null) {
+                    val (td, ts) = UnitConverter.convertDistanceKm(latestTrip.distanceKm, unitPrefs)
+                    val (tk, ks) = UnitConverter.convertFuelEconomy(latestTrip.avgKpl, unitPrefs, fuelType)
+                    val mins = (latestTrip.effectiveDurationSec() / 60L).coerceAtLeast(1L)
+                    val legNote = if (latestTrip.segmentCount > 1) " · ${latestTrip.segmentCount} legs" else ""
+                    "%.1f %s · %.1f %s · %d min%s".format(td, ts, tk, ks, mins, legNote)
+                } else {
+                    "No recorded runs"
+                }
+                val mapCenterLat = lastTripTrail.lastOrNull()?.first ?: gps.latitude
+                val mapCenterLon = lastTripTrail.lastOrNull()?.second ?: gps.longitude
+
+                Row(
+                    modifier = mod
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(TorqueEvoColors.ElevatedDark)
+                        .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(12.dp))
+                        .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
+                        .padding(9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = latestTrip?.let { "LAST SAVED RUN · ${dateFmt.format(Date(it.startedAtMs)).uppercase()}" } ?: "LAST SAVED RUN",
+                            fontSize = 9.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp,
+                            color = TorqueEvoColors.TextSecondary,
+                            maxLines = 1
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = tripMetricLine,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TorqueEvoColors.TextPrimary,
+                            style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(114.dp)
+                            .fillMaxHeight()
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp))
+                    ) {
+                        DualMapCanvas(
+                            mapProvider = settings.mapProvider,
+                            latitude = mapCenterLat,
+                            longitude = mapCenterLon,
+                            trail = lastTripTrail,
+                            activePmtilesPath = settings.activePmtilesPath,
+                            mapStylePreset = settings.mapStylePreset,
+                            mapCameraMode = settings.mapCameraMode,
+                            mapCursorStyle = settings.mapCursorStyle,
+                            highContrastRoads = settings.highContrastMapRoads,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable { activeSheet = ActiveHomeSheet.RUNS_AND_MAPS }
+                        )
+                    }
                 }
             }
         }
@@ -663,6 +779,7 @@ fun HomeMenuScreen(
         )
         ActiveHomeSheet.RUNS_AND_MAPS -> RunLogsAndMapsSheet(
             sessions = sessions,
+            segmentsBySession = segmentsBySession,
             vehicleName = activeVehicle?.name ?: "Active Vehicle",
             settings = settings,
             onSelectMapStylePreset = { viewModel.setMapStylePreset(it) },

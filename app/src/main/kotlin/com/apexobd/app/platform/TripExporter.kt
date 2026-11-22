@@ -13,6 +13,7 @@ import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.apexobd.app.data.db.TelemetrySampleEntity
+import com.apexobd.app.data.db.TripSegmentEntity
 import com.apexobd.app.data.db.TripSessionEntity
 import java.io.File
 
@@ -47,7 +48,7 @@ object TripExporter {
             map
         }
 
-        sb.append("session_id,timestamp_ms,latitude,longitude,gps_speed_kmh")
+        sb.append("session_id,segment_index,timestamp_ms,latitude,longitude,gps_speed_kmh")
         for (k in allKeys) {
             sb.append(',').append(k)
         }
@@ -56,6 +57,7 @@ object TripExporter {
         samples.forEachIndexed { idx, s ->
             val map = parsedPayloads[idx]
             sb.append(session.id).append(',')
+                .append(s.segmentIndex).append(',')
                 .append(s.timestampMs).append(',')
                 .append(s.latitude?.toString() ?: "").append(',')
                 .append(s.longitude?.toString() ?: "").append(',')
@@ -68,7 +70,11 @@ object TripExporter {
         return sb.toString()
     }
 
-    fun toJson(session: TripSessionEntity, samples: List<TelemetrySampleEntity>): String {
+    fun toJson(
+        session: TripSessionEntity,
+        samples: List<TelemetrySampleEntity>,
+        segments: List<TripSegmentEntity> = emptyList()
+    ): String {
         val sb = StringBuilder()
         sb.append("{\n")
         sb.append("  \"sessionId\": ${session.id},\n")
@@ -82,10 +88,30 @@ object TripExporter {
         sb.append("  \"maxSpeedKmh\": ${session.maxSpeedKmh},\n")
         sb.append("  \"peakRpm\": ${session.peakRpm},\n")
         sb.append("  \"best0100Sec\": ${session.best0100Sec ?: "null"},\n")
+        sb.append("  \"segmentCount\": ${maxOf(session.segmentCount, segments.size, 1)},\n")
+        sb.append("  \"segments\": [\n")
+        segments.forEachIndexed { idx, seg ->
+            val comma = if (idx < segments.lastIndex) "," else ""
+            sb.append("    {")
+            sb.append("\"segmentIndex\": ${seg.segmentIndex}, ")
+            sb.append("\"startedAtMs\": ${seg.startedAtMs}, ")
+            sb.append("\"endedAtMs\": ${seg.endedAtMs ?: "null"}, ")
+            sb.append("\"durationSec\": ${seg.activeDurationSec}, ")
+            sb.append("\"distanceKm\": ${seg.distanceKm}, ")
+            sb.append("\"fuelUsedLiters\": ${seg.fuelUsedLiters}, ")
+            sb.append("\"avgKpl\": ${seg.avgKpl}, ")
+            sb.append("\"avgSpeedKmh\": ${seg.avgSpeedKmh}, ")
+            sb.append("\"maxSpeedKmh\": ${seg.maxSpeedKmh}, ")
+            sb.append("\"peakRpm\": ${seg.peakRpm}, ")
+            sb.append("\"sampleCount\": ${seg.sampleCount}")
+            sb.append("}$comma\n")
+        }
+        sb.append("  ],\n")
         sb.append("  \"samples\": [\n")
         samples.forEachIndexed { idx, s ->
             val comma = if (idx < samples.lastIndex) "," else ""
             sb.append("    {")
+            sb.append("\"segmentIndex\": ${s.segmentIndex}, ")
             sb.append("\"timestampMs\": ${s.timestampMs}, ")
             sb.append("\"latitude\": ${s.latitude ?: "null"}, ")
             sb.append("\"longitude\": ${s.longitude ?: "null"}, ")

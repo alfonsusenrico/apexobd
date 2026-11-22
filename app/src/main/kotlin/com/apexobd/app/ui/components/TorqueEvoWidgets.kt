@@ -1466,11 +1466,15 @@ fun PerfTimerWidget(
 @Composable
 fun DataLoggerWidget(
     isRecording: Boolean,
+    isPaused: Boolean = false,
+    segmentCount: Int = 1,
     latestSampleCount: Int,
     onToggleRecord: () -> Unit,
+    onTogglePauseResume: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalHudVisualStyle.current
+    val legBadge = if (isRecording && segmentCount > 1) " · Leg $segmentCount" else ""
     Row(
         modifier = modifier
             .fillMaxSize()
@@ -1489,26 +1493,51 @@ fun DataLoggerWidget(
                 overflow = TextOverflow.Ellipsis
             )
             Text(
-                text = if (isRecording) "REC ($latestSampleCount pts)" else "Ready",
+                text = when {
+                    isRecording && isPaused -> "PAUSED$legBadge ($latestSampleCount pts)"
+                    isRecording -> "REC$legBadge ($latestSampleCount pts)"
+                    else -> "Ready"
+                },
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (isRecording) TorqueEvoColors.NominalGreen else palette.textPrimary,
+                color = when {
+                    isRecording && isPaused -> TorqueEvoColors.WarnAmber
+                    isRecording -> TorqueEvoColors.NominalGreen
+                    else -> palette.textPrimary
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Text(
-            text = if (isRecording) "Stop" else "Start Run",
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-            maxLines = 1,
-            softWrap = false,
-            modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (isRecording) Color(0xFFDC2626) else Color(0xFF16A34A))
-                .clickable { onToggleRecord() }
-                .padding(horizontal = 10.dp, vertical = 5.dp)
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (isRecording && onTogglePauseResume != null) {
+                Text(
+                    text = if (isPaused) "Resume" else "Pause",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isPaused) TorqueEvoColors.ElectricBlue else TorqueEvoColors.WarnAmber)
+                        .clickable { onTogglePauseResume() }
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                )
+            }
+            Text(
+                text = if (isRecording) "Stop" else "Start Run",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isRecording) Color(0xFFDC2626) else Color(0xFF16A34A))
+                    .clickable { onToggleRecord() }
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+            )
+        }
     }
 }

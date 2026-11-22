@@ -228,7 +228,8 @@ data class TripSessionEntity(
     val fuelUsedLiters: Double = 0.0,
     val avgKpl: Double = 0.0,
     val activeDurationSec: Long? = null,
-    val isSaved: Boolean = true
+    val isSaved: Boolean = true,
+    val segmentCount: Int = 1
 ) {
     fun effectiveDurationSec(): Long =
         activeDurationSec ?: (((endedAtMs ?: startedAtMs) - startedAtMs).coerceAtLeast(0L) / 1000L)
@@ -239,6 +240,34 @@ data class TripSessionEntity(
         return if (distanceKm > 0.05 && sec > 0L) distanceKm / (sec / 3600.0) else 0.0
     }
 }
+
+@Entity(
+    tableName = "trip_segments",
+    foreignKeys = [
+        ForeignKey(
+            entity = TripSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [Index("sessionId")]
+)
+data class TripSegmentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val segmentIndex: Int = 1,
+    val startedAtMs: Long,
+    val endedAtMs: Long? = null,
+    val distanceKm: Double = 0.0,
+    val fuelUsedLiters: Double = 0.0,
+    val activeDurationSec: Long = 0L,
+    val avgSpeedKmh: Double = 0.0,
+    val maxSpeedKmh: Double = 0.0,
+    val peakRpm: Double = 0.0,
+    val avgKpl: Double = 0.0,
+    val sampleCount: Int = 0
+)
 
 @Entity(
     tableName = "telemetry_samples",
@@ -259,7 +288,8 @@ data class TelemetrySampleEntity(
     val latitude: Double?,
     val longitude: Double?,
     val gpsSpeedKmh: Double?,
-    val payloadJson: String
+    val payloadJson: String,
+    val segmentIndex: Int = 1
 )
 
 @Dao
@@ -360,6 +390,12 @@ interface TripDao {
     @Query("SELECT * FROM trip_sessions WHERE isSaved = 1 AND vehicleId = :vehicleId ORDER BY startedAtMs DESC")
     fun observeSessionsForVehicle(vehicleId: Long): Flow<List<TripSessionEntity>>
 
+    @Query("SELECT * FROM trip_sessions WHERE id = :sessionId LIMIT 1")
+    suspend fun getSessionById(sessionId: Long): TripSessionEntity?
+
+    @Query("SELECT * FROM trip_sessions WHERE isSaved = 0 ORDER BY startedAtMs DESC")
+    suspend fun getDraftSessionsOnce(): List<TripSessionEntity>
+
     @Insert
     suspend fun insertSession(session: TripSessionEntity): Long
 
@@ -374,6 +410,18 @@ interface TripDao {
 
     @Query("DELETE FROM trip_sessions WHERE isSaved = 0")
     suspend fun deleteDraftSessions()
+
+    @Insert
+    suspend fun insertSegment(segment: TripSegmentEntity): Long
+
+    @Update
+    suspend fun updateSegment(segment: TripSegmentEntity)
+
+    @Query("SELECT * FROM trip_segments WHERE sessionId = :sessionId ORDER BY segmentIndex ASC, id ASC")
+    suspend fun getSegmentsForSession(sessionId: Long): List<TripSegmentEntity>
+
+    @Query("SELECT * FROM trip_segments WHERE sessionId IN (:sessionIds) ORDER BY sessionId DESC, segmentIndex ASC, id ASC")
+    fun observeSegmentsForSessions(sessionIds: List<Long>): Flow<List<TripSegmentEntity>>
 
     @Insert
     suspend fun insertSample(sample: TelemetrySampleEntity)
@@ -396,9 +444,10 @@ interface TripDao {
         HudWidgetEntity::class,
         CustomPidEntity::class,
         TripSessionEntity::class,
+        TripSegmentEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -544,6 +593,57 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE trip_sessions ADD COLUMN segmentCount INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE telemetry_samples ADD COLUMN segmentIndex INTEGER NOT NULL DEFAULT 1")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS trip_segments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        sessionId INTEGER NOT NULL,
+                        segmentIndex INTEGER NOT NULL,
+                        startedAtMs INTEGER NOT NULL,
+                        endedAtMs INTEGER,
+                        distanceKm REAL NOT NULL,
+                        fuelUsedLiters REAL NOT NULL,
+                        activeDurationSec INTEGER NOT NULL,
+                        avgSpeedKmh REAL NOT NULL,
+                        maxSpeedKmh REAL NOT NULL,
+                        peakRpm REAL NOT NULL,
+                        avgKpl REAL NOT NULL,
+                        sampleCount INTEGER NOT NULL,
+                        FOREIGN KEY(sessionId) REFERENCES trip_sessions(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_trip_segments_sessionId ON trip_segments(sessionId)")
+                db.execSQL(
+                    """
+                    INSERT INTO trip_segments (
+                        sessionId, segmentIndex, startedAtMs, endedAtMs,
+                        distanceKm, fuelUsedLiters, activeDurationSec,
+                        avgSpeedKmh, maxSpeedKmh, peakRpm, avgKpl, sampleCount
+                    )
+                    SELECT
+                        id,
+                        1,
+                        startedAtMs,
+                        endedAtMs,
+                        distanceKm,
+                        fuelUsedLiters,
+                        COALESCE(activeDurationSec, MAX(0, (COALESCE(endedAtMs, startedAtMs) - startedAtMs) / 1000)),
+                        avgSpeedKmh,
+                        maxSpeedKmh,
+                        peakRpm,
+                        avgKpl,
+                        sampleCount
+                    FROM trip_sessions
+                    """.trimIndent()
+                )
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -561,7 +661,8 @@ abstract class ApexDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
-                    MIGRATION_8_9
+                    MIGRATION_8_9,
+                    MIGRATION_9_10
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
