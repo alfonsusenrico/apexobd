@@ -350,6 +350,14 @@ private fun ShareCardMetricPickerSection(
     }
 }
 
+internal fun formatCalibrationFuelPresetLabel(pctPreset: Int, presetVol: Double, volUnit: String): String {
+    return if (pctPreset == 100) {
+        "100%% Full (%.1f %s)".format(presetVol, volUnit)
+    } else {
+        "%d%% (%.1f %s)".format(pctPreset, presetVol, volUnit)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun VehicleProfileSheet(
@@ -819,11 +827,11 @@ fun VehicleProfileSheet(
                             )
                             Text(
                                 text = if (isCalibrated) {
-                                    val baseOdoDisp = UnitConverter.convertDistanceKm(targetVehicle.odometerAtBaselineKm ?: 0.0, unitPrefs).first
-                                    val baseEcuDisp = UnitConverter.convertDistanceKm(targetVehicle.ecuDistanceBaselineKm ?: 0.0, unitPrefs).first
-                                    "Calibrated (Auto-Sync Active) · Base %.1f %s @ ECU %.0f %s".format(
-                                        baseOdoDisp, distUnit, baseEcuDisp, distUnit
-                                    )
+                                val baseOdoDisp = UnitConverter.convertDistanceKm(targetVehicle.odometerAtBaselineKm ?: 0.0, unitPrefs).first
+                                val baseEcuDisp = UnitConverter.convertDistanceKm(targetVehicle.ecuDistanceBaselineKm ?: 0.0, unitPrefs).first
+                                "Calibrated (Auto-Sync Active) · Base %.1f %s @ ECU %.0f %s".format(
+                                    baseOdoDisp, distUnit, baseEcuDisp, distUnit
+                                )
                                 } else {
                                     "No native fuel/odometer sensor detected · One-time calibration recommended"
                                 },
@@ -942,11 +950,7 @@ fun VehicleProfileSheet(
                     ) {
                         listOf(25, 50, 75, 100).forEach { pctPreset ->
                             val presetVol = capValDisp * (pctPreset / 100.0)
-                            val labelTxt = if (pctPreset == 100) {
-                                "100% Full (%.1f %s)".format(presetVol, volUnit)
-                            } else {
-                                "%d%% (%.1f %s)".format(pctPreset, presetVol, volUnit)
-                            }
+                            val labelTxt = formatCalibrationFuelPresetLabel(pctPreset, presetVol, volUnit)
                             ApexFilterChip(
                                 selected = calFuelPctStr.toDoubleOrNull()?.roundToInt() == pctPreset,
                                 onClick = {
