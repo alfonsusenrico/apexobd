@@ -175,8 +175,11 @@ class EngineAndPerformanceTest {
                 }
             }
         }
-        val handshake = Elm327Client(cloneTransport).initialize(aggressiveTiming = true)
+        val client = Elm327Client(cloneTransport)
+        val handshake = client.initialize(aggressiveTiming = true)
         assertTrue(handshake.isCanProtocol)
+        assertFalse("ATST19" in commandsSeen)
+        client.applyLivePollingTiming(handshake, aggressiveTiming = true)
         assertTrue("ATST19" in commandsSeen)
     }
 

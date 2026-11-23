@@ -1192,10 +1192,12 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         val isOemToken: (String) -> Boolean = { it.startsWith("7C0_") || it.startsWith("7E0_") }
         val prevMode01 = prevSaved.filterNot(isOemToken).toSet()
         val curMode01 = pids.filterNot(isOemToken).toSet()
-        val mergedPids = if (curMode01.isNotEmpty() && curMode01 == prevMode01) {
-            pids + prevSaved.filter(isOemToken)
-        } else {
-            pids
+        val mergedPids = when {
+            curMode01.isNotEmpty() && curMode01 == prevMode01 -> pids + prevSaved.filter(isOemToken)
+            // Never shrink a vehicle's saved PIDs to a strict subset on a glitchy partial discovery
+            curMode01.isNotEmpty() && prevMode01.size > curMode01.size && prevMode01.containsAll(curMode01) ->
+                prevSaved + pids
+            else -> pids
         }
         if (activeVehicle.value?.id == targetId) {
             _supportedPids.value = mergedPids

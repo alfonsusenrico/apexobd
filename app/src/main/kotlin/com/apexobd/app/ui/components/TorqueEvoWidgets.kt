@@ -1095,6 +1095,8 @@ fun MiniMapWidget(
             trail = if (isRecording) gps.trail else emptyList(),
             activePmtilesPath = activePmtilesPath,
             bearingDeg = gps.bearingDeg,
+            speedKmh = gps.speedKmh,
+            fixTimeMs = gps.fixTimeMs,
             followNavigation = true,
             mapStylePreset = mapStylePreset,
             mapCameraMode = mapCameraMode,
