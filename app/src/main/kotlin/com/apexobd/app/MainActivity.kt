@@ -43,10 +43,16 @@ class MainActivity : ComponentActivity() {
         viewModel.onAppBackgrounded()
     }
 
+    override fun onDestroy() {
+        viewModel.setAppExitHandler(null)
+        super.onDestroy()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        viewModel.setAppExitHandler { finishAndRemoveTask() }
 
         val insetsController = WindowCompat.getInsetsController(window, window.decorView)
         insetsController.systemBarsBehavior =

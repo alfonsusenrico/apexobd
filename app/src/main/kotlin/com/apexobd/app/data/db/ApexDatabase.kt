@@ -72,6 +72,7 @@ data class VehicleProfileEntity(
     val odometerAtBaselineKm: Double? = null,
     val lastSeenEcuDistanceKm: Double? = null,
     val supportedPidsCsv: String = "",
+    val vin: String? = null,
     val best0100Sec: Double? = null,
     val isActive: Boolean = false
 ) {
@@ -447,7 +448,7 @@ interface TripDao {
         TripSegmentEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -644,6 +645,12 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE vehicle_profiles ADD COLUMN vin TEXT")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -662,7 +669,8 @@ abstract class ApexDatabase : RoomDatabase() {
                     MIGRATION_6_7,
                     MIGRATION_7_8,
                     MIGRATION_8_9,
-                    MIGRATION_9_10
+                    MIGRATION_9_10,
+                    MIGRATION_10_11
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {
