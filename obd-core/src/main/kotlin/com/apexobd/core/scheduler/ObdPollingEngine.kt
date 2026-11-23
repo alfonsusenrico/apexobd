@@ -363,7 +363,7 @@ class ObdPollingEngine(
                     }
                     transport.connect()
                     val handshake = client.initialize(aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
-                    val discovered = ObdPidRegistry.discoverSupportedPids(client)
+                    val discovered = ObdPidRegistry.discoverSupportedPids(client, isCanProtocol = handshake.isCanProtocol)
                     val meterDiscovery = if (handshake.isCanProtocol) {
                         ToyotaMeterProtocol.discover(
                             client = client,
@@ -374,6 +374,8 @@ class ObdPollingEngine(
                     }
                     val allCapabilities = discovered + meterDiscovery.capabilities.capabilityTokens()
                     val discoveredVin = runCatching { DtcDecoder.readVin(client) }.getOrNull()
+                    // Enable tight CAN live-polling timeout strictly AFTER discovery & VIN read complete
+                    client.applyLivePollingTiming(handshake, aggressiveTiming = pollingProfile != PollingProfile.ECO_BATTERY)
                     _ecuIdentity.value = EcuIdentitySnapshot(
                         vin = discoveredVin,
                         mode01Pids = discovered,

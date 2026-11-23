@@ -33,7 +33,8 @@ data class GpsSnapshot(
     val altitudeMeters: Double = 0.0,
     val roadGradePct: Double = 0.0,
     val hasRealFix: Boolean = false,
-    val trail: List<Pair<Double, Double>> = emptyList()
+    val trail: List<Pair<Double, Double>> = emptyList(),
+    val fixTimeMs: Long = 0L
 )
 
 class LocationTracker(context: Context) {
@@ -167,7 +168,8 @@ class LocationTracker(context: Context) {
             altitudeMeters = if (loc.hasAltitude()) loc.altitude else 0.0,
             roadGradePct = lastGradePct,
             hasRealFix = true,
-            trail = trailBuffer.toList()
+            trail = trailBuffer.toList(),
+            fixTimeMs = android.os.SystemClock.elapsedRealtime()
         )
     }
 
@@ -240,7 +242,7 @@ class LocationTracker(context: Context) {
                 locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     desiredInterval,
-                    if (highFrequency) 0.5f else 3f,
+                    if (highFrequency) 0f else 3f,
                     gnssListener,
                     Looper.getMainLooper()
                 )

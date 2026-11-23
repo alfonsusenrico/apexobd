@@ -73,17 +73,23 @@ class Elm327Client(
             isCan = detectCanProtocol(protoName, protoCode)
         }
 
-        // Apply tight 100ms ATST timeout only on CAN buses; keep standard P2 timeout on legacy K-line/KWP2000
-        if (aggressiveTiming && isCan) {
-            runCatching { transport.sendCommand("ATST19", timeoutMs = 1500L) }
-        }
-
         ElmHandshakeInfo(
             adapterVersion = version,
             protocolName = protoName,
             protocolCode = protoCode,
             isCanProtocol = isCan
         )
+    }
+
+    /**
+     * Applies tighter CAN live-polling timeout (`ATST19` = 100 ms) strictly AFTER one-time
+     * PID discovery (`0100`/`0120`/`0140`), `7C0` cluster probes, and Mode `09 02` VIN read
+     * have completed, so multi-ECU discovery responses never suffer premature cutoffs.
+     */
+    suspend fun applyLivePollingTiming(handshake: ElmHandshakeInfo, aggressiveTiming: Boolean) = commandMutex.withLock {
+        if (aggressiveTiming && handshake.isCanProtocol) {
+            runCatching { transport.sendCommand("ATST19", timeoutMs = 1500L) }
+        }
     }
 
     suspend fun execute(command: String, timeoutMs: Long = 2000L): ObdCommandResult = commandMutex.withLock {
@@ -186,14 +192,22 @@ class Elm327Client(
             return merged
         }
 
-        fun extractPidPayload(lines: List<String>, expectedModeResp: Int, expectedPid: Int): List<Int>? {
+        fun extractPidPayload(lines: List<String>, expectedModeResp: Int, expectedPid: Int): List<Int>? =
+            extractAllPidPayloads(lines, expectedModeResp, expectedPid).firstOrNull()
+
+        /**
+         * Extracts payloads from ALL matching response lines (e.g. when both Engine `7E8` and TCM `7E9`
+         * answer a functional `0100`/`0120`/`0140` PID support query).
+         */
+        fun extractAllPidPayloads(lines: List<String>, expectedModeResp: Int, expectedPid: Int): List<List<Int>> {
+            val out = ArrayList<List<Int>>(2)
             for (line in lines) {
                 val bytes = parseHexBytes(line)
                 if (bytes.size >= 3 && bytes[0] == expectedModeResp && bytes[1] == expectedPid) {
-                    return bytes.drop(2)
+                    out.add(bytes.drop(2))
                 }
             }
-            return null
+            return out
         }
     }
 }

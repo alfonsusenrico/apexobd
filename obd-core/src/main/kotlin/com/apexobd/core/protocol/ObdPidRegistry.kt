@@ -260,18 +260,39 @@ object ObdPidRegistry {
     /**
      * Queries `0100`, `0120`, `0140`, `0160`, `0180`, `01A0` sequentially, stopping when
      * the next block bit (bit 0 of the 4th byte) is 0.
-     * Returns the set of supported 2-digit uppercase Mode 01 PID hex codes (e.g. "0C", "05").
+     *
+     * Unions bitmasks from ALL responding ECUs per block (so a secondary module like TCM `7E9`
+     * answering before ECM `7E8` never hides engine PIDs) and retries any advertised block up to
+     * 3 times before giving up so transient CAN/Wi-Fi hiccups never drop blocks like `0140`.
      */
-    suspend fun discoverSupportedPids(client: Elm327Client): Set<String> {
+    suspend fun discoverSupportedPids(client: Elm327Client, isCanProtocol: Boolean = false): Set<String> {
         val supported = linkedSetOf<String>()
         for (blockHex in supportPidBlocks) {
-            val res = client.execute("01$blockHex")
-            if (res !is ObdCommandResult.Success) break
             val blockInt = blockHex.toInt(16)
-            val payload = Elm327Client.extractPidPayload(res.lines, 0x41, blockInt) ?: break
-            if (payload.size < 4) break
+            var blockSupported: Set<String> = emptySet()
 
-            val blockSupported = decodeBitmask(blockInt, payload.take(4))
+            for (attempt in 0 until 3) {
+                // On attempt 2 over CAN, also try single-frame hint `"01XX1"` in case functional multi-ECU timed out
+                val cmd = if (attempt == 2 && isCanProtocol) "01${blockHex}1" else "01$blockHex"
+                val res = client.execute(cmd, timeoutMs = 2000L)
+                if (res is ObdCommandResult.Success) {
+                    val payloads = Elm327Client.extractAllPidPayloads(res.lines, 0x41, blockInt)
+                        .filter { it.size >= 4 }
+                    if (payloads.isNotEmpty()) {
+                        val union = linkedSetOf<String>()
+                        for (p in payloads) {
+                            union.addAll(decodeBitmask(blockInt, p.take(4)))
+                        }
+                        blockSupported = union
+                        break
+                    }
+                }
+                if (attempt < 2) {
+                    kotlinx.coroutines.delay(80L)
+                }
+            }
+
+            if (blockSupported.isEmpty()) break
             supported.addAll(blockSupported)
 
             val nextBlockCode = "%02X".format(blockInt + 0x20)

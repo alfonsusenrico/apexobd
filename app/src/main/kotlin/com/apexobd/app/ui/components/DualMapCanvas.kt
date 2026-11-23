@@ -74,6 +74,113 @@ import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
 import java.io.File
 
+/**
+ * 60 FPS constant-velocity predictive map glider (Google Maps / Waze style) for 1 Hz GNSS fixes.
+ * Advances a dead-reckoned target along heading at current speed across the 1000 ms inter-fix gap
+ * (clamped to <= 1.4 s extrapolation) and softly phase-locks displayed coordinates onto it so the
+ * map glides smoothly at constant velocity without burst-brake-pause stepping.
+ */
+internal class MapMotionGlider(
+    initialLat: Double,
+    initialLon: Double,
+    initialBearingDeg: Float
+) {
+    var dispLat: Double = initialLat
+        private set
+    var dispLon: Double = initialLon
+        private set
+    var dispBearing: Float = normalizeBearing(initialBearingDeg)
+        private set
+
+    private var anchorLat: Double = initialLat
+    private var anchorLon: Double = initialLon
+    private var lastFixTimeMs: Long = -1L
+    private var elapsedSinceFixSec: Double = 0.0
+    private var smoothSpeedMps: Double = 0.0
+
+    fun step(
+        targetLat: Double,
+        targetLon: Double,
+        targetBearingDeg: Float,
+        speedKmh: Double,
+        fixTimeMs: Long,
+        dtMs: Double
+    ): Boolean {
+        val dtSec = (dtMs.coerceIn(4.0, 64.0)) / 1000.0
+        val prevLat = dispLat
+        val prevLon = dispLon
+        val prevBearing = dispBearing
+
+        // Snap immediately on large GPS jump (> ~550 m) instead of panning across town
+        if (kotlin.math.abs(targetLat - dispLat) > 0.005 || kotlin.math.abs(targetLon - dispLon) > 0.005) {
+            dispLat = targetLat
+            dispLon = targetLon
+            dispBearing = normalizeBearing(targetBearingDeg)
+            anchorLat = targetLat
+            anchorLon = targetLon
+            lastFixTimeMs = fixTimeMs
+            elapsedSinceFixSec = 0.0
+            smoothSpeedMps = (speedKmh / 3.6).coerceAtLeast(0.0)
+            return true
+        }
+
+        val isNewFix = fixTimeMs != lastFixTimeMs ||
+            kotlin.math.abs(targetLat - anchorLat) > 1e-7 ||
+            kotlin.math.abs(targetLon - anchorLon) > 1e-7
+
+        if (isNewFix) {
+            anchorLat = targetLat
+            anchorLon = targetLon
+            lastFixTimeMs = fixTimeMs
+            elapsedSinceFixSec = 0.0
+        } else {
+            elapsedSinceFixSec = (elapsedSinceFixSec + dtSec).coerceAtMost(MAX_EXTRAPOLATION_SEC)
+        }
+
+        val rawSpeedMps = if (speedKmh >= MIN_GLIDE_SPEED_KMH) speedKmh / 3.6 else 0.0
+        val speedAlpha = (1.0 - kotlin.math.exp(-dtMs / 180.0)).coerceIn(0.04, 1.0)
+        smoothSpeedMps += (rawSpeedMps - smoothSpeedMps) * speedAlpha
+        if (rawSpeedMps == 0.0 && smoothSpeedMps < 0.15) smoothSpeedMps = 0.0
+
+        val rotAlpha = (1.0 - kotlin.math.exp(-dtMs / 240.0)).toFloat().coerceIn(0.03f, 1.0f)
+        val normTargetBearing = normalizeBearing(targetBearingDeg)
+        val shortestTurn = ((normTargetBearing - dispBearing + 540f) % 360f) - 180f
+        dispBearing = normalizeBearing(dispBearing + shortestTurn * rotAlpha)
+
+        // Constant-velocity dead-reckoned target bounded to MAX_EXTRAPOLATION_SEC
+        val predLat: Double
+        val predLon: Double
+        if (smoothSpeedMps > 0.25 && elapsedSinceFixSec > 0.0) {
+            val bearingRad = Math.toRadians(dispBearing.toDouble())
+            val distM = smoothSpeedMps * elapsedSinceFixSec
+            val dNorthM = distM * kotlin.math.cos(bearingRad)
+            val dEastM = distM * kotlin.math.sin(bearingRad)
+            val cosLat = kotlin.math.cos(Math.toRadians(anchorLat)).coerceAtLeast(0.15)
+            predLat = anchorLat + (dNorthM / METERS_PER_DEG_LAT)
+            predLon = anchorLon + (dEastM / (METERS_PER_DEG_LAT * cosLat))
+        } else {
+            predLat = anchorLat
+            predLon = anchorLon
+        }
+
+        val posAlpha = (1.0 - kotlin.math.exp(-dtMs / 260.0)).coerceIn(0.03, 1.0)
+        dispLat += (predLat - dispLat) * posAlpha
+        dispLon += (predLon - dispLon) * posAlpha
+
+        return kotlin.math.abs(dispLat - prevLat) > 1e-8 ||
+            kotlin.math.abs(dispLon - prevLon) > 1e-8 ||
+            kotlin.math.abs(dispBearing - prevBearing) > 0.03f
+    }
+
+    companion object {
+        private const val METERS_PER_DEG_LAT = 111_320.0
+        private const val MAX_EXTRAPOLATION_SEC = 1.4
+        private const val MIN_GLIDE_SPEED_KMH = 1.5
+
+        private fun normalizeBearing(deg: Float): Float = ((deg % 360f) + 360f) % 360f
+    }
+}
+
 @Composable
 fun DualMapCanvas(
     mapProvider: MapProvider,
@@ -84,6 +191,8 @@ fun DualMapCanvas(
     activePmtilesPath: String? = null,
     interactive: Boolean = false,
     bearingDeg: Float = 0f,
+    speedKmh: Double = 0.0,
+    fixTimeMs: Long = 0L,
     followNavigation: Boolean = false,
     mapStylePreset: MapStylePreset = MapStylePreset.DARK_CONTRAST,
     mapCameraMode: MapCameraMode = MapCameraMode.NAV_3D_45,
@@ -107,6 +216,8 @@ fun DualMapCanvas(
             activePmtilesPath = activePmtilesPath,
             interactive = interactive,
             bearingDeg = bearingDeg,
+            speedKmh = speedKmh,
+            fixTimeMs = fixTimeMs,
             followNavigation = followNavigation,
             mapStylePreset = mapStylePreset,
             mapCameraMode = mapCameraMode,
@@ -331,6 +442,8 @@ private fun MapLibreLayer(
     activePmtilesPath: String?,
     interactive: Boolean,
     bearingDeg: Float,
+    speedKmh: Double,
+    fixTimeMs: Long,
     followNavigation: Boolean,
     mapStylePreset: MapStylePreset,
     mapCameraMode: MapCameraMode,
@@ -347,6 +460,8 @@ private fun MapLibreLayer(
     val targetLatRef = rememberUpdatedState(latitude)
     val targetLonRef = rememberUpdatedState(longitude)
     val targetBearingRef = rememberUpdatedState(bearingDeg)
+    val targetSpeedRef = rememberUpdatedState(speedKmh)
+    val targetFixTimeRef = rememberUpdatedState(fixTimeMs)
 
     val validPmtiles = remember(activePmtilesPath) {
         activePmtilesPath?.takeIf { File(it).exists() }
@@ -451,10 +566,13 @@ private fun MapLibreLayer(
             return@LaunchedEffect
         }
 
-        var dispLat = targetLatRef.value
-        var dispLon = targetLonRef.value
-        var dispBearing = targetBearingRef.value
+        val glider = MapMotionGlider(
+            initialLat = targetLatRef.value,
+            initialLon = targetLonRef.value,
+            initialBearingDeg = targetBearingRef.value
+        )
         var lastNanos = 0L
+        var forceFirstCamera = true
 
         while (true) {
             withFrameNanos { frameNanos ->
@@ -463,40 +581,34 @@ private fun MapLibreLayer(
                     lastNanos = frameNanos
                     return@withFrameNanos
                 }
-                val dtMs = if (lastNanos == 0L) 16.0 else ((frameNanos - lastNanos) / 1_000_000.0).coerceIn(4.0, 64.0)
+                val dtMs = if (lastNanos == 0L) 16.6 else ((frameNanos - lastNanos) / 1_000_000.0).coerceIn(4.0, 64.0)
                 lastNanos = frameNanos
 
-                val tLat = targetLatRef.value
-                val tLon = targetLonRef.value
-                val tBearing = targetBearingRef.value
+                val moved = glider.step(
+                    targetLat = targetLatRef.value,
+                    targetLon = targetLonRef.value,
+                    targetBearingDeg = targetBearingRef.value,
+                    speedKmh = targetSpeedRef.value,
+                    fixTimeMs = targetFixTimeRef.value,
+                    dtMs = dtMs
+                )
 
-                // If large jump (>500m), snap directly instead of panning across city
-                if (kotlin.math.abs(tLat - dispLat) > 0.005 || kotlin.math.abs(tLon - dispLon) > 0.005) {
-                    dispLat = tLat
-                    dispLon = tLon
-                    dispBearing = tBearing
-                } else {
-                    val posAlpha = (1.0 - kotlin.math.exp(-dtMs / 160.0)).coerceIn(0.04, 1.0)
-                    val rotAlpha = (1.0 - kotlin.math.exp(-dtMs / 190.0)).toFloat().coerceIn(0.04f, 1.0f)
-                    dispLat += (tLat - dispLat) * posAlpha
-                    dispLon += (tLon - dispLon) * posAlpha
-                    val shortestTurn = ((tBearing - dispBearing + 540f) % 360f) - 180f
-                    dispBearing = (dispBearing + shortestTurn * rotAlpha + 360f) % 360f
+                if (moved || forceFirstCamera) {
+                    forceFirstCamera = false
+                    val topPad = if (mapView.height > 80 && mapCameraMode.tiltDeg > 5.0) mapView.height * 0.22 else 0.0
+                    val cam = CameraPosition.Builder()
+                        .target(org.maplibre.android.geometry.LatLng(glider.dispLat, glider.dispLon))
+                        .zoom(mapCameraMode.zoomLevel)
+                        .tilt(mapCameraMode.tiltDeg)
+                        .bearing(glider.dispBearing.toDouble())
+                        .padding(0.0, topPad, 0.0, 0.0)
+                        .build()
+                    mlMap.moveCamera(CameraUpdateFactory.newCameraPosition(cam))
+                    val puckFeat = Feature.fromGeometry(Point.fromLngLat(glider.dispLon, glider.dispLat)).apply {
+                        addNumberProperty("bearing", glider.dispBearing)
+                    }
+                    style.getSourceAs<GeoJsonSource>("apex-puck-src")?.setGeoJson(FeatureCollection.fromFeature(puckFeat))
                 }
-
-                val topPad = if (mapView.height > 80 && mapCameraMode.tiltDeg > 5.0) mapView.height * 0.22 else 0.0
-                val cam = CameraPosition.Builder()
-                    .target(org.maplibre.android.geometry.LatLng(dispLat, dispLon))
-                    .zoom(mapCameraMode.zoomLevel)
-                    .tilt(mapCameraMode.tiltDeg)
-                    .bearing(dispBearing.toDouble())
-                    .padding(0.0, topPad, 0.0, 0.0)
-                    .build()
-                mlMap.moveCamera(CameraUpdateFactory.newCameraPosition(cam))
-                val puckFeat = Feature.fromGeometry(Point.fromLngLat(dispLon, dispLat)).apply {
-                    addNumberProperty("bearing", dispBearing)
-                }
-                style.getSourceAs<GeoJsonSource>("apex-puck-src")?.setGeoJson(FeatureCollection.fromFeature(puckFeat))
             }
         }
     }
