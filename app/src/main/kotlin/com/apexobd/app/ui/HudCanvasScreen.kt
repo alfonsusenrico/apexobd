@@ -154,6 +154,8 @@ fun ApexAppRoot(
     var onHudPage by remember { mutableStateOf(false) }
     val pendingSaveTrip by viewModel.pendingSaveTrip.collectAsStateWithLifecycle()
     val pendingSaveSegments by viewModel.pendingSaveSegments.collectAsStateWithLifecycle()
+    val showStartupVehiclePicker by viewModel.showStartupVehiclePicker.collectAsStateWithLifecycle()
+    val vehicles by viewModel.vehicles.collectAsStateWithLifecycle()
     val shareCardDraft by viewModel.shareCardDraft.collectAsStateWithLifecycle()
     val shareCardPreparing by viewModel.shareCardPreparing.collectAsStateWithLifecycle()
     val shareCardExporting by viewModel.shareCardExporting.collectAsStateWithLifecycle()
@@ -175,6 +177,15 @@ fun ApexAppRoot(
             HudCanvasScreen(
                 viewModel = viewModel,
                 onBackToHome = { onHudPage = false }
+            )
+        }
+
+        if (showStartupVehiclePicker && vehicles.size >= 2) {
+            StartupVehiclePickerDialog(
+                vehicles = vehicles,
+                activeVehicleId = activeVehicle?.id,
+                unitPrefs = settings.toUnitPreferences(),
+                onSelectVehicle = { vid -> viewModel.confirmStartupVehicle(vid) }
             )
         }
 

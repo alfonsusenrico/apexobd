@@ -789,6 +789,59 @@ fun VehicleProfileSheet(
 
             val targetVehicle = editingExisting
             val hasNativeSensors = targetVehicle != null && (targetVehicle.hasNativeFuelSensor() || targetVehicle.hasNativeClusterOdometer())
+            if (targetVehicle != null) {
+                val pidCount = targetVehicle.savedSupportedPids().size
+                val sensorBadges = buildList {
+                    if (targetVehicle.hasNativeFuelSensor()) add("Native Fuel")
+                    if (targetVehicle.hasNativeClusterOdometer()) add("Native Odometer")
+                    if (ToyotaMeterCapabilities.TOKEN_ECM_DIST_2131 in targetVehicle.savedSupportedPids()) add("ECM 2131")
+                }
+                if (!targetVehicle.vin.isNullOrBlank() || pidCount > 0 || sensorBadges.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(TorqueEvoColors.CardSurface)
+                            .border(
+                                1.dp,
+                                if (hasNativeSensors) TorqueEvoColors.NominalGreen.copy(alpha = 0.45f)
+                                else TorqueEvoColors.SubtleBorder,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "ECU Auto-Detect Signature",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = TorqueEvoColors.TextPrimary
+                            )
+                            Text(
+                                text = if (hasNativeSensors) "Native Sensors Active" else "$pidCount PIDs Bound",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (hasNativeSensors) TorqueEvoColors.NominalGreen else TorqueEvoColors.SkyBlue
+                            )
+                        }
+                        val idSummary = buildList {
+                            targetVehicle.vin?.takeIf { it.isNotBlank() }?.let { add("VIN $it") }
+                            if (pidCount > 0) add("$pidCount ECU PIDs")
+                            if (sensorBadges.isNotEmpty()) add(sensorBadges.joinToString(" · "))
+                        }.joinToString(" · ")
+                        Text(
+                            text = idSummary,
+                            fontSize = 10.5.sp,
+                            color = TorqueEvoColors.TextSecondary
+                        )
+                    }
+                }
+            }
             if (targetVehicle != null && !hasNativeSensors && fuelType != FuelType.ELECTRIC) {
                 val isTargetActive = targetVehicle.id == activeVehicle?.id
                 val isObdConnected = isTargetActive && connectionState is ConnectionState.Connected
@@ -3445,6 +3498,139 @@ private fun ComposerCheckboxItem(
             color = if (checked) TorqueEvoColors.TextPrimary else TorqueEvoColors.TextSecondary,
             maxLines = 1
         )
+    }
+}
+
+@Composable
+fun StartupVehiclePickerDialog(
+    vehicles: List<VehicleProfileEntity>,
+    activeVehicleId: Long?,
+    unitPrefs: UnitPreferences,
+    onSelectVehicle: (Long) -> Unit
+) {
+    Dialog(
+        onDismissRequest = {},
+        properties = DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        ConfigureEdgeToEdgeDialogWindow()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xD6000000))
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.union(WindowInsets.mandatorySystemGestures.only(WindowInsetsSides.Bottom))
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(max = 460.dp)
+                    .fillMaxWidth(0.90f)
+                    .heightIn(max = 520.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(TorqueEvoColors.ElevatedDark)
+                    .border(1.dp, TorqueEvoColors.ElectricBlue.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                    .verticalScroll(rememberScrollState())
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Select Vehicle for This Drive",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary
+                )
+                Text(
+                    text = "Pick the car you are driving so odometer, fuel, and run logs stay separate. ApexOBD also auto-detects your car by ECU signature on connect.",
+                    fontSize = 11.5.sp,
+                    color = TorqueEvoColors.TextSecondary
+                )
+                vehicles.sortedBy { it.id }.forEach { v ->
+                    val isLastUsed = v.id == activeVehicleId
+                    val photoBmp = remember(v.photoUri) {
+                        v.photoUri?.takeIf { File(it).exists() }?.let { path ->
+                            runCatching { BitmapFactory.decodeFile(path)?.asImageBitmap() }.getOrNull()
+                        }
+                    }
+                    val (odoVal, distSym) = UnitConverter.convertDistanceKm(v.allTimeOdometerKm, unitPrefs)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isLastUsed) Color(0xFF0C1826) else TorqueEvoColors.CardSurface)
+                            .border(
+                                width = if (isLastUsed) 1.5.dp else 1.dp,
+                                color = if (isLastUsed) TorqueEvoColors.ElectricBlue else TorqueEvoColors.SubtleBorder,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .clickable { onSelectVehicle(v.id) }
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 56.dp, height = 42.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF0A0F18))
+                                .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (photoBmp != null) {
+                                Image(
+                                    bitmap = photoBmp,
+                                    contentDescription = v.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                Text(
+                                    text = v.name.take(2).uppercase(),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = TorqueEvoColors.ElectricBlue
+                                )
+                            }
+                        }
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = v.name,
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = TorqueEvoColors.TextPrimary
+                                )
+                                if (isLastUsed) {
+                                    Text(
+                                        text = "LAST USED",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TorqueEvoColors.ElectricBlue,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(TorqueEvoColors.DimBlue)
+                                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "${v.specSummaryLine()} · ${odoVal.roundToInt()} $distSym",
+                                fontSize = 11.sp,
+                                color = TorqueEvoColors.TextSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -10,6 +10,8 @@ import com.apexobd.core.model.FuelType
 import com.apexobd.core.model.TransmissionType
 import com.apexobd.core.model.VehicleProfile
 import com.apexobd.core.protocol.DerivedSensorCatalog
+import com.apexobd.core.protocol.DtcDecoder
+import com.apexobd.core.protocol.EcuIdentitySnapshot
 import com.apexobd.core.protocol.FuelEconomyTracker
 import com.apexobd.core.protocol.FuelMetricsSnapshot
 import com.apexobd.core.protocol.ObdPidRegistry
@@ -254,6 +256,9 @@ class ObdPollingEngine(
     private val _ecuDistanceSinceClearKm = MutableStateFlow<Double?>(null)
     val ecuDistanceSinceClearKm: StateFlow<Double?> = _ecuDistanceSinceClearKm.asStateFlow()
 
+    private val _ecuIdentity = MutableStateFlow<EcuIdentitySnapshot?>(null)
+    val ecuIdentity: StateFlow<EcuIdentitySnapshot?> = _ecuIdentity.asStateFlow()
+
     @Volatile
     private var latestMeterFuelLiters: Double? = null
 
@@ -368,6 +373,12 @@ class ObdPollingEngine(
                         ToyotaMeterDiscoveryResult(ToyotaMeterCapabilities())
                     }
                     val allCapabilities = discovered + meterDiscovery.capabilities.capabilityTokens()
+                    val discoveredVin = runCatching { DtcDecoder.readVin(client) }.getOrNull()
+                    _ecuIdentity.value = EcuIdentitySnapshot(
+                        vin = discoveredVin,
+                        mode01Pids = discovered,
+                        allCapabilities = allCapabilities
+                    )
                     _connectionState.value = ConnectionState.Connected(handshake, allCapabilities.size)
                     _supportedPids.value = allCapabilities
                     _availableSensorKeys.value = computeAvailableSensorKeys(allCapabilities)
