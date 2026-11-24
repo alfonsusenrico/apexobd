@@ -136,13 +136,23 @@ enum class ShareCardMetric(
     }
 }
 
-enum class HudGridScale(val label: String, val cols: Int, val rows: Int) {
-    LARGE_6X3("Large (6×3)", 6, 3),
-    STANDARD_8X4("Standard (8×4)", 8, 4),
-    BALANCED_10X5("Balanced (10×5)", 10, 5),
-    DYNAMIC_12X6("Dense (12×6)", 12, 6),
-    FINE_16X8("Fine (16×8)", 16, 8),
-    ULTRA_24X12("Ultra (24×12)", 24, 12)
+enum class HudGridScale(
+    val label: String,
+    val cols: Int,
+    val rows: Int,
+    val minWidgetCols: Int = 1,
+    val minWidgetRows: Int = 1,
+    val defaultWidgetCols: Int = 2,
+    val defaultWidgetRows: Int = 1
+) {
+    LARGE_6X3("Large (6×3)", 6, 3, minWidgetCols = 1, minWidgetRows = 1, defaultWidgetCols = 2, defaultWidgetRows = 1),
+    STANDARD_8X4("Standard (8×4)", 8, 4, minWidgetCols = 1, minWidgetRows = 1, defaultWidgetCols = 2, defaultWidgetRows = 1),
+    BALANCED_10X5("Balanced (10×5)", 10, 5, minWidgetCols = 1, minWidgetRows = 1, defaultWidgetCols = 2, defaultWidgetRows = 1),
+    DYNAMIC_12X6("Dense (12×6)", 12, 6, minWidgetCols = 1, minWidgetRows = 1, defaultWidgetCols = 3, defaultWidgetRows = 2),
+    FINE_16X8("Fine (16×8)", 16, 8, minWidgetCols = 1, minWidgetRows = 1, defaultWidgetCols = 4, defaultWidgetRows = 2),
+    ULTRA_24X12("Ultra (24×12)", 24, 12, minWidgetCols = 2, minWidgetRows = 1, defaultWidgetCols = 6, defaultWidgetRows = 3),
+    MICRO_64X32("Micro (64×32)", 64, 32, minWidgetCols = 4, minWidgetRows = 3, defaultWidgetCols = 16, defaultWidgetRows = 8),
+    ULTRA_80X40("Ultra Micro (80×40)", 80, 40, minWidgetCols = 5, minWidgetRows = 4, defaultWidgetCols = 20, defaultWidgetRows = 10)
 }
 
 enum class HudThemePreset(val label: String, val accentHex: Long) {

@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Ultra-Fine HUD Grid Scales and Visible Edit Grid
-The HUD canvas MUST support fine-grained `16×8` (`FINE_16X8`) and `24×12` (`ULTRA_24X12`) grid scales with tighter cell gaps and outer padding, and MUST render visible grid guide lines whenever Edit Mode is active regardless of snap mode.
+The HUD canvas MUST support fine-grained micro-grid scales up to `64×32` (`MICRO_64X32`) and `80×40` (`ULTRA_80X40`) with zero inter-cell gaps and crisp graph-paper guide lines whenever Edit Mode is active regardless of snap mode, MUST proportionally rescale all existing components when switching grid scales so components keep their real physical size on screen, and MUST enforce readable minimum component spans per grid scale.
 
-#### Scenario: User switches to Ultra 24x12 grid in Edit Mode
-- **WHEN** the user enables Edit Mode and selects `Ultra (24×12)` grid scale
-- **THEN** the canvas renders a `24×12` visible dashed grid with compact cell gaps and allows components to be positioned and sized at single-cell precision
+#### Scenario: User switches from 8x4 to 64x32 micro-grid
+- **WHEN** the user switches from `Standard (8×4)` to `Micro (64×32)`
+- **THEN** a `2×1` component at `(2, 1)` rescales to `16×8` at `(16, 8)` keeping its exact physical size while allowing 1-micro-cell positioning and resizing down to a compact minimum (`4×3`) with proportionally scaled labels and units
 
 ### Requirement: Direct On-Component Edge-Arrow Resize and Hold-Middle Move
 In Edit Mode, the selected HUD component MUST display resize arrow handles on all four sides (`LEFT`, `RIGHT`, `TOP`, `BOTTOM`) that resize the component directly when dragged, and holding the middle of a component MUST allow dragging it freely across the canvas without opening a modal menu.

@@ -6,6 +6,7 @@ import com.apexobd.app.ui.GridBounds
 import com.apexobd.app.ui.WidgetResizeEdge
 import com.apexobd.app.ui.computeResizedGridBounds
 import com.apexobd.app.ui.findFirstFreeGridSlot
+import com.apexobd.app.ui.rescaleWidgetBoundsForGridChange
 import com.apexobd.app.ui.resolveGridPlacements
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -129,5 +130,64 @@ class HudGridLayoutTest {
             GridBounds(col = 4, row = 2, spanCols = 4, spanRows = 10),
             computeResizedGridBounds(4, 2, 4, 3, WidgetResizeEdge.BOTTOM, deltaCells = 20, totalCols = 24, totalRows = 12)
         )
+    }
+
+    @Test
+    fun `rescaleWidgetBoundsForGridChange preserves physical size across micro-grid transitions`() {
+        val standardTile = HudWidgetEntity(
+            id = 10L,
+            pageId = 1L,
+            sensorKey = "kpl_instant",
+            displayType = "DIGITAL",
+            spanCols = 2,
+            spanRows = 1,
+            sortOrder = 0,
+            gridCol = 2,
+            gridRow = 1
+        )
+        // 8x4 -> 64x32 (8x finer): 2x1 at (2,1) becomes 16x8 at (16,8) — identical 25%x25% physical area
+        val micro = rescaleWidgetBoundsForGridChange(
+            widget = standardTile,
+            fromCols = HudGridScale.STANDARD_8X4.cols,
+            fromRows = HudGridScale.STANDARD_8X4.rows,
+            toCols = HudGridScale.MICRO_64X32.cols,
+            toRows = HudGridScale.MICRO_64X32.rows,
+            minSpanCols = HudGridScale.MICRO_64X32.minWidgetCols,
+            minSpanRows = HudGridScale.MICRO_64X32.minWidgetRows
+        )
+        assertEquals(16, micro.spanCols)
+        assertEquals(8, micro.spanRows)
+        assertEquals(16, micro.gridCol)
+        assertEquals(8, micro.gridRow)
+
+        // 64x32 -> 80x40 (1/10th standard tile): 16x8 at (16,8) becomes 20x10 at (20,10)
+        val ultraMicro = rescaleWidgetBoundsForGridChange(
+            widget = micro,
+            fromCols = HudGridScale.MICRO_64X32.cols,
+            fromRows = HudGridScale.MICRO_64X32.rows,
+            toCols = HudGridScale.ULTRA_80X40.cols,
+            toRows = HudGridScale.ULTRA_80X40.rows,
+            minSpanCols = HudGridScale.ULTRA_80X40.minWidgetCols,
+            minSpanRows = HudGridScale.ULTRA_80X40.minWidgetRows
+        )
+        assertEquals(20, ultraMicro.spanCols)
+        assertEquals(10, ultraMicro.spanRows)
+        assertEquals(20, ultraMicro.gridCol)
+        assertEquals(10, ultraMicro.gridRow)
+
+        // Resizing left edge on 64x32 stops at readable minimum (minWidgetCols = 4)
+        val clamped = computeResizedGridBounds(
+            startCol = 16,
+            startRow = 8,
+            startSpanCols = 16,
+            startSpanRows = 8,
+            edge = WidgetResizeEdge.LEFT,
+            deltaCells = 20,
+            totalCols = 64,
+            totalRows = 32,
+            minSpanCols = HudGridScale.MICRO_64X32.minWidgetCols,
+            minSpanRows = HudGridScale.MICRO_64X32.minWidgetRows
+        )
+        assertEquals(GridBounds(col = 28, row = 8, spanCols = 4, spanRows = 8), clamped)
     }
 }

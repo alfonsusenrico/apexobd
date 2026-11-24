@@ -11,9 +11,10 @@ import com.apexobd.app.ui.components.evaluateMetricAlert
 import com.apexobd.app.ui.components.formatTelemetryValue
 import com.apexobd.app.ui.components.isRpmSensorKey
 import com.apexobd.app.ui.components.rpmDialMaxForRedline
+import com.apexobd.app.ui.components.proportionalLabelSp
+import com.apexobd.app.ui.components.proportionalUnitSp
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
-import com.apexobd.app.ui.components.shouldLiftUnitToHeader
 import com.apexobd.app.ui.theme.resolveHudVisualPalette
 import com.apexobd.core.model.AirflowUnit
 import com.apexobd.core.model.FuelEconomyUnit
@@ -209,10 +210,14 @@ class HudWidgetStyleTest {
     }
 
     @Test
-    fun `shouldLiftUnitToHeader moves unit to header on compact tiles so XX_XX values stay uncrushed`() {
-        assertTrue(shouldLiftUnitToHeader(110f, "km/L"))
-        assertTrue(shouldLiftUnitToHeader(150f, "%"))
-        assertFalse(shouldLiftUnitToHeader(180f, "km/L"))
-        assertFalse(shouldLiftUnitToHeader(110f, ""))
+    fun `proportionalLabelSp and proportionalUnitSp scale uniformly with component size`() {
+        val smallLabel = proportionalLabelSp(availWidthDp = 50f, availHeightDp = 32f)
+        val medLabel = proportionalLabelSp(availWidthDp = 120f, availHeightDp = 64f)
+        val largeLabel = proportionalLabelSp(availWidthDp = 240f, availHeightDp = 110f)
+        assertTrue("Expected small < medium < large: $smallLabel, $medLabel, $largeLabel", smallLabel < medLabel && medLabel < largeLabel)
+
+        val smallUnit = proportionalUnitSp(availHeightDp = 32f)
+        val largeUnit = proportionalUnitSp(availHeightDp = 110f)
+        assertTrue("Expected smallUnit < largeUnit: $smallUnit, $largeUnit", smallUnit < largeUnit)
     }
 }
