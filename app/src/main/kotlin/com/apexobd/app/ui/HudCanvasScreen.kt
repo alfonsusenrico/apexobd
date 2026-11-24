@@ -1392,76 +1392,98 @@ private fun ProportionalHudPageCanvas(
                             onEnableGps = onEnableGps
                         )
                     }
+                }
 
-                    // Direct 4-side edge resize arrows on the selected widget in Edit Mode
-                    if (editMode && isSelected && !isDraggingThis) {
-                        val onEdgePreview: (WidgetResizeEdge, Float) -> Unit = { edge, cumulativePx ->
-                            val step = if (edge == WidgetResizeEdge.LEFT || edge == WidgetResizeEdge.RIGHT) stepX else stepY
-                            val deltaCells = (cumulativePx / step).roundToInt()
-                            val next = computeResizedGridBounds(
-                                startCol = latestStartCol,
-                                startRow = latestStartRow,
-                                startSpanCols = latestBaseSw,
-                                startSpanRows = latestBaseSh,
-                                edge = edge,
-                                deltaCells = deltaCells,
-                                totalCols = cols,
-                                totalRows = rows,
-                                minSpanCols = gridScale.minWidgetCols,
-                                minSpanRows = gridScale.minWidgetRows
-                            )
-                            resizePreview = next
-                            snapPreview = SnapDragPreview(w.id, next.col, next.row, next.spanCols, next.spanRows)
-                        }
-                        val onEdgeFinish: (Boolean) -> Unit = { commit ->
-                            val finalBounds = resizePreview
-                            if (commit && finalBounds != null) {
-                                droppedOverride = Offset(stepX * finalBounds.col, stepY * finalBounds.row)
-                                latestOnCommitBounds(
-                                    latestWidget,
-                                    finalBounds.col,
-                                    finalBounds.row,
-                                    finalBounds.spanCols,
-                                    finalBounds.spanRows
-                                )
-                            }
-                            resizePreview = null
-                            snapPreview = null
-                            latestOnDragging(false)
-                        }
-                        WidgetEdgeResizeHandle(
-                            edge = WidgetResizeEdge.LEFT,
-                            glyph = "◄",
-                            modifier = Modifier.align(Alignment.CenterStart).zIndex(5f),
-                            onStart = { latestOnDragging(true) },
-                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.LEFT, px) },
-                            onFinish = onEdgeFinish
+                // Direct 4-side edge resize arrows rendered OUTSIDE the selected widget so small tiles stay 100% movable
+                if (editMode && isSelected && !isDraggingThis) {
+                    val onEdgePreview: (WidgetResizeEdge, Float) -> Unit = { edge, cumulativePx ->
+                        val step = if (edge == WidgetResizeEdge.LEFT || edge == WidgetResizeEdge.RIGHT) stepX else stepY
+                        val deltaCells = (cumulativePx / step).roundToInt()
+                        val next = computeResizedGridBounds(
+                            startCol = latestStartCol,
+                            startRow = latestStartRow,
+                            startSpanCols = latestBaseSw,
+                            startSpanRows = latestBaseSh,
+                            edge = edge,
+                            deltaCells = deltaCells,
+                            totalCols = cols,
+                            totalRows = rows,
+                            minSpanCols = gridScale.minWidgetCols,
+                            minSpanRows = gridScale.minWidgetRows
                         )
-                        WidgetEdgeResizeHandle(
-                            edge = WidgetResizeEdge.RIGHT,
-                            glyph = "►",
-                            modifier = Modifier.align(Alignment.CenterEnd).zIndex(5f),
-                            onStart = { latestOnDragging(true) },
-                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.RIGHT, px) },
-                            onFinish = onEdgeFinish
-                        )
-                        WidgetEdgeResizeHandle(
-                            edge = WidgetResizeEdge.TOP,
-                            glyph = "▲",
-                            modifier = Modifier.align(Alignment.TopCenter).zIndex(5f),
-                            onStart = { latestOnDragging(true) },
-                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.TOP, px) },
-                            onFinish = onEdgeFinish
-                        )
-                        WidgetEdgeResizeHandle(
-                            edge = WidgetResizeEdge.BOTTOM,
-                            glyph = "▼",
-                            modifier = Modifier.align(Alignment.BottomCenter).zIndex(5f),
-                            onStart = { latestOnDragging(true) },
-                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.BOTTOM, px) },
-                            onFinish = onEdgeFinish
-                        )
+                        resizePreview = next
+                        snapPreview = SnapDragPreview(w.id, next.col, next.row, next.spanCols, next.spanRows)
                     }
+                    val onEdgeFinish: (Boolean) -> Unit = { commit ->
+                        val finalBounds = resizePreview
+                        if (commit && finalBounds != null) {
+                            droppedOverride = Offset(stepX * finalBounds.col, stepY * finalBounds.row)
+                            latestOnCommitBounds(
+                                latestWidget,
+                                finalBounds.col,
+                                finalBounds.row,
+                                finalBounds.spanCols,
+                                finalBounds.spanRows
+                            )
+                        }
+                        resizePreview = null
+                        snapPreview = null
+                        latestOnDragging(false)
+                    }
+                    val handleGapPx = with(density) { 4.dp.toPx() }
+                    val horizHandleWPx = with(density) { 22.dp.toPx() }
+                    val horizHandleHPx = with(density) { 28.dp.toPx() }
+                    val vertHandleWPx = with(density) { 28.dp.toPx() }
+                    val vertHandleHPx = with(density) { 22.dp.toPx() }
+
+                    val leftX = (renderX - horizHandleWPx - handleGapPx).coerceAtLeast(0f)
+                    val rightX = (renderX + boxWPx + handleGapPx).coerceAtMost((availWPx - horizHandleWPx).coerceAtLeast(0f))
+                    val centerY = (renderY + (boxHPx - horizHandleHPx) * 0.5f).coerceIn(0f, (availHPx - horizHandleHPx).coerceAtLeast(0f))
+
+                    val centerX = (renderX + (boxWPx - vertHandleWPx) * 0.5f).coerceIn(0f, (availWPx - vertHandleWPx).coerceAtLeast(0f))
+                    val topY = (renderY - vertHandleHPx - handleGapPx).coerceAtLeast(0f)
+                    val bottomY = (renderY + boxHPx + handleGapPx).coerceAtMost((availHPx - vertHandleHPx).coerceAtLeast(0f))
+
+                    WidgetEdgeResizeHandle(
+                        edge = WidgetResizeEdge.LEFT,
+                        glyph = "◄",
+                        modifier = Modifier
+                            .zIndex(35f)
+                            .offset { IntOffset(leftX.roundToInt(), centerY.roundToInt()) },
+                        onStart = { latestOnDragging(true) },
+                        onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.LEFT, px) },
+                        onFinish = onEdgeFinish
+                    )
+                    WidgetEdgeResizeHandle(
+                        edge = WidgetResizeEdge.RIGHT,
+                        glyph = "►",
+                        modifier = Modifier
+                            .zIndex(35f)
+                            .offset { IntOffset(rightX.roundToInt(), centerY.roundToInt()) },
+                        onStart = { latestOnDragging(true) },
+                        onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.RIGHT, px) },
+                        onFinish = onEdgeFinish
+                    )
+                    WidgetEdgeResizeHandle(
+                        edge = WidgetResizeEdge.TOP,
+                        glyph = "▲",
+                        modifier = Modifier
+                            .zIndex(35f)
+                            .offset { IntOffset(centerX.roundToInt(), topY.roundToInt()) },
+                        onStart = { latestOnDragging(true) },
+                        onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.TOP, px) },
+                        onFinish = onEdgeFinish
+                    )
+                    WidgetEdgeResizeHandle(
+                        edge = WidgetResizeEdge.BOTTOM,
+                        glyph = "▼",
+                        modifier = Modifier
+                            .zIndex(35f)
+                            .offset { IntOffset(centerX.roundToInt(), bottomY.roundToInt()) },
+                        onStart = { latestOnDragging(true) },
+                        onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.BOTTOM, px) },
+                        onFinish = onEdgeFinish
+                    )
                 }
             }
         }
