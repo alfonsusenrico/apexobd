@@ -271,6 +271,9 @@ private fun LiveDigitsRow(
     }
 }
 
+internal fun shouldLiftUnitToHeader(availWidthDp: Float, unit: String): Boolean =
+    unit.isNotBlank() && availWidthDp < 155f
+
 @Composable
 fun AnalogDialWidget(
     shortLabel: String,
@@ -527,18 +530,21 @@ fun DigitalReadoutWidget(
             .hudTelemetryCardChrome(palette, radiusDp = 10.dp)
     ) {
         val compact = maxWidth < 105.dp || maxHeight < 82.dp
-        val padH = if (compact) 4.5.dp else 10.dp
+        val padH = if (compact) 5.dp else 10.dp
         val padV = if (compact) 4.dp else 7.dp
         val availInnerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(36f)
-        val dotReserve = if (compact) 7.dp else 10.dp
+        val liftUnitToHeader = shouldLiftUnitToHeader(availInnerW, unit)
+        val unitSpVal = if (compact) 9.5f else 11.5f
+        val unitReserve = if (liftUnitToHeader) (unit.length * unitSpVal * 0.62f + 6f) else 0f
+        val dotReserve = if (compact) 7f else 10f
         val labelSp = fitLabelFontSizeSp(
-            availWidthDp = (availInnerW - dotReserve.value).coerceAtLeast(26f),
+            availWidthDp = (availInnerW - dotReserve - unitReserve).coerceAtLeast(28f),
             label = shortLabel,
-            minSp = 7.5f,
-            maxSp = if (compact) 12f else 13f
+            minSp = 9.5f,
+            maxSp = if (compact) 12.5f else 13.5f
         ).sp
-        val unitSpVal = if (compact) 8.5f else 11.5f
-        val maxValSp = if (maxWidth > 165.dp && maxHeight > 74.dp) 32f else if (compact) 23f else 28f
+        val maxValSp = if (maxWidth > 165.dp && maxHeight > 74.dp) 32f else if (compact) 25f else 28f
+        val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
 
         Column(
             modifier = Modifier
@@ -555,37 +561,52 @@ fun DigitalReadoutWidget(
                     text = shortLabel.uppercase(),
                     fontSize = labelSp,
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = if (compact) 0.1.sp else 0.45.sp,
+                    letterSpacing = if (compact) 0.15.sp else 0.45.sp,
                     color = palette.labelColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(end = if (compact) 3.dp else 5.dp)
+                    modifier = Modifier.weight(1f).padding(end = 4.dp)
                 )
-                Box(
-                    modifier = Modifier
-                        .size(if (compact) 4.dp else 5.dp)
-                        .clip(CircleShape)
-                        .drawBehind {
-                            val curVal = valueProvider()
-                            val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
-                            drawCircle(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow))
-                        }
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (liftUnitToHeader && unit.isNotBlank()) {
+                        Text(
+                            text = unit,
+                            fontSize = unitSpVal.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = unitTextColor,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(if (compact) 4.dp else 5.dp)
+                            .clip(CircleShape)
+                            .drawBehind {
+                                val curVal = valueProvider()
+                                val pct = curVal?.let { ((it - min) / span).toFloat().coerceIn(0f, 1f) } ?: 0f
+                                drawCircle(thresholdColor(curVal, warnThreshold, critThreshold, pct, palette.accent, alertBelow = alertBelow))
+                            }
+                    )
+                }
             }
 
             LiveDigitsRow(
                 valueProvider = valueProvider,
-                unit = unit,
+                unit = if (liftUnitToHeader) "" else unit,
                 min = min,
                 max = max,
                 sensorKey = sensorKey,
                 availWidthDp = availInnerW,
                 unitSp = unitSpVal,
-                minSp = 13f,
+                minSp = 13.5f,
                 maxSp = maxValSp,
                 primaryColor = palette.textPrimary,
-                secondaryColor = palette.textSecondary,
+                secondaryColor = unitTextColor,
                 warnThreshold = warnThreshold,
                 critThreshold = critThreshold,
                 alertBelow = alertBelow,
@@ -621,11 +642,13 @@ fun BarGaugeWidget(
             .fillMaxSize()
             .hudTelemetryCardChrome(palette, radiusDp = 8.dp)
     ) {
-        val compact = maxWidth < 145.dp
+        val compact = maxWidth < 155.dp
         val padH = if (compact) 6.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
-        val unitSpVal = if (compact) 9f else 10.5f
-        val wideLabelSp = 12.sp
+        val liftUnitToHeader = shouldLiftUnitToHeader(innerW, unit)
+        val unitSpVal = if (compact) 9.5f else 11f
+        val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
+        val wideLabelSp = 12.5.sp
 
         Row(modifier = Modifier.fillMaxSize()) {
             Box(
@@ -643,29 +666,47 @@ fun BarGaugeWidget(
                 verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Center
             ) {
                 if (compact) {
-                    val compactLabelSp = fitLabelFontSizeSp(innerW, shortLabel, minSp = 7.5f, maxSp = 12f).sp
-                    Text(
-                        text = shortLabel.uppercase(),
-                        fontSize = compactLabelSp,
-                        fontWeight = FontWeight.ExtraBold,
-                        letterSpacing = 0.1.sp,
-                        color = palette.labelColor,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    val unitReserve = if (liftUnitToHeader) (unit.length * unitSpVal * 0.62f + 4f) else 0f
+                    val compactLabelSp = fitLabelFontSizeSp((innerW - unitReserve).coerceAtLeast(28f), shortLabel, minSp = 9.5f, maxSp = 12.5f).sp
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = shortLabel.uppercase(),
+                            fontSize = compactLabelSp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.15.sp,
+                            color = palette.labelColor,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(end = 4.dp)
+                        )
+                        if (liftUnitToHeader && unit.isNotBlank()) {
+                            Text(
+                                text = unit,
+                                fontSize = unitSpVal.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = unitTextColor,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
                     LiveDigitsRow(
                         valueProvider = valueProvider,
-                        unit = unit,
+                        unit = if (liftUnitToHeader) "" else unit,
                         min = min,
                         max = max,
                         sensorKey = sensorKey,
                         availWidthDp = innerW,
                         unitSp = unitSpVal,
-                        minSp = 12.5f,
-                        maxSp = 21f,
+                        minSp = 13f,
+                        maxSp = 22f,
                         primaryColor = palette.textPrimary,
-                        secondaryColor = palette.textSecondary,
+                        secondaryColor = unitTextColor,
                         warnThreshold = warnThreshold,
                         critThreshold = critThreshold,
                         alertBelow = alertBelow,
@@ -696,13 +737,13 @@ fun BarGaugeWidget(
                             min = min,
                             max = max,
                             sensorKey = sensorKey,
-                            availWidthDp = innerW * 0.45f,
+                            availWidthDp = innerW * 0.48f,
                             unitSp = unitSpVal,
                             minSp = 20f,
                             maxSp = 20f,
                             fixedDigitsSp = 20f,
                             primaryColor = palette.textPrimary,
-                            secondaryColor = palette.textSecondary,
+                            secondaryColor = unitTextColor,
                             warnThreshold = warnThreshold,
                             critThreshold = critThreshold,
                             alertBelow = alertBelow,
@@ -793,7 +834,7 @@ fun SegmentedBarGaugeWidget(
             .fillMaxSize()
             .hudTelemetryCardChrome(palette, radiusDp = 8.dp)
     ) {
-        val compact = maxWidth < 145.dp
+        val compact = maxWidth < 155.dp
         val segments = if (compact) 12 else 18
         val paletteColors = remember(segments) {
             val lastIdx = (segments - 1).coerceAtLeast(1)
@@ -801,8 +842,9 @@ fun SegmentedBarGaugeWidget(
         }
         val padH = if (compact) 5.5.dp else 10.dp
         val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
-        val unitSpVal = if (compact) 8.5f else 10f
-        val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.50f else 0.56f), shortLabel, minSp = 7.5f, maxSp = 12.5f).sp
+        val unitSpVal = if (compact) 9.5f else 10.5f
+        val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
+        val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.54f else 0.56f), shortLabel, minSp = 9.5f, maxSp = 12.5f).sp
         val isHighRedMax by remember(valueProvider, min, span) {
             derivedStateOf {
                 val v = valueProvider()
@@ -856,12 +898,12 @@ fun SegmentedBarGaugeWidget(
                         min = min,
                         max = max,
                         sensorKey = sensorKey,
-                        availWidthDp = if (compact) innerW * 0.54f else innerW * 0.44f,
+                        availWidthDp = if (compact) innerW * 0.52f else innerW * 0.44f,
                         unitSp = unitSpVal,
-                        minSp = 12f,
-                        maxSp = if (compact) 16f else 19f,
+                        minSp = 12.5f,
+                        maxSp = if (compact) 16.5f else 19f,
                         primaryColor = palette.textPrimary,
-                        secondaryColor = palette.textSecondary,
+                        secondaryColor = unitTextColor,
                         warnThreshold = warnThreshold,
                         critThreshold = critThreshold,
                         alertBelow = alertBelow,
@@ -998,12 +1040,12 @@ fun SparklineChartWidget(
                 max = max,
                 sensorKey = sensorKey,
                 availWidthDp = 96f,
-                unitSp = 10f,
+                unitSp = 10.5f,
                 minSp = 16f,
                 maxSp = 16f,
                 fixedDigitsSp = 16f,
                 primaryColor = palette.textPrimary,
-                secondaryColor = palette.textSecondary,
+                secondaryColor = palette.labelColor.copy(alpha = 0.88f),
                 warnThreshold = warnThreshold,
                 critThreshold = critThreshold,
                 alertBelow = alertBelow,

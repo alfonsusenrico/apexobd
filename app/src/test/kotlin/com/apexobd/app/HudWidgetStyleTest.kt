@@ -13,6 +13,7 @@ import com.apexobd.app.ui.components.isRpmSensorKey
 import com.apexobd.app.ui.components.rpmDialMaxForRedline
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
+import com.apexobd.app.ui.components.shouldLiftUnitToHeader
 import com.apexobd.app.ui.theme.resolveHudVisualPalette
 import com.apexobd.core.model.AirflowUnit
 import com.apexobd.core.model.FuelEconomyUnit
@@ -205,5 +206,13 @@ class HudWidgetStyleTest {
         assertEquals("50% (22.5 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(50, 22.5, "L"))
         assertEquals("75% (33.8 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(75, 33.75, "L"))
         assertEquals("100% Full (45.0 L)", com.apexobd.app.ui.formatCalibrationFuelPresetLabel(100, 45.0, "L"))
+    }
+
+    @Test
+    fun `shouldLiftUnitToHeader moves unit to header on compact tiles so XX_XX values stay uncrushed`() {
+        assertTrue(shouldLiftUnitToHeader(110f, "km/L"))
+        assertTrue(shouldLiftUnitToHeader(150f, "%"))
+        assertFalse(shouldLiftUnitToHeader(180f, "km/L"))
+        assertFalse(shouldLiftUnitToHeader(110f, ""))
     }
 }

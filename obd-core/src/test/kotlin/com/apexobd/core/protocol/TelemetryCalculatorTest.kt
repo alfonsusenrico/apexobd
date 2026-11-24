@@ -343,7 +343,7 @@ class TelemetryCalculatorTest {
             nowMs = 11_000L
         )
         assertTrue(downhillCut.dfcoActive)
-        assertEquals(99.9, downhillCut.instantKpl, 0.01)
+        assertEquals(99.99, downhillCut.instantKpl, 0.01)
 
         // Torque-style AIRFLOW_CONTINUOUS stays airflow-driven even on downhill
         val airflowOnly = tracker.update(
@@ -462,7 +462,7 @@ class TelemetryCalculatorTest {
         )
         // Coast cut in 5th gear
         assertTrue(coastCut.dfcoActive)
-        assertEquals(99.9, coastCut.instantKpl, 0.01)
+        assertEquals(99.99, coastCut.instantKpl, 0.01)
     }
 
     @Test

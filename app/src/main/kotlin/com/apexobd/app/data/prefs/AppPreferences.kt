@@ -140,7 +140,9 @@ enum class HudGridScale(val label: String, val cols: Int, val rows: Int) {
     LARGE_6X3("Large (6×3)", 6, 3),
     STANDARD_8X4("Standard (8×4)", 8, 4),
     BALANCED_10X5("Balanced (10×5)", 10, 5),
-    DYNAMIC_12X6("Dense (12×6)", 12, 6)
+    DYNAMIC_12X6("Dense (12×6)", 12, 6),
+    FINE_16X8("Fine (16×8)", 16, 8),
+    ULTRA_24X12("Ultra (24×12)", 24, 12)
 }
 
 enum class HudThemePreset(val label: String, val accentHex: Long) {

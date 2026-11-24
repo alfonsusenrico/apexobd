@@ -130,7 +130,7 @@ data class VehicleProfileEntity(
         val useTotal = allTimeTotalFuelLiters > 0.005
         val dist = if (useTotal) allTimeTotalDistanceKm else allTimeRoadDistanceKm
         val fuel = if (useTotal) allTimeTotalFuelLiters else allTimeRoadFuelLiters
-        return if (fuel > 0.005) (dist / fuel).coerceIn(0.0, 99.9) else 0.0
+        return if (fuel > 0.005) (dist / fuel).coerceIn(0.0, 99.99) else 0.0
     }
 
     fun savedSupportedPids(): Set<String> =

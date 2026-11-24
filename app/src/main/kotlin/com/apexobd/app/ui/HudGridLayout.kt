@@ -10,6 +10,82 @@ data class GridPlacement(
     val spanRows: Int
 )
 
+enum class WidgetResizeEdge {
+    LEFT,
+    RIGHT,
+    TOP,
+    BOTTOM
+}
+
+data class GridBounds(
+    val col: Int,
+    val row: Int,
+    val spanCols: Int,
+    val spanRows: Int
+)
+
+/**
+ * Computes clamped grid origin and span when dragging one of the four edge resize handles.
+ */
+fun computeResizedGridBounds(
+    startCol: Int,
+    startRow: Int,
+    startSpanCols: Int,
+    startSpanRows: Int,
+    edge: WidgetResizeEdge,
+    deltaCells: Int,
+    totalCols: Int,
+    totalRows: Int
+): GridBounds {
+    val safeCols = totalCols.coerceAtLeast(1)
+    val safeRows = totalRows.coerceAtLeast(1)
+    val initSpanCols = startSpanCols.coerceIn(1, safeCols)
+    val initSpanRows = startSpanRows.coerceIn(1, safeRows)
+    val initCol = startCol.coerceIn(0, (safeCols - initSpanCols).coerceAtLeast(0))
+    val initRow = startRow.coerceIn(0, (safeRows - initSpanRows).coerceAtLeast(0))
+
+    return when (edge) {
+        WidgetResizeEdge.RIGHT -> {
+            val maxSpan = (safeCols - initCol).coerceAtLeast(1)
+            GridBounds(
+                col = initCol,
+                row = initRow,
+                spanCols = (initSpanCols + deltaCells).coerceIn(1, maxSpan),
+                spanRows = initSpanRows
+            )
+        }
+        WidgetResizeEdge.LEFT -> {
+            val rightEdge = initCol + initSpanCols
+            val nextCol = (initCol + deltaCells).coerceIn(0, (rightEdge - 1).coerceAtLeast(0))
+            GridBounds(
+                col = nextCol,
+                row = initRow,
+                spanCols = (rightEdge - nextCol).coerceIn(1, safeCols),
+                spanRows = initSpanRows
+            )
+        }
+        WidgetResizeEdge.BOTTOM -> {
+            val maxSpan = (safeRows - initRow).coerceAtLeast(1)
+            GridBounds(
+                col = initCol,
+                row = initRow,
+                spanCols = initSpanCols,
+                spanRows = (initSpanRows + deltaCells).coerceIn(1, maxSpan)
+            )
+        }
+        WidgetResizeEdge.TOP -> {
+            val bottomEdge = initRow + initSpanRows
+            val nextRow = (initRow + deltaCells).coerceIn(0, (bottomEdge - 1).coerceAtLeast(0))
+            GridBounds(
+                col = initCol,
+                row = nextRow,
+                spanCols = initSpanCols,
+                spanRows = (bottomEdge - nextRow).coerceIn(1, safeRows)
+            )
+        }
+    }
+}
+
 /**
  * Places widgets on the HUD grid while honoring explicit dropped coordinates (`gridCol`, `gridRow`)
  * instead of compacting everything left-to-right. Unplaced legacy widgets (`-1`) fill open slots.

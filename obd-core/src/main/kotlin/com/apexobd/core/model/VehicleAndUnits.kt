@@ -15,7 +15,7 @@ enum class FuelCoastingMode(
     val label: String,
     val subtitle: String
 ) {
-    REALISTIC_DFCO("ECU DFCO Cut (99.9)", "Cuts fuel only above AT/MT overrun RPM & verified vacuum"),
+    REALISTIC_DFCO("ECU DFCO Cut (99.99)", "Cuts fuel only above AT/MT overrun RPM & verified vacuum"),
     AIRFLOW_CONTINUOUS("Continuous Airflow (20–50)", "Torque-style airflow fuel calculation during coasting")
 }
 
