@@ -1619,3 +1619,87 @@ fun DataLoggerWidget(
         }
     }
 }
+
+@Composable
+fun QuickRefuelWidget(
+    draftCount: Int,
+    feedbackText: String?,
+    onQuickRefuel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalHudVisualStyle.current
+    val isSaved = feedbackText != null
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .hudTelemetryCardChrome(palette, radiusDp = 10.dp)
+            .clickable { onQuickRefuel() }
+    ) {
+        val padH = (maxWidth.value * 0.06f).coerceIn(4f, 10f).dp
+        val padV = (maxHeight.value * 0.08f).coerceIn(3f, 8f).dp
+        val innerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(24f)
+        val innerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(22f)
+        val titleSp = proportionalLabelSp(innerW, innerH, heightFraction = 0.21f, widthFraction = 0.14f, minSp = 8f, maxSp = 15f).sp
+        val actionSp = (innerH * 0.24f).coerceIn(8.5f, 16f).sp
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = padH, vertical = padV),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "REFUEL",
+                    fontSize = titleSp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = palette.labelColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (draftCount > 0) {
+                    Text(
+                        text = "$draftCount DRAFT",
+                        fontSize = (innerH * 0.15f).coerceIn(7f, 11f).sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.Black,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(TorqueEvoColors.WarnAmber)
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(7.dp))
+                    .background(if (isSaved) TorqueEvoColors.NominalGreen else TorqueEvoColors.NominalGreen.copy(alpha = 0.18f))
+                    .border(
+                        1.dp,
+                        if (isSaved) TorqueEvoColors.NominalGreen else TorqueEvoColors.NominalGreen.copy(alpha = 0.72f),
+                        RoundedCornerShape(7.dp)
+                    )
+                    .padding(horizontal = 6.dp, vertical = (innerH * 0.08f).coerceIn(3f, 7f).dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = feedbackText ?: "⛽ TAP TO LOG",
+                    fontSize = actionSp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (isSaved) Color.Black else TorqueEvoColors.NominalGreen,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}

@@ -1110,6 +1110,7 @@ fun RefuelLogSheet(
     defaultCurrency: String,
     unitPrefs: UnitPreferences,
     onAddRefuel: (volume: Double, price: Double, currency: String, ron: Int?, fuelName: String?, odo: Double, isFullTank: Boolean, autoCalibrate: Boolean) -> Unit,
+    onConfirmEditRefuel: (existing: RefuelLogEntity, volume: Double, price: Double, currency: String, ron: Int?, fuelName: String?, odo: Double, isFullTank: Boolean, autoCalibrate: Boolean) -> Unit,
     onDeleteRefuel: (Long) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1118,6 +1119,7 @@ fun RefuelLogSheet(
     val distUnit = unitPrefs.distanceSymbol()
     val initOdo = UnitConverter.convertDistanceKm(vehicle?.allTimeOdometerKm ?: 0.0, unitPrefs).first
 
+    var editingEntry by remember { mutableStateOf<RefuelLogEntity?>(null) }
     var volume by remember { mutableStateOf("") }
     var price by remember { mutableStateOf("") }
     var currency by remember { mutableStateOf(defaultCurrency) }
@@ -1127,10 +1129,10 @@ fun RefuelLogSheet(
     var isFullTank by remember { mutableStateOf(true) }
     var autoCalibrate by remember { mutableStateOf(true) }
 
-    val prevFullLog = remember(logs) { logs.firstOrNull { it.isFullTank } }
+    val prevFullLog = remember(logs) { logs.firstOrNull { it.isFullTank && !it.isDraft } }
     val partialsSincePrevFullL = remember(logs, prevFullLog) {
         if (prevFullLog != null) {
-            logs.filter { !it.isFullTank && it.timestampMs > prevFullLog.timestampMs }
+            logs.filter { !it.isFullTank && !it.isDraft && it.timestampMs > prevFullLog.timestampMs }
                 .sumOf { it.volumeLiters }
         } else 0.0
     }
@@ -1301,29 +1303,85 @@ fun RefuelLogSheet(
                 }
             }
 
+            editingEntry?.let { editing ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(TorqueEvoColors.WarnAmber.copy(alpha = 0.16f))
+                        .border(1.dp, TorqueEvoColors.WarnAmber.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (editing.isDraft) "Confirming Draft Refuel (enter receipt values)" else "Editing Refuel Entry",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.WarnAmber
+                    )
+                    Text(
+                        text = "Cancel",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TorqueEvoColors.TextPrimary,
+                        modifier = Modifier.clickable {
+                            editingEntry = null
+                            volume = ""
+                            price = ""
+                            fuelName = ""
+                            odometer = "%.1f".format(initOdo)
+                        }
+                    )
+                }
+            }
+
             Button(
                 onClick = {
                     val v = volume.toDoubleOrNull() ?: 0.0
                     if (v > 0.0) {
-                        onAddRefuel(
-                            v,
-                            price.toDoubleOrNull() ?: 0.0,
-                            currency,
-                            ron.toIntOrNull(),
-                            fuelName,
-                            odometer.toDoubleOrNull() ?: initOdo,
-                            isFullTank,
-                            autoCalibrate
-                        )
+                        val activeEdit = editingEntry
+                        if (activeEdit != null) {
+                            onConfirmEditRefuel(
+                                activeEdit,
+                                v,
+                                price.toDoubleOrNull() ?: 0.0,
+                                currency,
+                                ron.toIntOrNull(),
+                                fuelName,
+                                odometer.toDoubleOrNull() ?: initOdo,
+                                isFullTank,
+                                autoCalibrate
+                            )
+                            editingEntry = null
+                        } else {
+                            onAddRefuel(
+                                v,
+                                price.toDoubleOrNull() ?: 0.0,
+                                currency,
+                                ron.toIntOrNull(),
+                                fuelName,
+                                odometer.toDoubleOrNull() ?: initOdo,
+                                isFullTank,
+                                autoCalibrate
+                            )
+                        }
                         volume = ""
                         price = ""
                         fuelName = ""
+                        odometer = "%.1f".format(initOdo)
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = TorqueEvoColors.NominalGreen, contentColor = Color.Black),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (editingEntry != null) TorqueEvoColors.WarnAmber else TorqueEvoColors.NominalGreen,
+                    contentColor = Color.Black
+                ),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("+ Record Refuel Checkpoint", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (editingEntry != null) "✓ Confirm & Save Refuel" else "+ Record Refuel Checkpoint",
+                    fontWeight = FontWeight.Bold
+                )
             }
 
             if (logs.isEmpty()) {
@@ -1333,6 +1391,7 @@ fun RefuelLogSheet(
                     val (dispVol, vSym) = UnitConverter.convertVolume(entry.volumeLiters, unitPrefs, fuelType)
                     val (dispOdo, dSym) = UnitConverter.convertDistanceKm(entry.odometerKm, unitPrefs)
                     val cycleStr = when {
+                        entry.isDraft -> "DRAFT"
                         entry.cycleAvgKpl != null -> {
                             val (econVal, econSym) = UnitConverter.convertFuelEconomy(entry.cycleAvgKpl, unitPrefs, fuelType)
                             "%.2f %s".format(econVal, econSym)
@@ -1341,6 +1400,7 @@ fun RefuelLogSheet(
                         else -> "Full Baseline"
                     }
                     val distStr = when {
+                        entry.isDraft -> "Tap Confirm to enter receipt"
                         entry.cycleDistanceKm != null -> {
                             val (dd, ds) = UnitConverter.convertDistanceKm(entry.cycleDistanceKm, unitPrefs)
                             val totFuelTxt = entry.cycleFuelLiters?.let { cf ->
@@ -1353,6 +1413,7 @@ fun RefuelLogSheet(
                         else -> "Cycle Start Checkpoint"
                     }
                     val badgeColor = when {
+                        entry.isDraft -> TorqueEvoColors.WarnAmber
                         entry.cycleAvgKpl != null -> TorqueEvoColors.NominalGreen
                         !entry.isFullTank -> TorqueEvoColors.WarnAmber
                         else -> TorqueEvoColors.SkyBlue
@@ -1362,25 +1423,34 @@ fun RefuelLogSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .background(TorqueEvoColors.CardSurface)
-                            .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(10.dp))
+                            .background(if (entry.isDraft) Color(0xFF1A1407) else TorqueEvoColors.CardSurface)
+                            .border(
+                                1.dp,
+                                if (entry.isDraft) TorqueEvoColors.WarnAmber.copy(alpha = 0.65f) else TorqueEvoColors.SubtleBorder,
+                                RoundedCornerShape(10.dp)
+                            )
                             .padding(10.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             val title = buildString {
+                                if (entry.isDraft) append("DRAFT · ")
                                 append(entry.fuelName ?: fuelType.label)
                                 entry.ronValue?.let { append(" · RON $it") }
                                 append(if (entry.isFullTank) " · Full Tank" else " · Partial")
                             }
                             Text(title, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = TorqueEvoColors.TextPrimary)
+                            val volLabel = if (entry.isDraft && entry.volumeLiters > 0.0) {
+                                "~%.1f %s est.".format(dispVol, vSym)
+                            } else {
+                                "%.1f %s".format(dispVol, vSym)
+                            }
                             Text(
-                                "Odo %.1f %s · %.1f %s · %s %s".format(
+                                "Odo %.1f %s · %s · %s %s".format(
                                     dispOdo,
                                     dSym,
-                                    dispVol,
-                                    vSym,
+                                    volLabel,
                                     entry.currencyCode,
                                     NumberFormat.getInstance().format(entry.pricePaid.toLong())
                                 ),
@@ -1388,15 +1458,36 @@ fun RefuelLogSheet(
                                 color = TorqueEvoColors.TextSecondary
                             )
                         }
-                        Column(horizontalAlignment = Alignment.End) {
+                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             Text(cycleStr, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = badgeColor)
                             Text(distStr, fontSize = 10.sp, color = TorqueEvoColors.TextSecondary)
-                            Text(
-                                "Delete",
-                                fontSize = 10.sp,
-                                color = TorqueEvoColors.CriticalRed,
-                                modifier = Modifier.clickable { onDeleteRefuel(entry.id) }
-                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    if (entry.isDraft) "Confirm" else "Edit",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (entry.isDraft) TorqueEvoColors.WarnAmber else TorqueEvoColors.ElectricBlue,
+                                    modifier = Modifier.clickable {
+                                        editingEntry = entry
+                                        volume = if (entry.volumeLiters > 0.0) "%.1f".format(dispVol) else ""
+                                        price = if (entry.pricePaid > 0.0) entry.pricePaid.toLong().toString() else ""
+                                        currency = entry.currencyCode
+                                        ron = entry.ronValue?.toString() ?: if (fuelType == FuelType.GASOLINE) "92" else ""
+                                        fuelName = entry.fuelName.orEmpty()
+                                        odometer = "%.1f".format(dispOdo)
+                                        isFullTank = entry.isFullTank
+                                    }
+                                )
+                                Text(
+                                    "Delete",
+                                    fontSize = 10.5.sp,
+                                    color = TorqueEvoColors.CriticalRed,
+                                    modifier = Modifier.clickable {
+                                        if (editingEntry?.id == entry.id) editingEntry = null
+                                        onDeleteRefuel(entry.id)
+                                    }
+                                )
+                            }
                         }
                     }
                 }

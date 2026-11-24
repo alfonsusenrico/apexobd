@@ -127,6 +127,7 @@ import com.apexobd.app.ui.components.FuelControlWidget
 import com.apexobd.app.ui.components.MetricAlertFrameOverlay
 import com.apexobd.app.ui.components.MiniMapWidget
 import com.apexobd.app.ui.components.PerfTimerWidget
+import com.apexobd.app.ui.components.QuickRefuelWidget
 import com.apexobd.app.ui.components.RpmTachChronoWidget
 import com.apexobd.app.ui.components.RpmTachF1LedsWidget
 import com.apexobd.app.ui.components.RpmTachGtWidget
@@ -277,6 +278,7 @@ fun HudCanvasScreen(
     val isRecordingPaused by viewModel.isRecordingPaused.collectAsStateWithLifecycle()
     val connectionState by viewModel.connectionState.collectAsStateWithLifecycle()
     val isGpsEnabled by viewModel.locationTracker.isGpsEnabled.collectAsStateWithLifecycle()
+    val detectedRefuelJump by viewModel.detectedRefuelJump.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -495,6 +497,46 @@ fun HudCanvasScreen(
                 .padding(top = 8.dp)
                 .zIndex(20f)
         )
+
+        detectedRefuelJump?.let { jump ->
+            val unitPrefs = settings.toUnitPreferences()
+            val fuelType = activeVehicle?.let { runCatching { FuelType.valueOf(it.fuelType) }.getOrNull() } ?: FuelType.GASOLINE
+            val (dispAdded, vSym) = com.apexobd.core.model.UnitConverter.convertVolume(jump.addedLiters, unitPrefs, fuelType)
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .padding(top = 44.dp, start = 14.dp, end = 14.dp)
+                    .zIndex(25f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xF5071710))
+                    .border(1.2.dp, TorqueEvoColors.NominalGreen.copy(alpha = 0.8f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "⛽ Refuel detected (+%.1f %s)".format(dispAdded, vSym),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = TorqueEvoColors.TextPrimary,
+                    maxLines = 1
+                )
+                EditActionPill(
+                    label = "Save Draft",
+                    tint = Color.Black,
+                    bg = TorqueEvoColors.NominalGreen
+                ) {
+                    viewModel.quickCaptureRefuelDraft(estimatedAddedOverrideL = jump.addedLiters, isFullTank = true)
+                }
+                EditActionPill(
+                    label = "Dismiss",
+                    tint = TorqueEvoColors.TextSecondary
+                ) {
+                    viewModel.dismissDetectedRefuelJump()
+                }
+            }
+        }
 
         // Subtle low-opacity edge dots (zero chrome, glance-only page awareness)
         if (pages.size > 1) {
@@ -895,7 +937,7 @@ fun HudCanvasScreen(
 }
 
 private fun isFixedLayoutSpecialWidget(sensorKey: String): Boolean =
-    sensorKey in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl")
+    sensorKey in setOf("minimap", "dtc_checker", "timer_0100", "data_logger", "fuel_ctrl", "quick_refuel")
 
 /**
  * Flashing top OBD2 status indicator modeled after Torque Pro:
@@ -1672,6 +1714,15 @@ private fun RenderWidgetContent(
                 latestSampleCount = if (isRecording) activeSamples else (sessions.firstOrNull()?.sampleCount ?: 0),
                 onToggleRecord = onToggleRecord,
                 onTogglePauseResume = onTogglePauseResume
+            )
+        }
+        "quick_refuel" -> {
+            val refuels by viewModel.refuelLogs.collectAsStateWithLifecycle()
+            val feedback by viewModel.quickRefuelFeedback.collectAsStateWithLifecycle()
+            QuickRefuelWidget(
+                draftCount = refuels.count { it.isDraft },
+                feedbackText = feedback,
+                onQuickRefuel = { viewModel.quickCaptureRefuelDraft() }
             )
         }
         else -> {

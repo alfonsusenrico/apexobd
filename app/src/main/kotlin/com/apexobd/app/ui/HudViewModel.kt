@@ -226,6 +226,15 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    private val _detectedRefuelJump = MutableStateFlow<com.apexobd.app.platform.DetectedRefuelJump?>(null)
+    val detectedRefuelJump: StateFlow<com.apexobd.app.platform.DetectedRefuelJump?> = _detectedRefuelJump.asStateFlow()
+
+    private val _quickRefuelFeedback = MutableStateFlow<String?>(null)
+    val quickRefuelFeedback: StateFlow<String?> = _quickRefuelFeedback.asStateFlow()
+
+    private val lastFuelBeforeJumpByVehicle = mutableMapOf<Long, Double>()
+    private val lastRefuelPromptMsByVehicle = mutableMapOf<Long, Long>()
+
     val pagesWithWidgets: StateFlow<List<HudPageWithWidgets>> = combine(
         hudDao.observePages(),
         hudDao.observeAllWidgets()
@@ -1071,6 +1080,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         val cur = vehicleDao.getById(targetId)
                         if (cur != null) {
                             val clamped = ecuLiters.coerceIn(0.0, cur.tankCapacityLiters)
+                            evaluateEcuFuelJump(cur, clamped)
                             if (kotlin.math.abs(cur.estimatedRemainingFuelLiters - clamped) >= 0.25) {
                                 vehicleDao.updateVehicle(cur.copy(estimatedRemainingFuelLiters = clamped))
                             }
@@ -1220,6 +1230,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         }
         liveEngine.ecuFuelLiters.value?.takeIf { it >= 0.0 }?.let { ecuLiters ->
             val clamped = ecuLiters.coerceIn(0.0, updated.tankCapacityLiters)
+            evaluateEcuFuelJump(updated, clamped)
             if (kotlin.math.abs(updated.estimatedRemainingFuelLiters - clamped) >= 0.25) {
                 updated = updated.copy(estimatedRemainingFuelLiters = clamped)
             }
@@ -2231,9 +2242,9 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val odoKm = toInternalDistanceKm(odometerDisplayUnit, unitPrefs)
 
             val history = vehicleDao.getRefuelsForVehicleOnce(vehicle.id)
-            val prevFull = history.firstOrNull { it.isFullTank }
+            val prevFull = history.firstOrNull { it.isFullTank && !it.isDraft }
             val partialsSincePrevFullL = if (prevFull != null) {
-                history.filter { !it.isFullTank && it.timestampMs > prevFull.timestampMs }
+                history.filter { !it.isFullTank && !it.isDraft && it.timestampMs > prevFull.timestampMs }
                     .sumOf { it.volumeLiters }
             } else {
                 0.0
@@ -2307,6 +2318,196 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             )
             vehicleDao.updateVehicle(updated)
             engine?.fuelTracker?.applyRefuelAdded(volumeL, vehicle.tankCapacityLiters, isFullTank = isFullTank)
+            engine?.setVehicleProfile(updated.toCoreModel())
+        }
+    }
+
+    private fun evaluateEcuFuelJump(vehicle: VehicleProfileEntity, nextFuelLiters: Double) {
+        if (!vehicle.hasNativeFuelSensor()) return
+        val nowMs = System.currentTimeMillis()
+        val beforeL = vehicle.estimatedRemainingFuelLiters
+        val liveOdo = engine?.ecuOdometerKm?.value?.takeIf { it in 1.0..999_999.0 } ?: vehicle.allTimeOdometerKm
+        val jump = com.apexobd.app.platform.QuickRefuelDetector.detectFuelLevelJump(
+            vehicleId = vehicle.id,
+            beforeLiters = beforeL,
+            afterLiters = nextFuelLiters,
+            tankCapacityLiters = vehicle.tankCapacityLiters,
+            odometerKm = liveOdo,
+            nowMs = nowMs,
+            lastPromptedAtMs = lastRefuelPromptMsByVehicle[vehicle.id]
+        )
+        if (jump != null) {
+            lastFuelBeforeJumpByVehicle[vehicle.id] = beforeL
+            lastRefuelPromptMsByVehicle[vehicle.id] = nowMs
+            _detectedRefuelJump.value = jump
+        } else if (nextFuelLiters < beforeL - 0.3) {
+            lastFuelBeforeJumpByVehicle[vehicle.id] = nextFuelLiters
+        }
+    }
+
+    fun dismissDetectedRefuelJump() {
+        _detectedRefuelJump.value = null
+    }
+
+    fun quickCaptureRefuelDraft(
+        estimatedAddedOverrideL: Double? = null,
+        isFullTank: Boolean = true
+    ) {
+        val vehicle = activeVehicle.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val st = settings.value
+            val unitPrefs = st.toUnitPreferences()
+            val fuelType = runCatching { FuelType.valueOf(vehicle.fuelType) }.getOrDefault(FuelType.GASOLINE)
+            val liveOdoKm = engine?.ecuOdometerKm?.value?.takeIf { it in 1.0..999_999.0 } ?: vehicle.allTimeOdometerKm
+            val currentFuelL = engine?.ecuFuelLiters?.value?.takeIf { it >= 0.0 } ?: vehicle.estimatedRemainingFuelLiters
+            val beforeJumpL = lastFuelBeforeJumpByVehicle[vehicle.id]
+            val estimatedAddedL = (estimatedAddedOverrideL ?: com.apexobd.app.platform.QuickRefuelDetector.estimateQuickRefuelLiters(
+                hasNativeFuelSensor = vehicle.hasNativeFuelSensor(),
+                beforeFuelLiters = beforeJumpL,
+                currentFuelLiters = currentFuelL,
+                obdFuelUsedSinceFullLiters = vehicle.fuelUsedSinceFullRefuelLiters,
+                tankCapacityLiters = vehicle.tankCapacityLiters
+            )).coerceIn(0.0, vehicle.tankCapacityLiters)
+            val obdSnapshotL = vehicle.fuelUsedSinceFullRefuelLiters.takeIf { it > 0.05 }
+
+            vehicleDao.insertRefuel(
+                RefuelLogEntity(
+                    vehicleId = vehicle.id,
+                    timestampMs = System.currentTimeMillis(),
+                    odometerKm = liveOdoKm,
+                    volumeLiters = estimatedAddedL,
+                    pricePaid = 0.0,
+                    currencyCode = st.currencyCode,
+                    ronValue = null,
+                    fuelName = null,
+                    cycleDistanceKm = null,
+                    cycleFuelLiters = null,
+                    cycleAvgKpl = null,
+                    isFullTank = isFullTank,
+                    isDraft = true,
+                    obdFuelUsedSnapshotL = obdSnapshotL,
+                    estimatedAddedLiters = estimatedAddedL.takeIf { it > 0.0 }
+                )
+            )
+
+            // Reset OBD burned-since-full counter for the new tank without altering mafTrimPct or cycle KPL yet.
+            val nextRemFuel = if (vehicle.hasNativeFuelSensor()) {
+                currentFuelL.coerceIn(0.0, vehicle.tankCapacityLiters)
+            } else if (isFullTank) {
+                vehicle.tankCapacityLiters
+            } else {
+                (vehicle.estimatedRemainingFuelLiters + estimatedAddedL).coerceIn(0.0, vehicle.tankCapacityLiters)
+            }
+            val updated = vehicle.copy(
+                allTimeOdometerKm = maxOf(vehicle.allTimeOdometerKm, liveOdoKm),
+                estimatedRemainingFuelLiters = nextRemFuel,
+                fuelUsedSinceFullRefuelLiters = if (isFullTank) 0.0 else vehicle.fuelUsedSinceFullRefuelLiters
+            )
+            vehicleDao.updateVehicle(updated)
+            engine?.fuelTracker?.applyRefuelAdded(estimatedAddedL, vehicle.tankCapacityLiters, isFullTank = isFullTank)
+            engine?.setVehicleProfile(updated.toCoreModel())
+
+            _detectedRefuelJump.value = null
+            lastFuelBeforeJumpByVehicle.remove(vehicle.id)
+            val feedback = if (estimatedAddedL >= 0.5) {
+                val (dispVol, vSym) = com.apexobd.core.model.UnitConverter.convertVolume(estimatedAddedL, unitPrefs, fuelType)
+                "SAVED · ~%.1f %s".format(dispVol, vSym)
+            } else {
+                "SAVED DRAFT ✓"
+            }
+            _quickRefuelFeedback.value = feedback
+            delay(2600L)
+            if (_quickRefuelFeedback.value == feedback) {
+                _quickRefuelFeedback.value = null
+            }
+        }
+    }
+
+    fun confirmOrEditRefuelCheckpoint(
+        existing: RefuelLogEntity,
+        volumeDisplayUnit: Double,
+        pricePaid: Double,
+        currencyCode: String,
+        ronValue: Int?,
+        fuelName: String?,
+        odometerDisplayUnit: Double,
+        isFullTank: Boolean,
+        autoCalibrateTrim: Boolean
+    ) {
+        val vehicle = activeVehicle.value ?: return
+        if (volumeDisplayUnit <= 0.0) return
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val st = settings.value
+            val unitPrefs = st.toUnitPreferences()
+            val fuelType = runCatching { FuelType.valueOf(vehicle.fuelType) }.getOrDefault(FuelType.GASOLINE)
+            val volumeL = toInternalVolume(volumeDisplayUnit, fuelType, unitPrefs)
+            val odoKm = toInternalDistanceKm(odometerDisplayUnit, unitPrefs)
+
+            val history = vehicleDao.getRefuelsForVehicleOnce(vehicle.id).filter { it.id != existing.id && !it.isDraft }
+            val prevFull = history.firstOrNull { it.isFullTank && it.timestampMs < existing.timestampMs }
+                ?: history.firstOrNull { it.isFullTank && it.odometerKm < odoKm }
+            val partialsSincePrevFullL = if (prevFull != null) {
+                history.filter { !it.isFullTank && it.timestampMs > prevFull.timestampMs && it.timestampMs < existing.timestampMs }
+                    .sumOf { it.volumeLiters }
+            } else {
+                0.0
+            }
+
+            val cycleDist = if (isFullTank && prevFull != null) {
+                (odoKm - prevFull.odometerKm).takeIf { d -> d > 0.5 }
+            } else null
+            val totalCycleFuelL = if (isFullTank && cycleDist != null) {
+                (partialsSincePrevFullL + volumeL).takeIf { it > 0.1 }
+            } else null
+            val cycleAvgKpl = if (cycleDist != null && totalCycleFuelL != null) {
+                (cycleDist / totalCycleFuelL).coerceIn(0.5, 99.99)
+            } else null
+
+            vehicleDao.updateRefuel(
+                existing.copy(
+                    odometerKm = odoKm,
+                    volumeLiters = volumeL,
+                    pricePaid = pricePaid.coerceAtLeast(0.0),
+                    currencyCode = currencyCode.trim().uppercase().ifBlank { st.currencyCode },
+                    ronValue = ronValue?.takeIf { fuelType == FuelType.GASOLINE && it > 0 },
+                    fuelName = fuelName?.trim()?.takeIf { it.isNotBlank() },
+                    cycleDistanceKm = cycleDist,
+                    cycleFuelLiters = totalCycleFuelL,
+                    cycleAvgKpl = cycleAvgKpl,
+                    isFullTank = isFullTank,
+                    isDraft = false
+                )
+            )
+
+            val obdBurnedForTrim = existing.obdFuelUsedSnapshotL ?: vehicle.fuelUsedSinceFullRefuelLiters
+            val calibratedTrim = if (existing.isDraft && isFullTank && autoCalibrateTrim && prevFull != null && partialsSincePrevFullL == 0.0 && obdBurnedForTrim > 0.5) {
+                com.apexobd.core.protocol.FuelEconomyTracker.computeCalibratedTrimPct(
+                    currentTrimPct = vehicle.mafTrimPct,
+                    actualPumpLiters = volumeL,
+                    obdFuelUsedSinceFullLiters = obdBurnedForTrim
+                )
+            } else {
+                vehicle.mafTrimPct
+            }
+
+            val nextFullCycleKpl = if (cycleAvgKpl != null) {
+                val prevCycle = vehicle.fullRefuelCycleKpl
+                if (prevCycle != null && prevCycle in 1.5..40.0) {
+                    ((0.70 * cycleAvgKpl) + (0.30 * prevCycle)).coerceIn(1.5, 40.0)
+                } else {
+                    cycleAvgKpl.coerceIn(1.5, 40.0)
+                }
+            } else {
+                vehicle.fullRefuelCycleKpl
+            }
+
+            val updated = vehicle.copy(
+                allTimeOdometerKm = maxOf(vehicle.allTimeOdometerKm, odoKm),
+                mafTrimPct = calibratedTrim,
+                fullRefuelCycleKpl = nextFullCycleKpl
+            )
+            vehicleDao.updateVehicle(updated)
             engine?.setVehicleProfile(updated.toCoreModel())
         }
     }
@@ -2823,7 +3024,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Sprint Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
-            SensorCatalogItem("data_logger", "Run Telemetry Logger", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+            SensorCatalogItem("data_logger", "Run Telemetry Logger", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("quick_refuel", "Quick Refuel Button", "Refuel", "FUEL", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
         ).forEach { item ->
             list += PickerSensorOption(item = item, available = true)
         }
@@ -2894,7 +3096,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             SensorCatalogItem("fuel_ctrl", "KPL · AVG", "KPL · AVG", "ALL-TIME", "km/L", SensorQuantity.FUEL_ECONOMY_KPL, 0.0, 40.0, isSpecialWidget = true),
             SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
             SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true),
-            SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+            SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true),
+            SensorCatalogItem("quick_refuel", "Quick Refuel Button", "Refuel", "FUEL", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
         ).forEach {
             out += GroupedSensorCatalogItem(SensorCatalogGroup.PHONE_AND_WIDGETS, it)
         }
@@ -2925,6 +3128,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         map["dtc_checker"] = SensorCatalogItem("dtc_checker", "DTC Checker & Clear (03/07/04)", "DTC", "03/04", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
         map["timer_0100"] = SensorCatalogItem("timer_0100", "0–100 km/h Performance Timer", "0–100", "PERF", "s", SensorQuantity.RAW, 0.0, 20.0, isSpecialWidget = true)
         map["data_logger"] = SensorCatalogItem("data_logger", "Run Logger Quick Toggle", "Run Log", "LOG", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
+        map["quick_refuel"] = SensorCatalogItem("quick_refuel", "Quick Refuel Button", "Refuel", "FUEL", "", SensorQuantity.RAW, 0.0, 1.0, isSpecialWidget = true)
         customList.forEach {
             map[it.key] = SensorCatalogItem(it.key, it.name, it.shortName, it.modeAndPidHex, it.unit, SensorQuantity.RAW, it.minValue, it.maxValue)
         }

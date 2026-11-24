@@ -162,7 +162,10 @@ data class RefuelLogEntity(
     val cycleDistanceKm: Double? = null,
     val cycleFuelLiters: Double? = null,
     val cycleAvgKpl: Double? = null,
-    val isFullTank: Boolean = true
+    val isFullTank: Boolean = true,
+    val isDraft: Boolean = false,
+    val obdFuelUsedSnapshotL: Double? = null,
+    val estimatedAddedLiters: Double? = null
 )
 
 @Entity(tableName = "hud_pages")
@@ -328,6 +331,9 @@ interface VehicleDao {
     @Insert
     suspend fun insertRefuel(entry: RefuelLogEntity): Long
 
+    @Update
+    suspend fun updateRefuel(entry: RefuelLogEntity)
+
     @Query("DELETE FROM refuel_logs WHERE id = :id")
     suspend fun deleteRefuel(id: Long)
 }
@@ -448,7 +454,7 @@ interface TripDao {
         TripSegmentEntity::class,
         TelemetrySampleEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = false
 )
 abstract class ApexDatabase : RoomDatabase() {
@@ -651,6 +657,14 @@ abstract class ApexDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE refuel_logs ADD COLUMN isDraft INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE refuel_logs ADD COLUMN obdFuelUsedSnapshotL REAL")
+                db.execSQL("ALTER TABLE refuel_logs ADD COLUMN estimatedAddedLiters REAL")
+            }
+        }
+
         fun getInstance(context: Context): ApexDatabase {
             return instance ?: synchronized(this) {
                 instance ?: buildDatabase(context.applicationContext).also { instance = it }
@@ -670,7 +684,8 @@ abstract class ApexDatabase : RoomDatabase() {
                     MIGRATION_7_8,
                     MIGRATION_8_9,
                     MIGRATION_9_10,
-                    MIGRATION_10_11
+                    MIGRATION_10_11,
+                    MIGRATION_11_12
                 )
                 .addCallback(object : Callback() {
                     override fun onCreate(sqliteDb: SupportSQLiteDatabase) {

@@ -655,13 +655,14 @@ fun HomeMenuScreen(
         val modulesGrid: @Composable () -> Unit = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    val draftRefuels = refuels.count { it.isDraft }
                     HomeModuleTile(
                         title = "Refuel Log",
-                        subtitle = refuelSub,
+                        subtitle = if (draftRefuels > 0) "$draftRefuels draft(s) to confirm" else refuelSub,
                         icon = Icons.Default.LocalGasStation,
-                        tint = TorqueEvoColors.NominalGreen,
+                        tint = if (draftRefuels > 0) TorqueEvoColors.WarnAmber else TorqueEvoColors.NominalGreen,
                         bg = TorqueEvoColors.RefuelSurface,
-                        border = TorqueEvoColors.NominalGreen.copy(alpha = 0.28f),
+                        border = (if (draftRefuels > 0) TorqueEvoColors.WarnAmber else TorqueEvoColors.NominalGreen).copy(alpha = 0.35f),
                         modifier = Modifier.weight(1f),
                         onClick = { activeSheet = ActiveHomeSheet.REFUEL }
                     )
@@ -764,6 +765,9 @@ fun HomeMenuScreen(
             unitPrefs = unitPrefs,
             onAddRefuel = { vol, price, cur, ron, fName, odo, isFull, autoCal ->
                 viewModel.addRefuelCheckpoint(vol, price, cur, ron, fName, odo, isFull, autoCal)
+            },
+            onConfirmEditRefuel = { existing, vol, price, cur, ron, fName, odo, isFull, autoCal ->
+                viewModel.confirmOrEditRefuelCheckpoint(existing, vol, price, cur, ron, fName, odo, isFull, autoCal)
             },
             onDeleteRefuel = { viewModel.deleteRefuelCheckpoint(it) },
             onDismiss = { activeSheet = ActiveHomeSheet.NONE }
