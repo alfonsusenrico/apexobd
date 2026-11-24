@@ -1,6 +1,7 @@
 package com.apexobd.app.ui
 
 import com.apexobd.app.data.db.HudWidgetEntity
+import kotlin.math.roundToInt
 
 data class GridPlacement(
     val widget: HudWidgetEntity,
@@ -25,7 +26,8 @@ data class GridBounds(
 )
 
 /**
- * Computes clamped grid origin and span when dragging one of the four edge resize handles.
+ * Computes clamped grid origin and span when dragging one of the four edge resize handles,
+ * enforcing readable minimum component spans (`minSpanCols`, `minSpanRows`).
  */
 fun computeResizedGridBounds(
     startCol: Int,
@@ -35,55 +37,102 @@ fun computeResizedGridBounds(
     edge: WidgetResizeEdge,
     deltaCells: Int,
     totalCols: Int,
-    totalRows: Int
+    totalRows: Int,
+    minSpanCols: Int = 1,
+    minSpanRows: Int = 1
 ): GridBounds {
     val safeCols = totalCols.coerceAtLeast(1)
     val safeRows = totalRows.coerceAtLeast(1)
-    val initSpanCols = startSpanCols.coerceIn(1, safeCols)
-    val initSpanRows = startSpanRows.coerceIn(1, safeRows)
+    val safeMinCols = minSpanCols.coerceIn(1, safeCols)
+    val safeMinRows = minSpanRows.coerceIn(1, safeRows)
+    val initSpanCols = startSpanCols.coerceIn(safeMinCols, safeCols)
+    val initSpanRows = startSpanRows.coerceIn(safeMinRows, safeRows)
     val initCol = startCol.coerceIn(0, (safeCols - initSpanCols).coerceAtLeast(0))
     val initRow = startRow.coerceIn(0, (safeRows - initSpanRows).coerceAtLeast(0))
 
     return when (edge) {
         WidgetResizeEdge.RIGHT -> {
-            val maxSpan = (safeCols - initCol).coerceAtLeast(1)
+            val maxSpan = (safeCols - initCol).coerceAtLeast(safeMinCols)
             GridBounds(
                 col = initCol,
                 row = initRow,
-                spanCols = (initSpanCols + deltaCells).coerceIn(1, maxSpan),
+                spanCols = (initSpanCols + deltaCells).coerceIn(safeMinCols, maxSpan),
                 spanRows = initSpanRows
             )
         }
         WidgetResizeEdge.LEFT -> {
             val rightEdge = initCol + initSpanCols
-            val nextCol = (initCol + deltaCells).coerceIn(0, (rightEdge - 1).coerceAtLeast(0))
+            val maxLeftCol = (rightEdge - safeMinCols).coerceAtLeast(0)
+            val nextCol = (initCol + deltaCells).coerceIn(0, maxLeftCol)
             GridBounds(
                 col = nextCol,
                 row = initRow,
-                spanCols = (rightEdge - nextCol).coerceIn(1, safeCols),
+                spanCols = (rightEdge - nextCol).coerceIn(safeMinCols, safeCols),
                 spanRows = initSpanRows
             )
         }
         WidgetResizeEdge.BOTTOM -> {
-            val maxSpan = (safeRows - initRow).coerceAtLeast(1)
+            val maxSpan = (safeRows - initRow).coerceAtLeast(safeMinRows)
             GridBounds(
                 col = initCol,
                 row = initRow,
                 spanCols = initSpanCols,
-                spanRows = (initSpanRows + deltaCells).coerceIn(1, maxSpan)
+                spanRows = (initSpanRows + deltaCells).coerceIn(safeMinRows, maxSpan)
             )
         }
         WidgetResizeEdge.TOP -> {
             val bottomEdge = initRow + initSpanRows
-            val nextRow = (initRow + deltaCells).coerceIn(0, (bottomEdge - 1).coerceAtLeast(0))
+            val maxTopRow = (bottomEdge - safeMinRows).coerceAtLeast(0)
+            val nextRow = (initRow + deltaCells).coerceIn(0, maxTopRow)
             GridBounds(
                 col = initCol,
                 row = nextRow,
                 spanCols = initSpanCols,
-                spanRows = (bottomEdge - nextRow).coerceIn(1, safeRows)
+                spanRows = (bottomEdge - nextRow).coerceIn(safeMinRows, safeRows)
             )
         }
     }
+}
+
+/**
+ * Proportionally rescales a widget's grid position and span when switching HUD grid density
+ * so every existing component keeps its real physical size on screen instead of shrinking.
+ */
+fun rescaleWidgetBoundsForGridChange(
+    widget: HudWidgetEntity,
+    fromCols: Int,
+    fromRows: Int,
+    toCols: Int,
+    toRows: Int,
+    minSpanCols: Int,
+    minSpanRows: Int
+): HudWidgetEntity {
+    if (fromCols <= 0 || fromRows <= 0 || toCols <= 0 || toRows <= 0) return widget
+    if (fromCols == toCols && fromRows == toRows) return widget
+    val scaleX = toCols.toFloat() / fromCols.toFloat()
+    val scaleY = toRows.toFloat() / fromRows.toFloat()
+    val safeMinCols = minSpanCols.coerceIn(1, toCols)
+    val safeMinRows = minSpanRows.coerceIn(1, toRows)
+    val nextSpanCols = (widget.spanCols * scaleX).roundToInt().coerceIn(safeMinCols, toCols)
+    val nextSpanRows = (widget.spanRows * scaleY).roundToInt().coerceIn(safeMinRows, toRows)
+    val nextCol = if (widget.gridCol >= 0) {
+        (widget.gridCol * scaleX).roundToInt().coerceIn(0, (toCols - nextSpanCols).coerceAtLeast(0))
+    } else {
+        widget.gridCol
+    }
+    val nextRow = if (widget.gridRow >= 0) {
+        (widget.gridRow * scaleY).roundToInt().coerceIn(0, (toRows - nextSpanRows).coerceAtLeast(0))
+    } else {
+        widget.gridRow
+    }
+    return widget.copy(
+        spanCols = nextSpanCols,
+        spanRows = nextSpanRows,
+        gridCol = nextCol,
+        gridRow = nextRow,
+        freeformXFraction = if (nextCol >= 0) (nextCol.toFloat() / toCols.toFloat()).coerceIn(0f, 0.95f) else widget.freeformXFraction,
+        freeformYFraction = if (nextRow >= 0) (nextRow.toFloat() / toRows.toFloat()).coerceIn(0f, 0.95f) else widget.freeformYFraction
+    )
 }
 
 /**

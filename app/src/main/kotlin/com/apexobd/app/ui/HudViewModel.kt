@@ -2341,8 +2341,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
             val scale = settings.value.hudGridScale
             val existing = hudDao.getWidgetsForPage(pageId)
             val nextSortOrder = (existing.maxOfOrNull { it.sortOrder } ?: -1) + 1
-            val sw = spanCols.coerceIn(1, scale.cols)
-            val sh = spanRows.coerceIn(1, scale.rows)
+            val sw = spanCols.coerceIn(scale.minWidgetCols, scale.cols)
+            val sh = spanRows.coerceIn(scale.minWidgetRows, scale.rows)
             val (slotCol, slotRow) = findFirstFreeGridSlot(existing, scale.cols, scale.rows, sw, sh)
             val xFrac = (slotCol.toFloat() / scale.cols.toFloat()).coerceIn(0f, 0.95f)
             val yFrac = (slotRow.toFloat() / scale.rows.toFloat()).coerceIn(0f, 0.95f)
@@ -2416,8 +2416,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateWidgetSize(widget: HudWidgetEntity, cols: Int, rows: Int) {
         val scale = settings.value.hudGridScale
-        val clampedCols = cols.coerceIn(1, scale.cols)
-        val clampedRows = rows.coerceIn(1, scale.rows)
+        val clampedCols = cols.coerceIn(scale.minWidgetCols, scale.cols)
+        val clampedRows = rows.coerceIn(scale.minWidgetRows, scale.rows)
         val nextCol = if (widget.gridCol >= 0) widget.gridCol.coerceIn(0, (scale.cols - clampedCols).coerceAtLeast(0)) else widget.gridCol
         val nextRow = if (widget.gridRow >= 0) widget.gridRow.coerceIn(0, (scale.rows - clampedRows).coerceAtLeast(0)) else widget.gridRow
         viewModelScope.launch {
@@ -2484,8 +2484,8 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
         spanRows: Int
     ) {
         val scale = settings.value.hudGridScale
-        val sw = spanCols.coerceIn(1, scale.cols)
-        val sh = spanRows.coerceIn(1, scale.rows)
+        val sw = spanCols.coerceIn(scale.minWidgetCols, scale.cols)
+        val sh = spanRows.coerceIn(scale.minWidgetRows, scale.rows)
         val clampedCol = col.coerceIn(0, (scale.cols - sw).coerceAtLeast(0))
         val clampedRow = row.coerceIn(0, (scale.rows - sh).coerceAtLeast(0))
         viewModelScope.launch {
@@ -2538,7 +2538,27 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setHudGridScale(scale: HudGridScale) {
-        viewModelScope.launch { prefs.setHudGridScale(scale) }
+        val oldScale = settings.value.hudGridScale
+        viewModelScope.launch {
+            if (oldScale != scale) {
+                val allWidgets = pagesWithWidgets.value.flatMap { it.widgets }
+                allWidgets.forEach { w ->
+                    val rescaled = rescaleWidgetBoundsForGridChange(
+                        widget = w,
+                        fromCols = oldScale.cols,
+                        fromRows = oldScale.rows,
+                        toCols = scale.cols,
+                        toRows = scale.rows,
+                        minSpanCols = scale.minWidgetCols,
+                        minSpanRows = scale.minWidgetRows
+                    )
+                    if (rescaled != w) {
+                        hudDao.updateWidget(rescaled)
+                    }
+                }
+            }
+            prefs.setHudGridScale(scale)
+        }
     }
 
     fun togglePauseFuelCalculation() {
