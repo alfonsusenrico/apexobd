@@ -175,7 +175,7 @@ class HudGridLayoutTest {
         assertEquals(20, ultraMicro.gridCol)
         assertEquals(10, ultraMicro.gridRow)
 
-        // Resizing left edge on 64x32 stops at readable minimum (minWidgetCols = 8)
+        // Resizing left edge on 64x32 stops at readable minimum (minWidgetCols = 4)
         val clamped = computeResizedGridBounds(
             startCol = 16,
             startRow = 8,
@@ -188,6 +188,6 @@ class HudGridLayoutTest {
             minSpanCols = HudGridScale.MICRO_64X32.minWidgetCols,
             minSpanRows = HudGridScale.MICRO_64X32.minWidgetRows
         )
-        assertEquals(GridBounds(col = 24, row = 8, spanCols = 8, spanRows = 8), clamped)
+        assertEquals(GridBounds(col = 28, row = 8, spanCols = 4, spanRows = 8), clamped)
     }
 }
