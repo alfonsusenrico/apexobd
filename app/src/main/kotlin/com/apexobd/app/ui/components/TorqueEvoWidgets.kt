@@ -274,6 +274,26 @@ private fun LiveDigitsRow(
 internal fun shouldLiftUnitToHeader(availWidthDp: Float, unit: String): Boolean =
     unit.isNotBlank() && availWidthDp < 155f
 
+internal fun proportionalLabelSp(
+    availWidthDp: Float,
+    availHeightDp: Float,
+    label: String,
+    heightFraction: Float = 0.21f,
+    minSp: Float = 6.5f,
+    maxSp: Float = 20f
+): Float {
+    val byHeight = (availHeightDp * heightFraction).coerceIn(minSp, maxSp)
+    val byWidth = fitLabelFontSizeSp(availWidthDp, label, minSp = minSp, maxSp = maxSp)
+    return minOf(byHeight, byWidth).coerceIn(minSp, maxSp)
+}
+
+internal fun proportionalUnitSp(
+    availHeightDp: Float,
+    heightFraction: Float = 0.18f,
+    minSp: Float = 6.5f,
+    maxSp: Float = 15f
+): Float = (availHeightDp * heightFraction).coerceIn(minSp, maxSp)
+
 @Composable
 fun AnalogDialWidget(
     shortLabel: String,
@@ -530,20 +550,24 @@ fun DigitalReadoutWidget(
             .hudTelemetryCardChrome(palette, radiusDp = 10.dp)
     ) {
         val compact = maxWidth < 105.dp || maxHeight < 82.dp
-        val padH = if (compact) 5.dp else 10.dp
-        val padV = if (compact) 4.dp else 7.dp
-        val availInnerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(36f)
+        val padH = (maxWidth.value * 0.06f).coerceIn(3f, 10f).dp
+        val padV = (maxHeight.value * 0.07f).coerceIn(2.5f, 8f).dp
+        val availInnerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(24f)
+        val availInnerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(22f)
         val liftUnitToHeader = shouldLiftUnitToHeader(availInnerW, unit)
-        val unitSpVal = if (compact) 9.5f else 11.5f
-        val unitReserve = if (liftUnitToHeader) (unit.length * unitSpVal * 0.62f + 6f) else 0f
-        val dotReserve = if (compact) 7f else 10f
-        val labelSp = fitLabelFontSizeSp(
-            availWidthDp = (availInnerW - dotReserve - unitReserve).coerceAtLeast(28f),
+        val unitSpVal = proportionalUnitSp(availInnerH, heightFraction = 0.19f, minSp = 6.5f, maxSp = 15f)
+        val unitReserve = if (liftUnitToHeader) (unit.length * unitSpVal * 0.62f + 5f) else 0f
+        val dotReserve = if (compact) 6f else 10f
+        val labelSp = proportionalLabelSp(
+            availWidthDp = (availInnerW - dotReserve - unitReserve).coerceAtLeast(20f),
+            availHeightDp = availInnerH,
             label = shortLabel,
-            minSp = 9.5f,
-            maxSp = if (compact) 12.5f else 13.5f
+            heightFraction = 0.22f,
+            minSp = 6.5f,
+            maxSp = 20f
         ).sp
-        val maxValSp = if (maxWidth > 165.dp && maxHeight > 74.dp) 32f else if (compact) 25f else 28f
+        val minValSp = (availInnerH * 0.24f).coerceIn(9f, 18f)
+        val maxValSp = (availInnerH * 0.48f).coerceIn(minValSp, 44f)
         val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
 
         Column(
@@ -561,15 +585,15 @@ fun DigitalReadoutWidget(
                     text = shortLabel.uppercase(),
                     fontSize = labelSp,
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = if (compact) 0.15.sp else 0.45.sp,
+                    letterSpacing = if (compact) 0.1.sp else 0.4.sp,
                     color = palette.labelColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(end = 4.dp)
+                    modifier = Modifier.weight(1f).padding(end = 3.dp)
                 )
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (liftUnitToHeader && unit.isNotBlank()) {
@@ -584,7 +608,7 @@ fun DigitalReadoutWidget(
                     }
                     Box(
                         modifier = Modifier
-                            .size(if (compact) 4.dp else 5.dp)
+                            .size(if (compact) 3.5.dp else 5.dp)
                             .clip(CircleShape)
                             .drawBehind {
                                 val curVal = valueProvider()
@@ -603,7 +627,7 @@ fun DigitalReadoutWidget(
                 sensorKey = sensorKey,
                 availWidthDp = availInnerW,
                 unitSp = unitSpVal,
-                minSp = 13.5f,
+                minSp = minValSp,
                 maxSp = maxValSp,
                 primaryColor = palette.textPrimary,
                 secondaryColor = unitTextColor,
@@ -611,7 +635,7 @@ fun DigitalReadoutWidget(
                 critThreshold = critThreshold,
                 alertBelow = alertBelow,
                 tintRedOnCritical = true,
-                unitBottomPadding = 2.dp,
+                unitBottomPadding = 1.5.dp,
                 gapDp = if (compact) 2.dp else 4.dp,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -643,12 +667,16 @@ fun BarGaugeWidget(
             .hudTelemetryCardChrome(palette, radiusDp = 8.dp)
     ) {
         val compact = maxWidth < 155.dp
-        val padH = if (compact) 6.dp else 10.dp
-        val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
+        val padH = (maxWidth.value * 0.05f).coerceIn(3.5f, 10f).dp
+        val padV = (maxHeight.value * 0.06f).coerceIn(2.5f, 6f).dp
+        val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(24f)
+        val innerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(22f)
         val liftUnitToHeader = shouldLiftUnitToHeader(innerW, unit)
-        val unitSpVal = if (compact) 9.5f else 11f
+        val unitSpVal = proportionalUnitSp(innerH, heightFraction = 0.18f, minSp = 6.5f, maxSp = 14f)
         val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
-        val wideLabelSp = 12.5.sp
+        val wideLabelSp = proportionalLabelSp(innerW * 0.52f, innerH, shortLabel, heightFraction = 0.22f, minSp = 7f, maxSp = 18f).sp
+        val barMinValSp = (innerH * 0.22f).coerceIn(9f, 18f)
+        val barMaxValSp = (innerH * 0.40f).coerceIn(barMinValSp, 32f)
 
         Row(modifier = Modifier.fillMaxSize()) {
             Box(
@@ -662,12 +690,19 @@ fun BarGaugeWidget(
                     }
             )
             Column(
-                modifier = Modifier.fillMaxSize().padding(horizontal = padH, vertical = if (compact) 4.dp else 6.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = padH, vertical = padV),
                 verticalArrangement = if (compact) Arrangement.SpaceBetween else Arrangement.Center
             ) {
                 if (compact) {
                     val unitReserve = if (liftUnitToHeader) (unit.length * unitSpVal * 0.62f + 4f) else 0f
-                    val compactLabelSp = fitLabelFontSizeSp((innerW - unitReserve).coerceAtLeast(28f), shortLabel, minSp = 9.5f, maxSp = 12.5f).sp
+                    val compactLabelSp = proportionalLabelSp(
+                        availWidthDp = (innerW - unitReserve).coerceAtLeast(20f),
+                        availHeightDp = innerH,
+                        label = shortLabel,
+                        heightFraction = 0.21f,
+                        minSp = 6.5f,
+                        maxSp = 16f
+                    ).sp
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -677,12 +712,12 @@ fun BarGaugeWidget(
                             text = shortLabel.uppercase(),
                             fontSize = compactLabelSp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.15.sp,
+                            letterSpacing = 0.1.sp,
                             color = palette.labelColor,
                             maxLines = 1,
                             softWrap = false,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f).padding(end = 4.dp)
+                            modifier = Modifier.weight(1f).padding(end = 3.dp)
                         )
                         if (liftUnitToHeader && unit.isNotBlank()) {
                             Text(
@@ -703,8 +738,8 @@ fun BarGaugeWidget(
                         sensorKey = sensorKey,
                         availWidthDp = innerW,
                         unitSp = unitSpVal,
-                        minSp = 13f,
-                        maxSp = 22f,
+                        minSp = barMinValSp,
+                        maxSp = barMaxValSp,
                         primaryColor = palette.textPrimary,
                         secondaryColor = unitTextColor,
                         warnThreshold = warnThreshold,
@@ -724,7 +759,7 @@ fun BarGaugeWidget(
                             text = shortLabel.uppercase(),
                             fontSize = wideLabelSp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.5.sp,
+                            letterSpacing = 0.45.sp,
                             color = palette.labelColor,
                             maxLines = 1,
                             softWrap = false,
@@ -739,9 +774,8 @@ fun BarGaugeWidget(
                             sensorKey = sensorKey,
                             availWidthDp = innerW * 0.48f,
                             unitSp = unitSpVal,
-                            minSp = 20f,
-                            maxSp = 20f,
-                            fixedDigitsSp = 20f,
+                            minSp = barMinValSp,
+                            maxSp = barMaxValSp,
                             primaryColor = palette.textPrimary,
                             secondaryColor = unitTextColor,
                             warnThreshold = warnThreshold,
@@ -840,11 +874,22 @@ fun SegmentedBarGaugeWidget(
             val lastIdx = (segments - 1).coerceAtLeast(1)
             Array(segments) { idx -> segmentedSpectrumColor(idx.toFloat() / lastIdx.toFloat()) }
         }
-        val padH = if (compact) 5.5.dp else 10.dp
-        val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(34f)
-        val unitSpVal = if (compact) 9.5f else 10.5f
+        val padH = (maxWidth.value * 0.05f).coerceIn(3.5f, 10f).dp
+        val padV = (maxHeight.value * 0.06f).coerceIn(2.5f, 6f).dp
+        val innerW = (maxWidth.value - 3f - padH.value * 2f).coerceAtLeast(24f)
+        val innerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(22f)
+        val unitSpVal = proportionalUnitSp(innerH, heightFraction = 0.17f, minSp = 6.5f, maxSp = 14f)
         val unitTextColor = palette.labelColor.copy(alpha = 0.88f)
-        val segLabelSp = fitLabelFontSizeSp((innerW * if (compact) 0.54f else 0.56f), shortLabel, minSp = 9.5f, maxSp = 12.5f).sp
+        val segLabelSp = proportionalLabelSp(
+            availWidthDp = innerW * if (compact) 0.54f else 0.56f,
+            availHeightDp = innerH,
+            label = shortLabel,
+            heightFraction = 0.21f,
+            minSp = 6.5f,
+            maxSp = 18f
+        ).sp
+        val segMinValSp = (innerH * 0.20f).coerceIn(9f, 16f)
+        val segMaxValSp = (innerH * 0.34f).coerceIn(segMinValSp, 26f)
         val isHighRedMax by remember(valueProvider, min, span) {
             derivedStateOf {
                 val v = valueProvider()
@@ -900,8 +945,8 @@ fun SegmentedBarGaugeWidget(
                         sensorKey = sensorKey,
                         availWidthDp = if (compact) innerW * 0.52f else innerW * 0.44f,
                         unitSp = unitSpVal,
-                        minSp = 12.5f,
-                        maxSp = if (compact) 16.5f else 19f,
+                        minSp = segMinValSp,
+                        maxSp = segMaxValSp,
                         primaryColor = palette.textPrimary,
                         secondaryColor = unitTextColor,
                         warnThreshold = warnThreshold,
@@ -1010,52 +1055,64 @@ fun SparklineChartWidget(
         Brush.verticalGradient(listOf(palette.accent.copy(alpha = 0.32f), Color.Transparent))
     }
 
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .hudTelemetryCardChrome(palette, radiusDp = 10.dp)
-            .padding(horizontal = 9.dp, vertical = 7.dp),
-        verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.Bottom
-        ) {
-            Text(
-                text = shortLabel.uppercase(),
-                fontSize = 11.5.sp,
-                fontWeight = FontWeight.ExtraBold,
-                letterSpacing = 0.5.sp,
-                color = palette.labelColor,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f).padding(end = 6.dp)
-            )
-            LiveDigitsRow(
-                valueProvider = valueProvider,
-                unit = unit,
-                min = min,
-                max = max,
-                sensorKey = sensorKey,
-                availWidthDp = 96f,
-                unitSp = 10.5f,
-                minSp = 16f,
-                maxSp = 16f,
-                fixedDigitsSp = 16f,
-                primaryColor = palette.textPrimary,
-                secondaryColor = palette.labelColor.copy(alpha = 0.88f),
-                warnThreshold = warnThreshold,
-                critThreshold = critThreshold,
-                alertBelow = alertBelow,
-                tintRedOnCritical = true,
-                unitBottomPadding = 1.dp,
-                gapDp = 3.dp
-            )
-        }
+        val padH = (maxWidth.value * 0.05f).coerceIn(4f, 9f).dp
+        val padV = (maxHeight.value * 0.06f).coerceIn(3f, 7f).dp
+        val innerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(28f)
+        val innerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(24f)
+        val chartLabelSp = proportionalLabelSp(innerW * 0.52f, innerH, shortLabel, heightFraction = 0.19f, minSp = 6.5f, maxSp = 17f).sp
+        val chartUnitSp = proportionalUnitSp(innerH, heightFraction = 0.16f, minSp = 6.5f, maxSp = 13f)
+        val chartMinValSp = (innerH * 0.18f).coerceIn(9f, 16f)
+        val chartMaxValSp = (innerH * 0.30f).coerceIn(chartMinValSp, 24f)
 
-        Canvas(modifier = Modifier.fillMaxSize().padding(top = 5.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = padH, vertical = padV),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Text(
+                    text = shortLabel.uppercase(),
+                    fontSize = chartLabelSp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = 0.35.sp,
+                    color = palette.labelColor,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(end = 4.dp)
+                )
+                LiveDigitsRow(
+                    valueProvider = valueProvider,
+                    unit = unit,
+                    min = min,
+                    max = max,
+                    sensorKey = sensorKey,
+                    availWidthDp = innerW * 0.48f,
+                    unitSp = chartUnitSp,
+                    minSp = chartMinValSp,
+                    maxSp = chartMaxValSp,
+                    primaryColor = palette.textPrimary,
+                    secondaryColor = palette.labelColor.copy(alpha = 0.88f),
+                    warnThreshold = warnThreshold,
+                    critThreshold = critThreshold,
+                    alertBelow = alertBelow,
+                    tintRedOnCritical = true,
+                    unitBottomPadding = 1.dp,
+                    gapDp = 2.5.dp
+                )
+            }
+
+            Canvas(modifier = Modifier.fillMaxSize().padding(top = 4.dp)) {
             drawLine(
                 color = palette.dialTrack.copy(alpha = 0.65f),
                 start = Offset(0f, size.height * 0.5f),
@@ -1096,6 +1153,7 @@ fun SparklineChartWidget(
             )
             drawCircle(color = Color.White, radius = 4.5f, center = lastPt)
             drawCircle(color = palette.accent, radius = 4.5f, center = lastPt, style = Stroke(2.2f))
+        }
         }
     }
 }

@@ -11,6 +11,8 @@ import com.apexobd.app.ui.components.evaluateMetricAlert
 import com.apexobd.app.ui.components.formatTelemetryValue
 import com.apexobd.app.ui.components.isRpmSensorKey
 import com.apexobd.app.ui.components.rpmDialMaxForRedline
+import com.apexobd.app.ui.components.proportionalLabelSp
+import com.apexobd.app.ui.components.proportionalUnitSp
 import com.apexobd.app.ui.components.segmentedBoxFillFraction
 import com.apexobd.app.ui.components.segmentedSpectrumColor
 import com.apexobd.app.ui.components.shouldLiftUnitToHeader
@@ -214,5 +216,17 @@ class HudWidgetStyleTest {
         assertTrue(shouldLiftUnitToHeader(150f, "%"))
         assertFalse(shouldLiftUnitToHeader(180f, "km/L"))
         assertFalse(shouldLiftUnitToHeader(110f, ""))
+    }
+
+    @Test
+    fun `proportionalLabelSp and proportionalUnitSp scale dynamically with component size`() {
+        val smallLabel = proportionalLabelSp(availWidthDp = 50f, availHeightDp = 32f, label = "COOLANT")
+        val medLabel = proportionalLabelSp(availWidthDp = 120f, availHeightDp = 64f, label = "COOLANT")
+        val largeLabel = proportionalLabelSp(availWidthDp = 240f, availHeightDp = 110f, label = "COOLANT")
+        assertTrue("Expected small < medium < large: $smallLabel, $medLabel, $largeLabel", smallLabel < medLabel && medLabel < largeLabel)
+
+        val smallUnit = proportionalUnitSp(availHeightDp = 32f)
+        val largeUnit = proportionalUnitSp(availHeightDp = 110f)
+        assertTrue("Expected smallUnit < largeUnit: $smallUnit, $largeUnit", smallUnit < largeUnit)
     }
 }

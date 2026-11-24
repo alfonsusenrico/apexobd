@@ -5,7 +5,7 @@ The HUD canvas MUST support fine-grained micro-grid scales up to `64×32` (`MICR
 
 #### Scenario: User switches from 8x4 to 64x32 micro-grid
 - **WHEN** the user switches from `Standard (8×4)` to `Micro (64×32)`
-- **THEN** a `2×1` component at `(2, 1)` rescales to `16×8` at `(16, 8)` keeping its exact physical size while allowing 1-micro-cell positioning and resizing down to a readable minimum (`8×5`)
+- **THEN** a `2×1` component at `(2, 1)` rescales to `16×8` at `(16, 8)` keeping its exact physical size while allowing 1-micro-cell positioning and resizing down to a compact minimum (`4×3`) with proportionally scaled labels and units
 
 ### Requirement: Direct On-Component Edge-Arrow Resize and Hold-Middle Move
 In Edit Mode, the selected HUD component MUST display resize arrow handles on all four sides (`LEFT`, `RIGHT`, `TOP`, `BOTTOM`) that resize the component directly when dragged, and holding the middle of a component MUST allow dragging it freely across the canvas without opening a modal menu.
