@@ -1629,75 +1629,105 @@ fun QuickRefuelWidget(
 ) {
     val palette = LocalHudVisualStyle.current
     val isSaved = feedbackText != null
+    val statusText = when {
+        feedbackText != null -> feedbackText
+        draftCount > 0 -> "$draftCount draft(s)"
+        else -> "Ready"
+    }
+    val statusColor = when {
+        isSaved -> TorqueEvoColors.NominalGreen
+        draftCount > 0 -> TorqueEvoColors.WarnAmber
+        else -> palette.textPrimary
+    }
+
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .hudTelemetryCardChrome(palette, radiusDp = 10.dp)
-            .clickable { onQuickRefuel() }
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center
     ) {
-        val padH = (maxWidth.value * 0.06f).coerceIn(4f, 10f).dp
-        val padV = (maxHeight.value * 0.08f).coerceIn(3f, 8f).dp
-        val innerW = (maxWidth.value - padH.value * 2f).coerceAtLeast(24f)
-        val innerH = (maxHeight.value - padV.value * 2f).coerceAtLeast(22f)
-        val titleSp = proportionalLabelSp(innerW, innerH, heightFraction = 0.21f, widthFraction = 0.14f, minSp = 8f, maxSp = 15f).sp
-        val actionSp = (innerH * 0.24f).coerceIn(8.5f, 16f).sp
-
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = padH, vertical = padV),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
+        val narrow = maxWidth < 135.dp
+        if (narrow) {
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = "REFUEL",
-                    fontSize = titleSp,
+                    text = "QUICK REFUEL",
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.ExtraBold,
                     color = palette.labelColor,
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (draftCount > 0) {
+                Text(
+                    text = if (isSaved) "Saved ✓" else "Refuel",
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isSaved) TorqueEvoColors.ElectricBlue else Color(0xFF16A34A))
+                        .clickable { onQuickRefuel() }
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+                if (draftCount > 0 || isSaved) {
                     Text(
-                        text = "$draftCount DRAFT",
-                        fontSize = (innerH * 0.15f).coerceIn(7f, 11f).sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.Black,
+                        text = statusText,
+                        fontSize = 9.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = statusColor,
                         maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(TorqueEvoColors.WarnAmber)
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(7.dp))
-                    .background(if (isSaved) TorqueEvoColors.NominalGreen else TorqueEvoColors.NominalGreen.copy(alpha = 0.18f))
-                    .border(
-                        1.dp,
-                        if (isSaved) TorqueEvoColors.NominalGreen else TorqueEvoColors.NominalGreen.copy(alpha = 0.72f),
-                        RoundedCornerShape(7.dp)
-                    )
-                    .padding(horizontal = 6.dp, vertical = (innerH * 0.08f).coerceIn(3f, 7f).dp),
-                contentAlignment = Alignment.Center
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
+                Column(
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "QUICK REFUEL",
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        letterSpacing = 0.45.sp,
+                        color = palette.labelColor,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = statusText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = statusColor,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Text(
-                    text = feedbackText ?: "⛽ TAP TO LOG",
-                    fontSize = actionSp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = if (isSaved) Color.Black else TorqueEvoColors.NominalGreen,
+                    text = if (isSaved) "Saved ✓" else "Refuel",
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isSaved) TorqueEvoColors.ElectricBlue else Color(0xFF16A34A))
+                        .clickable { onQuickRefuel() }
+                        .padding(horizontal = 11.dp, vertical = 5.dp)
                 )
             }
         }
