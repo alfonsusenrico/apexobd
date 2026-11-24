@@ -453,7 +453,7 @@ fun RpmTachGtWidget(
 
             // Graduated ticks + 0..maxThousands numerals
             val totalTicks = maxThousands * 4
-            val numSize = (r * 0.145f).coerceIn(9f, 26f)
+            val numSize = (r * 0.155f).coerceIn(10.dp.toPx(), 18.dp.toPx())
             for (i in 0..totalTicks) {
                 val f = i.toFloat() / totalTicks.toFloat()
                 val rad = (startDeg + sweepDeg * f) * PI / 180.0
@@ -522,18 +522,18 @@ fun RpmTachGtWidget(
             drawCenteredCanvasText(
                 text = rpmText,
                 cx = c.x,
-                cy = c.y + r * 0.62f,
+                cy = c.y + r * 0.58f,
                 paint = numPaint,
-                textSizePx = (r * 0.28f).coerceIn(14f, 46f),
+                textSizePx = (r * 0.28f).coerceIn(13.dp.toPx(), 30.dp.toPx()),
                 color = if (inRedline) TorqueEvoColors.CriticalRed else palette.textPrimary
             )
             drawCenteredCanvasText(
                 text = "RPM",
                 cx = c.x,
-                cy = c.y + r * 0.82f,
+                cy = c.y + r * 0.83f,
                 paint = subPaint,
-                textSizePx = (r * 0.095f).coerceIn(8f, 15f),
-                color = palette.textSecondary
+                textSizePx = (r * 0.145f).coerceIn(10.dp.toPx(), 17.dp.toPx()),
+                color = palette.labelColor.copy(alpha = 0.90f)
             )
         }
     }
@@ -648,7 +648,7 @@ fun RpmTachF1LedsWidget(
             }
 
             // 0..maxThousands numerals
-            val numSize = (r * 0.14f).coerceIn(8.5f, 22f)
+            val numSize = (r * 0.148f).coerceIn(9.5.dp.toPx(), 17.dp.toPx())
             for (n in 0..maxThousands) {
                 val rad = (startDeg + sweepDeg * (n.toFloat() / maxThousands.toFloat())) * PI / 180.0
                 val nr = r * 0.71f
@@ -667,18 +667,18 @@ fun RpmTachF1LedsWidget(
             drawCenteredCanvasText(
                 text = rpmText,
                 cx = c.x,
-                cy = c.y + r * 0.08f,
+                cy = c.y + r * 0.05f,
                 paint = numPaint,
-                textSizePx = (r * 0.38f).coerceIn(16f, 58f),
+                textSizePx = (r * 0.38f).coerceIn(14.dp.toPx(), 36.dp.toPx()),
                 color = if (inRedline) TorqueEvoColors.CriticalRed else palette.textPrimary
             )
             drawCenteredCanvasText(
                 text = "RPM",
                 cx = c.x,
-                cy = c.y + r * 0.33f,
+                cy = c.y + r * 0.35f,
                 paint = subPaint,
-                textSizePx = (r * 0.105f).coerceIn(8.5f, 16f),
-                color = palette.textSecondary
+                textSizePx = (r * 0.145f).coerceIn(10.dp.toPx(), 17.dp.toPx()),
+                color = palette.labelColor.copy(alpha = 0.90f)
             )
         }
     }
@@ -802,7 +802,7 @@ fun RpmTachChronoWidget(
 
             // Precision ticks + 0..maxThousands numerals inside band
             val totalTicks = maxThousands * 5
-            val numSize = (r * 0.135f).coerceIn(8.5f, 22f)
+            val numSize = (r * 0.145f).coerceIn(9.5.dp.toPx(), 17.dp.toPx())
             for (i in 0..totalTicks) {
                 val f = i.toFloat() / totalTicks.toFloat()
                 val rad = (startDeg + sweepDeg * f) * PI / 180.0
@@ -850,17 +850,18 @@ fun RpmTachChronoWidget(
 
             // Inside center circle: "RPM" + Shift Dot at top-right of RPM value (matching Option D)
             val labelY = c.y - innerR * 0.42f
+            val chronoRpmLabelPx = (innerR * 0.27f).coerceIn(9.5.dp.toPx(), 16.dp.toPx())
             if (hasShift) {
                 drawCenteredCanvasText(
                     text = "RPM",
-                    cx = c.x - innerR * 0.16f,
+                    cx = c.x - innerR * 0.18f,
                     cy = labelY,
                     paint = subPaint,
-                    textSizePx = (innerR * 0.21f).coerceIn(8.5f, 16f),
-                    color = palette.textSecondary
+                    textSizePx = chronoRpmLabelPx,
+                    color = palette.labelColor.copy(alpha = 0.90f)
                 )
                 drawShiftLampDot(
-                    center = Offset(c.x + innerR * 0.30f, labelY),
+                    center = Offset(c.x + innerR * 0.34f, labelY),
                     radius = (innerR * 0.15f).coerceIn(4.5.dp.toPx(), 10.5.dp.toPx()),
                     stage = stage,
                     flashOn = flashOn
@@ -871,8 +872,8 @@ fun RpmTachChronoWidget(
                     cx = c.x,
                     cy = labelY,
                     paint = subPaint,
-                    textSizePx = (innerR * 0.21f).coerceIn(8.5f, 16f),
-                    color = palette.textSecondary
+                    textSizePx = chronoRpmLabelPx,
+                    color = palette.labelColor.copy(alpha = 0.90f)
                 )
             }
 
@@ -883,7 +884,7 @@ fun RpmTachChronoWidget(
                 cx = c.x,
                 cy = c.y + innerR * 0.18f,
                 paint = numPaint,
-                textSizePx = (innerR * 0.56f).coerceIn(14f, 46f),
+                textSizePx = (innerR * 0.56f).coerceIn(13.dp.toPx(), 30.dp.toPx()),
                 color = if (inRedline) TorqueEvoColors.CriticalRed else palette.textPrimary
             )
         }
@@ -963,7 +964,7 @@ fun RpmTachHaloWidget(
             drawAccentWithRedlineArc(haloTopLeft, haloSize, startDeg, sweepDeg, pct, redPct, haloW, StrokeCap.Round, palette.accent)
 
             // 0..maxThousands numerals
-            val numSize = (r * 0.13f).coerceIn(8f, 20f)
+            val numSize = (r * 0.145f).coerceIn(9.5.dp.toPx(), 17.dp.toPx())
             for (n in 0..maxThousands) {
                 val rad = (startDeg + sweepDeg * (n.toFloat() / maxThousands.toFloat())) * PI / 180.0
                 val nr = r * 0.69f
@@ -979,17 +980,18 @@ fun RpmTachHaloWidget(
 
             // "RPM" + integrated Shift Dot beside it (no shift text label)
             val labelY = c.y - r * 0.28f
+            val haloRpmLabelPx = (r * 0.155f).coerceIn(10.dp.toPx(), 18.dp.toPx())
             if (hasShift) {
                 drawCenteredCanvasText(
                     text = "RPM",
-                    cx = c.x - r * 0.10f,
+                    cx = c.x - r * 0.12f,
                     cy = labelY,
                     paint = subPaint,
-                    textSizePx = (r * 0.125f).coerceIn(9f, 18f),
+                    textSizePx = haloRpmLabelPx,
                     color = palette.labelColor
                 )
                 drawShiftLampDot(
-                    center = Offset(c.x + r * 0.22f, labelY),
+                    center = Offset(c.x + r * 0.25f, labelY),
                     radius = (r * 0.092f).coerceIn(4.5.dp.toPx(), 11.dp.toPx()),
                     stage = stage,
                     flashOn = flashOn
@@ -1000,7 +1002,7 @@ fun RpmTachHaloWidget(
                     cx = c.x,
                     cy = labelY,
                     paint = subPaint,
-                    textSizePx = (r * 0.125f).coerceIn(9f, 18f),
+                    textSizePx = haloRpmLabelPx,
                     color = palette.labelColor
                 )
             }
@@ -1010,9 +1012,9 @@ fun RpmTachHaloWidget(
             drawCenteredCanvasText(
                 text = rpmText,
                 cx = c.x,
-                cy = c.y + r * 0.12f,
+                cy = c.y + r * 0.14f,
                 paint = numPaint,
-                textSizePx = (r * 0.42f).coerceIn(16f, 64f),
+                textSizePx = (r * 0.42f).coerceIn(15.dp.toPx(), 38.dp.toPx()),
                 color = if (inRedline) TorqueEvoColors.CriticalRed else palette.textPrimary
             )
         }

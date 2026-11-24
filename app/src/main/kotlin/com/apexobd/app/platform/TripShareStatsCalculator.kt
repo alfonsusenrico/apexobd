@@ -149,7 +149,7 @@ object TripShareStatsCalculator {
         }
 
         val computedMovingKpl = when {
-            movingFuelL > 0.002 && session.distanceKm > 0.05 -> (session.distanceKm / movingFuelL).coerceIn(0.5, 99.9)
+            movingFuelL > 0.002 && session.distanceKm > 0.05 -> (session.distanceKm / movingFuelL).coerceIn(0.5, 99.99)
             lastMovingKpl != null -> lastMovingKpl
             session.avgKpl > 0.05 && movingTimeSec > 0.0 -> session.avgKpl
             else -> null

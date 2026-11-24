@@ -219,8 +219,8 @@ class FuelEconomyTracker {
 
         val instantKpl = when {
             speedKmh <= profile.idleSpeedThresholdKmh -> 0.0
-            fuelFlowLph <= 0.02 -> 99.9
-            else -> (speedKmh / fuelFlowLph).coerceIn(0.0, 99.9)
+            fuelFlowLph <= 0.02 -> 99.99
+            else -> (speedKmh / fuelFlowLph).coerceIn(0.0, 99.99)
         }
 
         if (lastUpdateMs > 0L && nowMs > lastUpdateMs) {
@@ -287,10 +287,10 @@ class FuelEconomyTracker {
         }
         lastUpdateMs = nowMs
 
-        val tripAvg = if (totalFuelLiters > 0.0005) (totalDistanceKm / totalFuelLiters).coerceIn(0.0, 99.9) else 0.0
-        val roadAvg = if (roadFuelLiters > 0.0005) (roadDistanceKm / roadFuelLiters).coerceIn(0.0, 99.9) else 0.0
-        val allTimeRoadAvg = if (allTimeRoadFuelL > 0.0005) (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.0, 99.9) else roadAvg
-        val allTimeTotalAvg = if (allTimeTotalFuelL > 0.0005) (allTimeTotalDistKm / allTimeTotalFuelL).coerceIn(0.0, 99.9) else tripAvg
+        val tripAvg = if (totalFuelLiters > 0.0005) (totalDistanceKm / totalFuelLiters).coerceIn(0.0, 99.99) else 0.0
+        val roadAvg = if (roadFuelLiters > 0.0005) (roadDistanceKm / roadFuelLiters).coerceIn(0.0, 99.99) else 0.0
+        val allTimeRoadAvg = if (allTimeRoadFuelL > 0.0005) (allTimeRoadDistKm / allTimeRoadFuelL).coerceIn(0.0, 99.99) else roadAvg
+        val allTimeTotalAvg = if (allTimeTotalFuelL > 0.0005) (allTimeTotalDistKm / allTimeTotalFuelL).coerceIn(0.0, 99.99) else tripAvg
 
         val slowBaseline = if (allTimeTotalFuelL > 0.005) {
             (allTimeTotalDistKm / allTimeTotalFuelL).coerceIn(1.5, 40.0)
@@ -900,7 +900,7 @@ object TripRunCalculator {
             0.0
         }
         val avgKpl = if (nextFuel > 0.002) {
-            (nextDist / nextFuel).coerceIn(0.0, 99.9)
+            (nextDist / nextFuel).coerceIn(0.0, 99.99)
         } else {
             null
         }

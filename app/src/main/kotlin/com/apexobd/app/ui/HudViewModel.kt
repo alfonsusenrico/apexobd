@@ -1658,7 +1658,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                         (segDist / (segDurSec / 3600.0)).coerceIn(0.0, 400.0)
                     } else 0.0
                     val segAvgKpl = if (segFuel > 0.002) {
-                        (segDist / segFuel).coerceIn(0.0, 99.9)
+                        (segDist / segFuel).coerceIn(0.0, 99.99)
                     } else 0.0
                     tripDao.updateSegment(
                         TripSegmentEntity(
@@ -2246,7 +2246,7 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                 (partialsSincePrevFullL + volumeL).takeIf { it > 0.1 }
             } else null
             val cycleAvgKpl = if (cycleDist != null && totalCycleFuelL != null) {
-                (cycleDist / totalCycleFuelL).coerceIn(0.5, 99.9)
+                (cycleDist / totalCycleFuelL).coerceIn(0.5, 99.99)
             } else null
 
             vehicleDao.insertRefuel(
@@ -2473,6 +2473,42 @@ class HudViewModel(application: Application) : AndroidViewModel(application) {
                     gridRow = nearestRow
                 )
             )
+        }
+    }
+
+    fun updateWidgetGridBounds(
+        widget: HudWidgetEntity,
+        col: Int,
+        row: Int,
+        spanCols: Int,
+        spanRows: Int
+    ) {
+        val scale = settings.value.hudGridScale
+        val sw = spanCols.coerceIn(1, scale.cols)
+        val sh = spanRows.coerceIn(1, scale.rows)
+        val clampedCol = col.coerceIn(0, (scale.cols - sw).coerceAtLeast(0))
+        val clampedRow = row.coerceIn(0, (scale.rows - sh).coerceAtLeast(0))
+        viewModelScope.launch {
+            hudDao.updateWidget(
+                widget.copy(
+                    gridCol = clampedCol,
+                    gridRow = clampedRow,
+                    spanCols = sw,
+                    spanRows = sh,
+                    freeformXFraction = (clampedCol.toFloat() / scale.cols.toFloat()).coerceIn(0f, 0.95f),
+                    freeformYFraction = (clampedRow.toFloat() / scale.rows.toFloat()).coerceIn(0f, 0.95f)
+                )
+            )
+        }
+    }
+
+    fun bringWidgetToFront(widget: HudWidgetEntity) {
+        viewModelScope.launch {
+            val siblings = hudDao.getWidgetsForPage(widget.pageId)
+            val maxOrder = siblings.maxOfOrNull { it.sortOrder } ?: 0
+            if (widget.sortOrder < maxOrder) {
+                hudDao.updateWidget(widget.copy(sortOrder = maxOrder + 1))
+            }
         }
     }
 

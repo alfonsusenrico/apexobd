@@ -32,7 +32,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -455,9 +458,15 @@ fun HudCanvasScreen(
                         selectedWidgetId = w.id
                         editingWidgetId = w.id
                     },
-                    onSelectWidget = { w -> selectedWidgetId = w.id },
+                    onSelectWidget = { w ->
+                        selectedWidgetId = w.id
+                        viewModel.bringWidgetToFront(w)
+                    },
                     onDraggingChanged = { dragging -> isDraggingAny = dragging },
                     onCommitGridPos = { w, col, row -> viewModel.updateWidgetGridPosition(w, col, row) },
+                    onCommitGridBounds = { w, col, row, sc, sr ->
+                        viewModel.updateWidgetGridBounds(w, col, row, sc, sr)
+                    },
                     onToggleRecord = { viewModel.toggleRecording() },
                     onTogglePauseResume = { viewModel.togglePauseResumeRecording() },
                     onToggleFuelPause = { viewModel.togglePauseFuelCalculation() },
@@ -534,22 +543,39 @@ fun HudCanvasScreen(
                 Text(
                     text = selectedWidget?.let {
                         val meta = viewModel.catalogItemFor(it.sensorKey)
-                        "${meta.shortLabel} (${it.spanCols}×${it.spanRows}) · Drag tiles"
-                    } ?: "Drag tiles",
+                        "${meta.shortLabel} (${it.spanCols}×${it.spanRows}) · Hold middle to move · Drag arrows"
+                    } ?: "Hold middle to move · Drag arrows to resize",
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = TorqueEvoColors.ElectricBlue,
                     modifier = Modifier.padding(end = 4.dp)
                 )
                 EditActionPill(
+                    label = "Grid: ${settings.hudGridScale.cols}×${settings.hudGridScale.rows}",
+                    tint = TorqueEvoColors.ElectricBlue
+                ) {
+                    val scales = HudGridScale.entries
+                    val nextIdx = (scales.indexOf(settings.hudGridScale) + 1) % scales.size
+                    viewModel.setHudGridScale(scales[nextIdx])
+                }
+                EditActionPill(
                     label = if (settings.gridSnapEnabled) "Snap: Tile" else "Snap: Free",
                     tint = if (settings.gridSnapEnabled) TorqueEvoColors.SkyBlue else TorqueEvoColors.WarnAmber
                 ) { viewModel.toggleGridSnap() }
+                if (currentPage != null && currentPage.widgets.size > 1) {
+                    EditActionPill("Layer ⇄", TorqueEvoColors.SkyBlue) {
+                        val ordered = currentPage.widgets.sortedBy { it.sortOrder }
+                        val curIdx = ordered.indexOfFirst { it.id == selectedWidget?.id }
+                        val nextWidget = ordered[if (curIdx <= 0) ordered.lastIndex else curIdx - 1]
+                        selectedWidgetId = nextWidget.id
+                        viewModel.bringWidgetToFront(nextWidget)
+                    }
+                }
                 if (selectedWidget != null && currentPage != null) {
                     if (canStyle) {
                         EditActionPill("◐ Style", TorqueEvoColors.SkyBlue) { viewModel.cycleWidgetDisplayType(selectedWidget) }
                     }
-                    EditActionPill("⤢ Resize", TorqueEvoColors.SkyBlue) { editingWidgetId = selectedWidget.id }
+                    EditActionPill("⚙ Edit", TorqueEvoColors.SkyBlue) { editingWidgetId = selectedWidget.id }
                     EditActionPill("×", TorqueEvoColors.CriticalRed) {
                         val remaining = currentPage.widgets.filter { it.id != selectedWidget.id }
                         viewModel.deleteWidget(selectedWidget.id)
@@ -1021,6 +1047,7 @@ private fun ProportionalHudPageCanvas(
     onSelectWidget: (HudWidgetEntity) -> Unit,
     onDraggingChanged: (Boolean) -> Unit,
     onCommitGridPos: (HudWidgetEntity, Int, Int) -> Unit,
+    onCommitGridBounds: (HudWidgetEntity, Int, Int, Int, Int) -> Unit,
     onToggleRecord: () -> Unit,
     onTogglePauseResume: () -> Unit,
     onToggleFuelPause: () -> Unit,
@@ -1034,18 +1061,35 @@ private fun ProportionalHudPageCanvas(
     onEnableGps: (() -> Unit)? = null
 ) {
     val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
     var snapPreview by remember { mutableStateOf<SnapDragPreview?>(null) }
 
-    LaunchedEffect(editMode, gridSnap) {
-        if (!editMode || !gridSnap) snapPreview = null
-        if (!editMode) onDraggingChanged(false)
+    LaunchedEffect(editMode) {
+        if (!editMode) {
+            snapPreview = null
+            onDraggingChanged(false)
+        }
     }
+
+    val cols = gridScale.cols
+    val rows = gridScale.rows
+    val outerPadH = when {
+        cols >= 16 -> 4.dp
+        cols >= 12 -> 6.dp
+        else -> 10.dp
+    }
+    val outerPadEnd = when {
+        cols >= 16 -> 6.dp
+        cols >= 12 -> 10.dp
+        else -> 16.dp
+    }
+    val outerPadV = if (cols >= 16) 4.dp else if (cols >= 12) 6.dp else 10.dp
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.displayCutout)
-            .padding(start = 10.dp, end = 16.dp, top = 10.dp, bottom = 10.dp)
+            .padding(start = outerPadH, end = outerPadEnd, top = outerPadV, bottom = outerPadV)
     ) {
         // Background long-press target strictly behind placed widgets so widget holds open Component Menu
         Box(
@@ -1056,9 +1100,12 @@ private fun ProportionalHudPageCanvas(
                 }
         )
 
-        val cols = gridScale.cols
-        val rows = gridScale.rows
-        val gap = if (cols >= 12) 5.dp else 8.dp
+        val gap = when {
+            cols >= 24 -> 1.5.dp
+            cols >= 16 -> 2.5.dp
+            cols >= 12 -> 4.dp
+            else -> 7.dp
+        }
 
         val availW = maxWidth
         val availH = maxHeight
@@ -1070,20 +1117,24 @@ private fun ProportionalHudPageCanvas(
         val cellHPx = with(density) { cellH.toPx() }
         val gapPx = with(density) { gap.toPx() }
 
-        // Visual snap grid lines ONLY visible during Edit Mode + Grid Snap On
-        if (editMode && gridSnap) {
+        // Visual grid lines visible throughout Edit Mode (both tile-snap and free modes)
+        if (editMode) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 8f))
+                val dashLen = if (cols >= 16) 5f else 8f
+                val dash = PathEffect.dashPathEffect(floatArrayOf(dashLen, dashLen))
+                val gridCorner = if (cols >= 16) 4.dp.toPx() else 8.dp.toPx()
+                val gridStroke = if (cols >= 16) 0.75.dp.toPx() else 1.dp.toPx()
+                val gridAlpha = if (cols >= 24) 0.14f else 0.19f
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
                         val x = c * (cellWPx + gapPx)
                         val y = r * (cellHPx + gapPx)
                         drawRoundRect(
-                            color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.18f),
+                            color = TorqueEvoColors.ElectricBlue.copy(alpha = gridAlpha),
                             topLeft = Offset(x, y),
                             size = Size(cellWPx, cellHPx),
-                            cornerRadius = CornerRadius(10.dp.toPx()),
-                            style = Stroke(width = 1.dp.toPx(), pathEffect = dash)
+                            cornerRadius = CornerRadius(gridCorner),
+                            style = Stroke(width = gridStroke, pathEffect = dash)
                         )
                     }
                 }
@@ -1093,16 +1144,16 @@ private fun ProportionalHudPageCanvas(
                     val targetW = cellWPx * sp.spanCols + gapPx * (sp.spanCols - 1)
                     val targetH = cellHPx * sp.spanRows + gapPx * (sp.spanRows - 1)
                     drawRoundRect(
-                        color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.16f),
+                        color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.18f),
                         topLeft = Offset(targetX, targetY),
                         size = Size(targetW, targetH),
-                        cornerRadius = CornerRadius(12.dp.toPx())
+                        cornerRadius = CornerRadius(10.dp.toPx())
                     )
                     drawRoundRect(
                         color = TorqueEvoColors.ElectricBlue,
                         topLeft = Offset(targetX, targetY),
                         size = Size(targetW, targetH),
-                        cornerRadius = CornerRadius(12.dp.toPx()),
+                        cornerRadius = CornerRadius(10.dp.toPx()),
                         style = Stroke(width = 2.dp.toPx())
                     )
                 }
@@ -1130,32 +1181,46 @@ private fun ProportionalHudPageCanvas(
             }
         }
 
-        val placementMap = remember(widgets, cols, rows, gridSnap) {
-            if (gridSnap) resolveGridPlacements(widgets, cols, rows).associateBy { it.widget.id } else emptyMap()
+        val orderedWidgets = remember(widgets) { widgets.sortedBy { it.sortOrder } }
+        val placementMap = remember(orderedWidgets, cols, rows, gridSnap) {
+            if (gridSnap) resolveGridPlacements(orderedWidgets, cols, rows).associateBy { it.widget.id } else emptyMap()
         }
 
-        widgets.forEach { w ->
+        orderedWidgets.forEach { w ->
             key(w.id) {
                 val slot = placementMap[w.id]
-                val sw = (slot?.spanCols ?: w.spanCols).coerceIn(1, cols)
-                val sh = (slot?.spanRows ?: w.spanRows).coerceIn(1, rows)
+                val baseSw = (slot?.spanCols ?: w.spanCols).coerceIn(1, cols)
+                val baseSh = (slot?.spanRows ?: w.spanRows).coerceIn(1, rows)
+
+                var resizePreview by remember(w.id, cols, rows, w.gridCol, w.gridRow, w.spanCols, w.spanRows) {
+                    mutableStateOf<GridBounds?>(null)
+                }
+                val isResizingThis = resizePreview != null
+                val sw = resizePreview?.spanCols ?: baseSw
+                val sh = resizePreview?.spanRows ?: baseSh
+
                 val boxW = cellW * sw + gap * (sw - 1)
                 val boxH = cellH * sh + gap * (sh - 1)
                 val boxWPx = with(density) { boxW.toPx() }
                 val boxHPx = with(density) { boxH.toPx() }
                 val maxXPx = (availWPx - boxWPx).coerceAtLeast(0f)
                 val maxYPx = (availHPx - boxHPx).coerceAtLeast(0f)
+                val stepX = (cellWPx + gapPx).coerceAtLeast(1f)
+                val stepY = (cellHPx + gapPx).coerceAtLeast(1f)
 
-                val baseXPx = if (gridSnap && slot != null) {
-                    ((cellWPx + gapPx) * slot.col).coerceIn(0f, maxXPx)
-                } else {
-                    (w.freeformXFraction * availWPx).coerceIn(0f, maxXPx)
+                val baseXPx = when {
+                    resizePreview != null -> (stepX * resizePreview!!.col).coerceIn(0f, maxXPx)
+                    gridSnap && slot != null -> (stepX * slot.col).coerceIn(0f, maxXPx)
+                    else -> (w.freeformXFraction * availWPx).coerceIn(0f, maxXPx)
                 }
-                val baseYPx = if (gridSnap && slot != null) {
-                    ((cellHPx + gapPx) * slot.row).coerceIn(0f, maxYPx)
-                } else {
-                    (w.freeformYFraction * availHPx).coerceIn(0f, maxYPx)
+                val baseYPx = when {
+                    resizePreview != null -> (stepY * resizePreview!!.row).coerceIn(0f, maxYPx)
+                    gridSnap && slot != null -> (stepY * slot.row).coerceIn(0f, maxYPx)
+                    else -> (w.freeformYFraction * availHPx).coerceIn(0f, maxYPx)
                 }
+
+                val currentStartCol = (slot?.col ?: (baseXPx / stepX).roundToInt()).coerceIn(0, (cols - baseSw).coerceAtLeast(0))
+                val currentStartRow = (slot?.row ?: (baseYPx / stepY).roundToInt()).coerceIn(0, (rows - baseSh).coerceAtLeast(0))
 
                 var dragDelta by remember(w.id) { mutableStateOf(Offset.Zero) }
                 var isDraggingThis by remember(w.id) { mutableStateOf(false) }
@@ -1166,6 +1231,8 @@ private fun ProportionalHudPageCanvas(
                     rows,
                     w.gridCol,
                     w.gridRow,
+                    w.spanCols,
+                    w.spanRows,
                     w.freeformXFraction,
                     w.freeformYFraction,
                     availWPx,
@@ -1175,27 +1242,38 @@ private fun ProportionalHudPageCanvas(
                 val latestWidget by rememberUpdatedState(w)
                 val latestBaseX by rememberUpdatedState(droppedOverride?.x ?: baseXPx)
                 val latestBaseY by rememberUpdatedState(droppedOverride?.y ?: baseYPx)
+                val latestStartCol by rememberUpdatedState(currentStartCol)
+                val latestStartRow by rememberUpdatedState(currentStartRow)
+                val latestBaseSw by rememberUpdatedState(baseSw)
+                val latestBaseSh by rememberUpdatedState(baseSh)
                 val latestOnSelect by rememberUpdatedState(onSelectWidget)
                 val latestOnDragging by rememberUpdatedState(onDraggingChanged)
                 val latestOnCommitGrid by rememberUpdatedState(onCommitGridPos)
+                val latestOnCommitBounds by rememberUpdatedState(onCommitGridBounds)
                 val latestOnUpdateFreeform by rememberUpdatedState(onUpdateFreeformPos)
 
-                val anchorX = droppedOverride?.x ?: baseXPx
-                val anchorY = droppedOverride?.y ?: baseYPx
+                val anchorX = if (isResizingThis) baseXPx else (droppedOverride?.x ?: baseXPx)
+                val anchorY = if (isResizingThis) baseYPx else (droppedOverride?.y ?: baseYPx)
                 val renderX = (anchorX + dragDelta.x).coerceIn(0f, maxXPx)
                 val renderY = (anchorY + dragDelta.y).coerceIn(0f, maxYPx)
+                val isSelected = w.id == selectedWidgetId
+                val widgetZIndex = when {
+                    isDraggingThis || isResizingThis -> 30f
+                    isSelected -> 20f
+                    else -> (w.sortOrder.coerceAtLeast(0) * 0.001f)
+                }
 
                 Box(
                     modifier = Modifier
-                        .zIndex(if (isDraggingThis) 10f else 0f)
+                        .zIndex(widgetZIndex)
                         .offset { IntOffset(renderX.roundToInt(), renderY.roundToInt()) }
                         .size(width = boxW, height = boxH)
                 ) {
                     HudWidgetSlotWrapper(
                         widgetId = w.id,
                         editMode = editMode,
-                        isSelected = w.id == selectedWidgetId,
-                        isDragging = isDraggingThis,
+                        isSelected = isSelected,
+                        isDragging = isDraggingThis || isResizingThis,
                         onHold = { onHoldWidget(latestWidget) },
                         dragOverlayModifier = if (editMode) {
                             Modifier
@@ -1203,10 +1281,9 @@ private fun ProportionalHudPageCanvas(
                                     detectTapGestures(onTap = { latestOnSelect(latestWidget) })
                                 }
                                 .pointerInput(w.id, gridSnap, cols, rows, sw, sh, maxXPx, maxYPx, cellWPx, cellHPx, gapPx) {
-                                    val stepX = (cellWPx + gapPx).coerceAtLeast(1f)
-                                    val stepY = (cellHPx + gapPx).coerceAtLeast(1f)
-                                    detectDragGestures(
+                                    detectDragGesturesAfterLongPress(
                                         onDragStart = {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                             latestOnSelect(latestWidget)
                                             isDraggingThis = true
                                             latestOnDragging(true)
@@ -1277,9 +1354,128 @@ private fun ProportionalHudPageCanvas(
                             onEnableGps = onEnableGps
                         )
                     }
+
+                    // Direct 4-side edge resize arrows on the selected widget in Edit Mode
+                    if (editMode && isSelected && !isDraggingThis) {
+                        val onEdgePreview: (WidgetResizeEdge, Float) -> Unit = { edge, cumulativePx ->
+                            val step = if (edge == WidgetResizeEdge.LEFT || edge == WidgetResizeEdge.RIGHT) stepX else stepY
+                            val deltaCells = (cumulativePx / step).roundToInt()
+                            val next = computeResizedGridBounds(
+                                startCol = latestStartCol,
+                                startRow = latestStartRow,
+                                startSpanCols = latestBaseSw,
+                                startSpanRows = latestBaseSh,
+                                edge = edge,
+                                deltaCells = deltaCells,
+                                totalCols = cols,
+                                totalRows = rows
+                            )
+                            resizePreview = next
+                            snapPreview = SnapDragPreview(w.id, next.col, next.row, next.spanCols, next.spanRows)
+                        }
+                        val onEdgeFinish: (Boolean) -> Unit = { commit ->
+                            val finalBounds = resizePreview
+                            if (commit && finalBounds != null) {
+                                droppedOverride = Offset(stepX * finalBounds.col, stepY * finalBounds.row)
+                                latestOnCommitBounds(
+                                    latestWidget,
+                                    finalBounds.col,
+                                    finalBounds.row,
+                                    finalBounds.spanCols,
+                                    finalBounds.spanRows
+                                )
+                            }
+                            resizePreview = null
+                            snapPreview = null
+                            latestOnDragging(false)
+                        }
+                        WidgetEdgeResizeHandle(
+                            edge = WidgetResizeEdge.LEFT,
+                            glyph = "◄",
+                            modifier = Modifier.align(Alignment.CenterStart).zIndex(5f),
+                            onStart = { latestOnDragging(true) },
+                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.LEFT, px) },
+                            onFinish = onEdgeFinish
+                        )
+                        WidgetEdgeResizeHandle(
+                            edge = WidgetResizeEdge.RIGHT,
+                            glyph = "►",
+                            modifier = Modifier.align(Alignment.CenterEnd).zIndex(5f),
+                            onStart = { latestOnDragging(true) },
+                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.RIGHT, px) },
+                            onFinish = onEdgeFinish
+                        )
+                        WidgetEdgeResizeHandle(
+                            edge = WidgetResizeEdge.TOP,
+                            glyph = "▲",
+                            modifier = Modifier.align(Alignment.TopCenter).zIndex(5f),
+                            onStart = { latestOnDragging(true) },
+                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.TOP, px) },
+                            onFinish = onEdgeFinish
+                        )
+                        WidgetEdgeResizeHandle(
+                            edge = WidgetResizeEdge.BOTTOM,
+                            glyph = "▼",
+                            modifier = Modifier.align(Alignment.BottomCenter).zIndex(5f),
+                            onStart = { latestOnDragging(true) },
+                            onDeltaPx = { px -> onEdgePreview(WidgetResizeEdge.BOTTOM, px) },
+                            onFinish = onEdgeFinish
+                        )
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun WidgetEdgeResizeHandle(
+    edge: WidgetResizeEdge,
+    glyph: String,
+    modifier: Modifier = Modifier,
+    onStart: () -> Unit,
+    onDeltaPx: (Float) -> Unit,
+    onFinish: (Boolean) -> Unit
+) {
+    val latestOnStart by rememberUpdatedState(onStart)
+    val latestOnDelta by rememberUpdatedState(onDeltaPx)
+    val latestOnFinish by rememberUpdatedState(onFinish)
+    val horizontal = edge == WidgetResizeEdge.LEFT || edge == WidgetResizeEdge.RIGHT
+
+    Box(
+        modifier = modifier
+            .size(width = if (horizontal) 22.dp else 28.dp, height = if (horizontal) 28.dp else 22.dp)
+            .clip(RoundedCornerShape(7.dp))
+            .background(Color(0xE6051526))
+            .border(1.2.dp, TorqueEvoColors.ElectricBlue, RoundedCornerShape(7.dp))
+            .pointerInput(edge) {
+                var accum = 0f
+                detectDragGestures(
+                    onDragStart = {
+                        accum = 0f
+                        latestOnStart()
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        accum += if (horizontal) dragAmount.x else dragAmount.y
+                        latestOnDelta(accum)
+                    },
+                    onDragEnd = {
+                        latestOnFinish(true)
+                    },
+                    onDragCancel = {
+                        latestOnFinish(false)
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = glyph,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = TorqueEvoColors.ElectricBlue
+        )
     }
 }
 
