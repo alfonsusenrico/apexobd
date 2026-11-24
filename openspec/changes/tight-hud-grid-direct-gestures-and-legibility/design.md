@@ -1,13 +1,9 @@
 # Design: Tight HUD Grid, Direct On-Component Gestures, Legibility, and 99.99 KPL Cap
 
-## 1. Dense HUD Grid (`AppPreferences.kt`, `HudCanvasScreen.kt`)
-- Extend `HudGridScale` with `FINE_16X8("Fine (16×8)", 16, 8)` and `ULTRA_24X12("Ultra (24×12)", 24, 12)`.
-- Scale canvas padding and inter-cell gap by column count:
-  - `cols >= 24`: `gap = 1.5.dp`, outer padding `4.dp` (`end = 6.dp`)
-  - `cols >= 16`: `gap = 2.5.dp`, outer padding `4.dp` (`end = 6.dp`)
-  - `cols >= 12`: `gap = 4.dp`, outer padding `6.dp` (`end = 10.dp`)
-  - `cols < 12`: `gap = 7.dp`, outer padding `10.dp` (`end = 16.dp`)
-- Render dashed grid guides whenever `editMode` is true (both tile-snap and free modes) using `0.75.dp` stroke for `cols >= 16`.
+## 1. Torque-Style Micro-Grid & Proportional Rescaling (`AppPreferences.kt`, `HudGridLayout.kt`, `HudCanvasScreen.kt`)
+- Extend `HudGridScale` with `FINE_16X8 (16×8)`, `ULTRA_24X12 (24×12)`, `MICRO_64X32 (64×32)`, and `ULTRA_80X40 (80×40)`, each carrying readable `minWidgetCols`/`minWidgetRows` and `defaultWidgetCols`/`defaultWidgetRows` (e.g. `8×5` min and `16×8` default on `64×32`; `10×6` min and `20×10` default on `80×40`).
+- When `HudViewModel.setHudGridScale` switches scales, proportionally rescale every widget's `gridCol`, `gridRow`, `spanCols`, and `spanRows` via `rescaleWidgetBoundsForGridChange(...)` so existing components keep their exact physical size and position on screen instead of shrinking.
+- For `cols >= 32`, use `gap = 0.dp`, `outerPad = 2.dp`, and draw crisp graph-paper grid lines (minor micro-grid lines + brighter major lines every `cols / 8` cols and `rows / 4` rows) whenever Edit Mode is active.
 
 ## 2. Direct Edge-Arrow Resizing, Hold-Middle Move, and Overlap Resolution
 - Add `WidgetResizeEdge` (`LEFT`, `RIGHT`, `TOP`, `BOTTOM`), `GridBounds`, and pure `computeResizedGridBounds(...)` in `HudGridLayout.kt`.

@@ -1074,16 +1074,23 @@ private fun ProportionalHudPageCanvas(
     val cols = gridScale.cols
     val rows = gridScale.rows
     val outerPadH = when {
+        cols >= 32 -> 2.dp
         cols >= 16 -> 4.dp
         cols >= 12 -> 6.dp
         else -> 10.dp
     }
     val outerPadEnd = when {
+        cols >= 32 -> 4.dp
         cols >= 16 -> 6.dp
         cols >= 12 -> 10.dp
         else -> 16.dp
     }
-    val outerPadV = if (cols >= 16) 4.dp else if (cols >= 12) 6.dp else 10.dp
+    val outerPadV = when {
+        cols >= 32 -> 2.dp
+        cols >= 16 -> 4.dp
+        cols >= 12 -> 6.dp
+        else -> 10.dp
+    }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -1101,6 +1108,7 @@ private fun ProportionalHudPageCanvas(
         )
 
         val gap = when {
+            cols >= 32 -> 0.dp
             cols >= 24 -> 1.5.dp
             cols >= 16 -> 2.5.dp
             cols >= 12 -> 4.dp
@@ -1120,22 +1128,52 @@ private fun ProportionalHudPageCanvas(
         // Visual grid lines visible throughout Edit Mode (both tile-snap and free modes)
         if (editMode) {
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val dashLen = if (cols >= 16) 5f else 8f
-                val dash = PathEffect.dashPathEffect(floatArrayOf(dashLen, dashLen))
-                val gridCorner = if (cols >= 16) 4.dp.toPx() else 8.dp.toPx()
-                val gridStroke = if (cols >= 16) 0.75.dp.toPx() else 1.dp.toPx()
-                val gridAlpha = if (cols >= 24) 0.14f else 0.19f
-                for (r in 0 until rows) {
-                    for (c in 0 until cols) {
-                        val x = c * (cellWPx + gapPx)
-                        val y = r * (cellHPx + gapPx)
-                        drawRoundRect(
-                            color = TorqueEvoColors.ElectricBlue.copy(alpha = gridAlpha),
-                            topLeft = Offset(x, y),
-                            size = Size(cellWPx, cellHPx),
-                            cornerRadius = CornerRadius(gridCorner),
-                            style = Stroke(width = gridStroke, pathEffect = dash)
+                if (cols >= 32) {
+                    // Crisp Torque-style graph-paper micro-grid with major guide lines
+                    val majorStepC = (cols / 8).coerceAtLeast(4)
+                    val majorStepR = (rows / 4).coerceAtLeast(4)
+                    val minorColor = TorqueEvoColors.ElectricBlue.copy(alpha = 0.13f)
+                    val majorColor = TorqueEvoColors.ElectricBlue.copy(alpha = 0.30f)
+                    val minorStroke = 0.55.dp.toPx()
+                    val majorStroke = 1.dp.toPx()
+                    for (c in 0..cols) {
+                        val x = (c * cellWPx).coerceAtMost(size.width)
+                        val isMajor = c % majorStepC == 0
+                        drawLine(
+                            color = if (isMajor) majorColor else minorColor,
+                            start = Offset(x, 0f),
+                            end = Offset(x, size.height),
+                            strokeWidth = if (isMajor) majorStroke else minorStroke
                         )
+                    }
+                    for (r in 0..rows) {
+                        val y = (r * cellHPx).coerceAtMost(size.height)
+                        val isMajor = r % majorStepR == 0
+                        drawLine(
+                            color = if (isMajor) majorColor else minorColor,
+                            start = Offset(0f, y),
+                            end = Offset(size.width, y),
+                            strokeWidth = if (isMajor) majorStroke else minorStroke
+                        )
+                    }
+                } else {
+                    val dashLen = if (cols >= 16) 5f else 8f
+                    val dash = PathEffect.dashPathEffect(floatArrayOf(dashLen, dashLen))
+                    val gridCorner = if (cols >= 16) 4.dp.toPx() else 8.dp.toPx()
+                    val gridStroke = if (cols >= 16) 0.75.dp.toPx() else 1.dp.toPx()
+                    val gridAlpha = if (cols >= 24) 0.14f else 0.19f
+                    for (r in 0 until rows) {
+                        for (c in 0 until cols) {
+                            val x = c * (cellWPx + gapPx)
+                            val y = r * (cellHPx + gapPx)
+                            drawRoundRect(
+                                color = TorqueEvoColors.ElectricBlue.copy(alpha = gridAlpha),
+                                topLeft = Offset(x, y),
+                                size = Size(cellWPx, cellHPx),
+                                cornerRadius = CornerRadius(gridCorner),
+                                style = Stroke(width = gridStroke, pathEffect = dash)
+                            )
+                        }
                     }
                 }
                 snapPreview?.let { sp ->
@@ -1368,7 +1406,9 @@ private fun ProportionalHudPageCanvas(
                                 edge = edge,
                                 deltaCells = deltaCells,
                                 totalCols = cols,
-                                totalRows = rows
+                                totalRows = rows,
+                                minSpanCols = gridScale.minWidgetCols,
+                                minSpanRows = gridScale.minWidgetRows
                             )
                             resizePreview = next
                             snapPreview = SnapDragPreview(w.id, next.col, next.row, next.spanCols, next.spanRows)
@@ -1818,22 +1858,26 @@ private fun DynamicTileSizeSelector(
     rows: Int,
     maxCols: Int,
     maxRows: Int,
+    minCols: Int = 1,
+    minRows: Int = 1,
     onSizeChange: (Int, Int) -> Unit
 ) {
-    val safeCols = cols.coerceIn(1, maxCols)
-    val safeRows = rows.coerceIn(1, maxRows)
+    val safeMinCols = minCols.coerceIn(1, maxCols)
+    val safeMinRows = minRows.coerceIn(1, maxRows)
+    val safeCols = cols.coerceIn(safeMinCols, maxCols)
+    val safeRows = rows.coerceIn(safeMinRows, maxRows)
     val latestOnChange by rememberUpdatedState(onSizeChange)
     var matrixSize by remember { mutableStateOf(IntSize.Zero) }
 
     fun updateFromPoint(offset: Offset) {
         if (matrixSize.width <= 0 || matrixSize.height <= 0) return
-        val nextC = ((offset.x / matrixSize.width) * maxCols).toInt().coerceIn(0, maxCols - 1) + 1
-        val nextR = ((offset.y / matrixSize.height) * maxRows).toInt().coerceIn(0, maxRows - 1) + 1
+        val nextC = (((offset.x / matrixSize.width) * maxCols).toInt() + 1).coerceIn(safeMinCols, maxCols)
+        val nextR = (((offset.y / matrixSize.height) * maxRows).toInt() + 1).coerceIn(safeMinRows, maxRows)
         latestOnChange(nextC, nextR)
     }
 
-    val halfCols = (maxCols / 2).coerceAtLeast(1)
-    val wideRows = (maxRows / 2).coerceAtLeast(1)
+    val halfCols = (maxCols / 2).coerceAtLeast(safeMinCols)
+    val wideRows = (maxRows / 2).coerceAtLeast(safeMinRows)
 
     Row(
         modifier = Modifier
@@ -1856,12 +1900,14 @@ private fun DynamicTileSizeSelector(
                 TileAxisStepper(
                     label = "W",
                     value = safeCols,
+                    min = safeMinCols,
                     max = maxCols,
                     onChange = { next -> latestOnChange(next, safeRows) }
                 )
                 TileAxisStepper(
                     label = "H",
                     value = safeRows,
+                    min = safeMinRows,
                     max = maxRows,
                     onChange = { next -> latestOnChange(safeCols, next) }
                 )
@@ -1871,9 +1917,9 @@ private fun DynamicTileSizeSelector(
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 ApexFilterChip(
-                    selected = safeCols == 1 && safeRows == 1,
-                    onClick = { latestOnChange(1, 1) },
-                    label = "1×1",
+                    selected = safeCols == safeMinCols && safeRows == safeMinRows,
+                    onClick = { latestOnChange(safeMinCols, safeMinRows) },
+                    label = if (safeMinCols == 1 && safeMinRows == 1) "1×1" else "Min ($safeMinCols×$safeMinRows)",
                     compact = true
                 )
                 ApexFilterChip(
@@ -1906,10 +1952,10 @@ private fun DynamicTileSizeSelector(
                 .background(Color(0xFF0A0D13))
                 .border(1.dp, TorqueEvoColors.SubtleBorder, RoundedCornerShape(6.dp))
                 .onSizeChanged { matrixSize = it }
-                .pointerInput(maxCols, maxRows) {
+                .pointerInput(maxCols, maxRows, safeMinCols, safeMinRows) {
                     detectTapGestures { offset -> updateFromPoint(offset) }
                 }
-                .pointerInput(maxCols, maxRows) {
+                .pointerInput(maxCols, maxRows, safeMinCols, safeMinRows) {
                     detectDragGestures(
                         onDragStart = { offset -> updateFromPoint(offset) },
                         onDrag = { change, _ ->
@@ -1920,19 +1966,39 @@ private fun DynamicTileSizeSelector(
                 }
                 .padding(3.dp)
         ) {
-            val gapPx = 2.dp.toPx()
-            val cw = (size.width - gapPx * (maxCols - 1)) / maxCols
-            val ch = (size.height - gapPx * (maxRows - 1)) / maxRows
-            val radius = CornerRadius(2.dp.toPx())
-            for (r in 0 until maxRows) {
-                for (c in 0 until maxCols) {
-                    val active = c < safeCols && r < safeRows
-                    drawRoundRect(
-                        color = if (active) TorqueEvoColors.ElectricBlue.copy(alpha = 0.85f) else Color(0xFF1A2230),
-                        topLeft = Offset(c * (cw + gapPx), r * (ch + gapPx)),
-                        size = Size(cw.coerceAtLeast(1f), ch.coerceAtLeast(1f)),
-                        cornerRadius = radius
-                    )
+            if (maxCols > 16) {
+                val selW = (size.width * (safeCols.toFloat() / maxCols.toFloat())).coerceAtLeast(4f)
+                val selH = (size.height * (safeRows.toFloat() / maxRows.toFloat())).coerceAtLeast(4f)
+                drawRoundRect(
+                    color = TorqueEvoColors.ElectricBlue.copy(alpha = 0.80f),
+                    topLeft = Offset.Zero,
+                    size = Size(selW, selH),
+                    cornerRadius = CornerRadius(3.dp.toPx())
+                )
+                val guideColor = Color(0x30FFFFFF)
+                for (i in 1 until 8) {
+                    val x = size.width * (i / 8f)
+                    drawLine(guideColor, Offset(x, 0f), Offset(x, size.height), strokeWidth = 0.7f)
+                }
+                for (j in 1 until 4) {
+                    val y = size.height * (j / 4f)
+                    drawLine(guideColor, Offset(0f, y), Offset(size.width, y), strokeWidth = 0.7f)
+                }
+            } else {
+                val gapPx = 2.dp.toPx()
+                val cw = (size.width - gapPx * (maxCols - 1)) / maxCols
+                val ch = (size.height - gapPx * (maxRows - 1)) / maxRows
+                val radius = CornerRadius(2.dp.toPx())
+                for (r in 0 until maxRows) {
+                    for (c in 0 until maxCols) {
+                        val active = c < safeCols && r < safeRows
+                        drawRoundRect(
+                            color = if (active) TorqueEvoColors.ElectricBlue.copy(alpha = 0.85f) else Color(0xFF1A2230),
+                            topLeft = Offset(c * (cw + gapPx), r * (ch + gapPx)),
+                            size = Size(cw.coerceAtLeast(1f), ch.coerceAtLeast(1f)),
+                            cornerRadius = radius
+                        )
+                    }
                 }
             }
         }
@@ -1943,6 +2009,7 @@ private fun DynamicTileSizeSelector(
 private fun TileAxisStepper(
     label: String,
     value: Int,
+    min: Int = 1,
     max: Int,
     onChange: (Int) -> Unit
 ) {
@@ -1951,13 +2018,13 @@ private fun TileAxisStepper(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TorqueEvoColors.TextSecondary)
-        StepperBadge("−", enabled = value > 1) { onChange((value - 1).coerceAtLeast(1)) }
+        StepperBadge("−", enabled = value > min) { onChange((value - 1).coerceAtLeast(min)) }
         Text(
             text = "$value",
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             color = TorqueEvoColors.ElectricBlue,
-            modifier = Modifier.width(18.dp),
+            modifier = Modifier.widthIn(min = 24.dp),
             textAlign = TextAlign.Center
         )
         StepperBadge("+", enabled = value < max) { onChange((value + 1).coerceAtMost(max)) }
@@ -2130,6 +2197,8 @@ private fun ComponentEditDialog(
                     rows = safeRows,
                     maxCols = gridScale.cols,
                     maxRows = gridScale.rows,
+                    minCols = gridScale.minWidgetCols,
+                    minRows = gridScale.minWidgetRows,
                     onSizeChange = onResize
                 )
             }
@@ -2371,8 +2440,8 @@ private fun FullscreenComponentPickerDialog(
     }
     var selectedItem by remember { mutableStateOf(initialItem) }
     var selectedType by remember { mutableStateOf(WidgetDisplayType.DIGITAL) }
-    var selectedCols by remember(gridScale) { mutableIntStateOf(2.coerceIn(1, gridScale.cols)) }
-    var selectedRows by remember(gridScale) { mutableIntStateOf(1.coerceIn(1, gridScale.rows)) }
+    var selectedCols by remember(gridScale) { mutableIntStateOf(gridScale.defaultWidgetCols.coerceIn(gridScale.minWidgetCols, gridScale.cols)) }
+    var selectedRows by remember(gridScale) { mutableIntStateOf(gridScale.defaultWidgetRows.coerceIn(gridScale.minWidgetRows, gridScale.rows)) }
 
     val resolvedPreviewType = when (selectedItem.key) {
         "minimap" -> WidgetDisplayType.MINI_MAP
@@ -2591,6 +2660,8 @@ private fun FullscreenComponentPickerDialog(
                             rows = selectedRows,
                             maxCols = gridScale.cols,
                             maxRows = gridScale.rows,
+                            minCols = gridScale.minWidgetCols,
+                            minRows = gridScale.minWidgetRows,
                             onSizeChange = { c, r ->
                                 selectedCols = c
                                 selectedRows = r
